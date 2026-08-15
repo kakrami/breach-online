@@ -1,5 +1,5 @@
-const PROTOCOL_VERSION = 12;
-const GAME_VERSION = "1.14.2";
+const PROTOCOL_VERSION = 13;
+const GAME_VERSION = "1.15.0";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -8,9 +8,6 @@ const MAX_MESSAGE_BYTES = 24 * 1024;
 const ROOM_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
 const EMPTY_ROOM_GRACE_MS = 10 * 60 * 1000;
 const RECONNECT_GRACE_MS = 45 * 1000;
-const PUNCH_COOLDOWN_MS = 430;
-const PUNCH_REACH = 2.55;
-const PUNCH_VERTICAL_REACH = 2.1;
 const HEALTH_REGEN_TICK_MS = 500;
 const WEAPONS = {
   pistol: { mag: 12, lifetimeMs: 3200 },
@@ -19,7 +16,7 @@ const WEAPONS = {
 };
 const DEFAULT_WORLD_SETTINGS = Object.freeze({
   movement: Object.freeze({ runSpeed: 8.4, walkSpeed: 4.6, jumpHeight: 1.6, gravity: 23 }),
-  combat: Object.freeze({ punchDamage: 25, regenDelayMs: 5000, regenPerSecond: 8, respawnMs: 2800 }),
+  combat: Object.freeze({ regenDelayMs: 5000, regenPerSecond: 8, respawnMs: 2800 }),
   weapons: Object.freeze({
     pistol: Object.freeze({ damage: 34, speed: 42, reloadMs: 475, cooldownMs: 190 }),
     assault: Object.freeze({ damage: 26, speed: 82, reloadMs: 650, cooldownMs: 105 }),
@@ -34,6 +31,16 @@ const PLAYER_COLORS = [
   "#b388ff", "#ff8c42", "#90e0ef", "#f28482",
 ];
 const BOT_COLORS = ["#78baff", "#ff8290"];
+const BOT_DIFFICULTIES = Object.freeze({
+  easy: Object.freeze({ moveRun: .42, moveWalk: .55, range: 18, fireScale: 1.55, reactionBase: 520, reactionJitter: 480, spreadBase: .105, spreadDistance: .0030 }),
+  normal: Object.freeze({ moveRun: .58, moveWalk: .72, range: 24, fireScale: 1.00, reactionBase: 170, reactionJitter: 260, spreadBase: .032, spreadDistance: .0016 }),
+  hard: Object.freeze({ moveRun: .72, moveWalk: .86, range: 30, fireScale: .78, reactionBase: 95, reactionJitter: 150, spreadBase: .018, spreadDistance: .0010 }),
+  elite: Object.freeze({ moveRun: .88, moveWalk: .96, range: 36, fireScale: .62, reactionBase: 45, reactionJitter: 85, spreadBase: .009, spreadDistance: .00055 }),
+});
+function safeBotDifficulty(value) {
+  const key = String(value || "normal").toLowerCase();
+  return Object.prototype.hasOwnProperty.call(BOT_DIFFICULTIES, key) ? key : "normal";
+}
 
 const WORLD_OBSTACLES = [
   { type: "box", x: 0, z: 0, w: 8, d: 8, h: 3.2 },
@@ -178,7 +185,6 @@ function normalizeWorldSettings(value) {
       };
     })(),
     combat: {
-      punchDamage: clamp(finiteNumber(cv.punchDamage, DEFAULT_WORLD_SETTINGS.combat.punchDamage), 5, 100),
       regenDelayMs: clamp(Math.round(finiteNumber(cv.regenDelayMs, DEFAULT_WORLD_SETTINGS.combat.regenDelayMs)), 0, 15000),
       regenPerSecond: clamp(finiteNumber(cv.regenPerSecond, DEFAULT_WORLD_SETTINGS.combat.regenPerSecond), 0, 30),
       respawnMs: clamp(Math.round(finiteNumber(cv.respawnMs, DEFAULT_WORLD_SETTINGS.combat.respawnMs)), 1000, 10000),
@@ -306,7 +312,7 @@ function makeBot(index, team, teamIndex) {
   const spawn = spawnForTeam(team, teamIndex);
   const label = team === "red" ? "Red" : "Blue";
   return {
-    id: `bot-${index + 1}`,
+    id: `bot-${team}-${teamIndex + 1}`,
     name: `${label} Bot ${teamIndex + 1}`,
     team,
     color: TEAM_COLORS[team],
@@ -314,7 +320,6 @@ function makeBot(index, team, teamIndex) {
     yaw: 0,
     hp: 100,
     wastedUntil: 0,
-    lastPunch: 0,
     lastShot: 0,
     nextShotDelay: 800 + Math.floor(Math.random() * 450),
     ammo: freshAmmo(),
@@ -334,6 +339,26 @@ function makeBots(blueBots, redBots) {
   for (let i = 0; i < blueBots; i += 1) bots.push(makeBot(bots.length, "blue", i));
   for (let i = 0; i < redBots; i += 1) bots.push(makeBot(bots.length, "red", i));
   return bots;
+}
+function reconcileBots(existing, blueBots, redBots) {
+  const prior = new Map((Array.isArray(existing) ? existing : []).map((bot) => [bot.id, bot]));
+  return makeBots(blueBots, redBots).map((fresh) => {
+    const old = prior.get(fresh.id);
+    if (!old) return fresh;
+    return {
+      ...fresh,
+      ...old,
+      id: fresh.id,
+      name: fresh.name,
+      team: fresh.team,
+      color: fresh.color,
+      x: clamp(finiteNumber(old.x, fresh.x), -ARENA_LIMIT, ARENA_LIMIT),
+      z: clamp(finiteNumber(old.z, fresh.z), -ARENA_LIMIT, ARENA_LIMIT),
+      y: terrainHeight(clamp(finiteNumber(old.x, fresh.x), -ARENA_LIMIT, ARENA_LIMIT), clamp(finiteNumber(old.z, fresh.z), -ARENA_LIMIT, ARENA_LIMIT)),
+      ammo: normalizeAmmo(old.ammo),
+      weapon: "assault",
+    };
+  });
 }
 function botCountsFromMeta(meta) {
   const blueBots = clamp(Math.floor(finiteNumber(meta?.blueBots, 0)), 0, MAX_BOTS);
@@ -360,7 +385,7 @@ export default {
         protocol: PROTOCOL_VERSION,
         version: PROTOCOL_VERSION,
         game: GAME_VERSION,
-        mode: "durable-object-team-sandbox-authoritative-rules-sniper-penetration-godmode",
+        mode: "durable-object-team-sandbox-bots-difficulty-directional-damage",
       });
     }
 
@@ -380,6 +405,7 @@ export default {
       const blueBots = clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS);
       const redBots = clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS);
       const botCount = blueBots + redBots;
+      const botDifficulty = safeBotDifficulty(body.botDifficulty);
       if (!clientId) return json(request, env, { error: "Missing client ID." }, 400);
       if (botCount > MAX_BOTS) return json(request, env, { error: `Maximum ${MAX_BOTS} bots per world.` }, 400);
 
@@ -387,11 +413,11 @@ export default {
         const code = makeRoomCode();
         const room = env.ROOMS.get(env.ROOMS.idFromName(code));
         const created = await room.fetch(
-          `https://room.internal/create?code=${code}&owner=${encodeURIComponent(clientId)}&name=${encodeURIComponent(name)}&blueBots=${blueBots}&redBots=${redBots}`,
+          `https://room.internal/create?code=${code}&owner=${encodeURIComponent(clientId)}&name=${encodeURIComponent(name)}&blueBots=${blueBots}&redBots=${redBots}&botDifficulty=${encodeURIComponent(botDifficulty)}`,
           { method: "POST" },
         );
         if (created.status === 201) {
-          return json(request, env, { code, maxPlayers: MAX_PLAYERS, bots: botCount, blueBots, redBots }, 201);
+          return json(request, env, { code, maxPlayers: MAX_PLAYERS, bots: botCount, blueBots, redBots, botDifficulty }, 201);
         }
       }
       return json(request, env, { error: "Could not create a world. Try again." }, 503);
@@ -446,6 +472,7 @@ export class WorldDirectory {
         bots: clamp(Math.floor(finiteNumber(body.bots, 0)), 0, MAX_BOTS),
         blueBots: clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS),
         redBots: clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS),
+        botDifficulty: safeBotDifficulty(body.botDifficulty),
         blue: clamp(Math.floor(finiteNumber(body.blue, 0)), 0, MAX_PLAYERS + MAX_BOTS),
         red: clamp(Math.floor(finiteNumber(body.red, 0)), 0, MAX_PLAYERS + MAX_BOTS),
         maxPlayers: MAX_PLAYERS,
@@ -507,9 +534,10 @@ export class GameRoom {
       const blueBots = clamp(Math.floor(finiteNumber(url.searchParams.get("blueBots"), 0)), 0, MAX_BOTS);
       const redBots = clamp(Math.floor(finiteNumber(url.searchParams.get("redBots"), 0)), 0, MAX_BOTS);
       const botCount = blueBots + redBots;
+      const botDifficulty = safeBotDifficulty(url.searchParams.get("botDifficulty"));
       if (botCount > MAX_BOTS) return json(request, this.env, { error: `Maximum ${MAX_BOTS} bots per world.` }, 400);
       const now = Date.now();
-      const meta = { code, ownerClientId, botCount, blueBots, redBots, settings: normalizeWorldSettings(), createdAt: now, expiresAt: now + ROOM_MAX_LIFETIME_MS };
+      const meta = { code, protocol: PROTOCOL_VERSION, ownerClientId, botCount, blueBots, redBots, botDifficulty, settings: normalizeWorldSettings(), createdAt: now, expiresAt: now + ROOM_MAX_LIFETIME_MS };
       await this.ctx.storage.put("meta", meta);
       this.bots = makeBots(blueBots, redBots);
       await this.ctx.storage.put("bots", this.bots);
@@ -520,6 +548,7 @@ export class GameRoom {
 
     const meta = await this.ctx.storage.get("meta");
     if (!meta) return json(request, this.env, { error: "World not found." }, 404);
+    if (Math.floor(finiteNumber(meta.protocol, 0)) !== PROTOCOL_VERSION) return json(request, this.env, { error: "This world was created by an older game version. Create a new world.", protocol: PROTOCOL_VERSION }, 409);
     if (Date.now() >= meta.expiresAt) return json(request, this.env, { error: "World expired." }, 410);
     await this.ensureSimulation(meta);
 
@@ -575,7 +604,6 @@ export class GameRoom {
       pitch: clamp(finiteNumber(spawn.pitch, 0), -1.4, 1.4),
       hp: clamp(Math.floor(finiteNumber(spawn.hp, 100)), 0, 100),
       wastedUntil: finiteNumber(spawn.wastedUntil, 0),
-      lastPunch: 0,
       lastShot: 0,
       lastHitAt: finiteNumber(spawn.lastHitAt, 0),
       regenAt: finiteNumber(spawn.regenAt, 0),
@@ -606,6 +634,7 @@ export class GameRoom {
       code: meta.code,
       maxPlayers: MAX_PLAYERS,
       botCount: meta.botCount,
+      botConfig: { blueBots: meta.blueBots || 0, redBots: meta.redBots || 0, difficulty: safeBotDifficulty(meta.botDifficulty) },
       isAdmin: clientId === meta.ownerClientId,
       settings: normalizeWorldSettings(meta.settings),
       serverTime: Date.now(),
@@ -665,15 +694,6 @@ export class GameRoom {
       return;
     }
 
-    if (payload.t === "punch") {
-      if (me.hp <= 0 || now < me.wastedUntil || now - me.lastPunch < PUNCH_COOLDOWN_MS) return;
-      me.lastPunch = now;
-      socket.serializeAttachment(me);
-      this.broadcast({ t: "swing", id: me.clientId, at: now });
-      this.humanPunch(socket, me, now, settings);
-      await this.stepSimulation(now, meta);
-      return;
-    }
 
     if (payload.t === "fire") {
       const weapon = safeWeapon(me.weapon);
@@ -756,6 +776,36 @@ export class GameRoom {
       return;
     }
 
+
+    if (payload.t === "adminBots") {
+      if (me.clientId !== meta.ownerClientId) {
+        try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "Admin access required." })); } catch {}
+        return;
+      }
+      const blueBots = clamp(Math.floor(finiteNumber(payload.blueBots, meta.blueBots || 0)), 0, MAX_BOTS);
+      const redBots = clamp(Math.floor(finiteNumber(payload.redBots, meta.redBots || 0)), 0, MAX_BOTS);
+      if (blueBots + redBots > MAX_BOTS) {
+        try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: `Maximum ${MAX_BOTS} bots per world.` })); } catch {}
+        return;
+      }
+      meta.blueBots = blueBots;
+      meta.redBots = redBots;
+      meta.botCount = blueBots + redBots;
+      meta.botDifficulty = safeBotDifficulty(payload.difficulty);
+      await this.ctx.storage.put("meta", meta);
+      this.bots = reconcileBots(this.bots, blueBots, redBots);
+      const activeBotIds = new Set(this.bots.map((bot) => bot.id));
+      for (const [id, bullet] of [...this.bullets.entries()]) {
+        if (String(bullet.ownerId || "").startsWith("bot-") && !activeBotIds.has(bullet.ownerId)) this.endBullet(id, "bot-removed");
+      }
+      await this.ctx.storage.put("bots", this.bots);
+      const config = { blueBots, redBots, difficulty: meta.botDifficulty };
+      this.broadcast({ t: "bots", config, bots: this.bots.map(publicBot) });
+      const players = this.ctx.getWebSockets().filter((s) => { const p = s.deserializeAttachment() || {}; return p.clientId && !p.replaced; }).length;
+      await this.updateDirectory(players, meta);
+      return;
+    }
+
     if (payload.t === "respawn") {
       // v1.9.0 clients may still send this. The server owns the transition now.
       this.respawnExpiredHumans(now, settings);
@@ -817,46 +867,6 @@ export class GameRoom {
     };
   }
 
-  humanPunch(socket, me, now, settings) {
-    const forwardX = -Math.sin(me.yaw);
-    const forwardZ = -Math.cos(me.yaw);
-    let best = null;
-
-    for (const targetSocket of this.ctx.getWebSockets()) {
-      if (targetSocket === socket) continue;
-      const target = targetSocket.deserializeAttachment() || {};
-      if (!target.clientId || target.replaced || target.hp <= 0 || now < target.wastedUntil || safeTeam(target.team) === safeTeam(me.team)) continue;
-      const candidate = this.punchCandidate(me, target, forwardX, forwardZ);
-      if (candidate && (!best || candidate.distance < best.distance)) best = { ...candidate, type: "human", socket: targetSocket, target };
-    }
-    for (const bot of this.bots) {
-      if (bot.hp <= 0 || now < bot.wastedUntil || safeTeam(bot.team) === safeTeam(me.team)) continue;
-      const candidate = this.punchCandidate(me, bot, forwardX, forwardZ);
-      if (candidate && (!best || candidate.distance < best.distance)) best = { ...candidate, type: "bot", bot };
-    }
-    if (!best) return;
-
-    const distance = Math.max(0.001, best.distance);
-    const knockback = {
-      x: (best.dx / distance) * 6.4,
-      z: (best.dz / distance) * 6.4,
-      y: 2.7,
-    };
-    if (best.type === "human") this.damageHuman(best.socket, best.target, me.clientId, settings.combat.punchDamage, "punch", knockback, now, "", settings);
-    else this.damageBot(best.bot, me.clientId, settings.combat.punchDamage, "punch", knockback, now, "", settings);
-  }
-
-  punchCandidate(me, target, forwardX, forwardZ) {
-    const dx = target.x - me.x;
-    const dz = target.z - me.z;
-    const dy = Math.abs(target.y - me.y);
-    const distance = Math.hypot(dx, dz);
-    if (distance <= 0.001 || distance > PUNCH_REACH || dy > PUNCH_VERTICAL_REACH) return null;
-    const dot = (dx / distance) * forwardX + (dz / distance) * forwardZ;
-    if (dot < 0.42) return null;
-    if (segmentHitsObstacle(me.x, me.y + 1.0, me.z, target.x, target.y + 1.0, target.z)) return null;
-    return { distance, dx, dz };
-  }
 
   spawnBullet({ ownerId, ownerTeam, damage, weapon, lifetimeMs, x, y, z, vx, vy, vz, now }) {
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
@@ -882,7 +892,7 @@ export class GameRoom {
     this.lastSimAt = now;
     if (elapsed <= 0) return;
 
-    this.stepBots(now, elapsed, settings);
+    this.stepBots(now, elapsed, settings, meta);
     this.stepBullets(now, settings);
     this.stepRegeneration(now, settings);
 
@@ -957,7 +967,7 @@ export class GameRoom {
     }
   }
 
-  stepBots(now, dt, settings) {
+  stepBots(now, dt, settings, meta) {
     const humans = this.ctx.getWebSockets()
       .map((socket) => ({ kind: "human", socket, target: socket.deserializeAttachment() || {} }))
       .filter(({ target }) => target.clientId && !target.replaced && target.hp > 0 && now >= (target.wastedUntil || 0));
@@ -994,10 +1004,12 @@ export class GameRoom {
       if (!nearest) continue;
 
       const d = Math.sqrt(nearest.d2) || 0.001;
+      const difficulty = safeBotDifficulty(meta?.botDifficulty);
+      const profile = BOT_DIFFICULTIES[difficulty];
       bot.yaw = Math.atan2(-nearest.dx, -nearest.dz);
-      if (d > 2.0) {
-        const speed = d > 16 ? settings.movement.runSpeed * 0.57 : settings.movement.walkSpeed * 0.72;
-        const step = Math.min(d - 1.7, speed * dt);
+      if (d > 8.5) {
+        const speed = d > 16 ? settings.movement.runSpeed * profile.moveRun : settings.movement.walkSpeed * profile.moveWalk;
+        const step = Math.min(d - 7.5, speed * dt);
         const ux = nearest.dx / d, uz = nearest.dz / d;
         const attempts = [[ux, uz], [-uz, ux], [uz, -ux]];
         for (const [ax, az] of attempts) {
@@ -1009,31 +1021,22 @@ export class GameRoom {
       }
 
       const target = nearest.target;
-      if (d <= 2.45 && now - bot.lastPunch >= 780 && !segmentHitsObstacle(bot.x, bot.y + 1.0, bot.z, target.x, target.y + 1.0, target.z)) {
-        bot.lastPunch = now;
-        this.broadcast({ t: "swing", id: bot.id, at: now });
-        const knockback = { x: -Math.sin(bot.yaw) * 3.0, z: -Math.cos(bot.yaw) * 3.0, y: 1.0 };
-        if (nearest.kind === "human") this.damageHuman(nearest.socket, target, bot.id, settings.combat.punchDamage, "punch", knockback, now, "", settings);
-        else this.damageBot(target, bot.id, settings.combat.punchDamage, "punch", knockback, now, "", settings);
-        continue;
-      }
-
-      const botFireDelay = Math.max(settings.weapons.assault.cooldownMs, 180);
-      if (d <= 24 && now - bot.lastShot >= Math.max(bot.nextShotDelay || 0, botFireDelay)) {
+      const botFireDelay = Math.max(settings.weapons.assault.cooldownMs * profile.fireScale, 70);
+      if (d <= profile.range && now - bot.lastShot >= Math.max(bot.nextShotDelay || 0, botFireDelay)) {
         bot.ammo = normalizeAmmo(bot.ammo);
         if (bot.ammo.assault <= 0) {
           if (!bot.reloadAt) { bot.reloadAt = now + settings.weapons.assault.reloadMs; bot.reloadWeapon = "assault"; }
           continue;
         }
         bot.lastShot = now;
-        bot.nextShotDelay = botFireDelay + 170 + Math.floor(Math.random() * 260);
+        bot.nextShotDelay = botFireDelay + profile.reactionBase + Math.floor(Math.random() * profile.reactionJitter);
         bot.ammo.assault -= 1;
         if (bot.ammo.assault === 0) { bot.reloadAt = now + settings.weapons.assault.reloadMs; bot.reloadWeapon = "assault"; }
         const tx = finiteNumber(target.x, 0) - bot.x;
         const ty = (finiteNumber(target.y, terrainHeight(target.x || 0, target.z || 0)) + 1.05) - (bot.y + 1.28);
         const tz = finiteNumber(target.z, 0) - bot.z;
         const dist = Math.hypot(tx, ty, tz) || 1;
-        const spread = 0.025 + Math.min(0.055, d * 0.0015);
+        const spread = profile.spreadBase + Math.min(0.09, d * profile.spreadDistance);
         const fx = tx / dist + (Math.random() - 0.5) * spread;
         const fy = ty / dist + (Math.random() - 0.5) * spread * 0.65;
         const fz = tz / dist + (Math.random() - 0.5) * spread;
@@ -1213,7 +1216,7 @@ export class GameRoom {
   killEvent(attackerId, victimId, weapon, now) {
     const attacker = this.findCombatant(attackerId);
     const victim = this.findCombatant(victimId);
-    return { t: "kill", at: now, weapon: weapon === "punch" ? "punch" : safeWeapon(weapon), attacker, victim };
+    return { t: "kill", at: now, weapon: safeWeapon(weapon), attacker, victim };
   }
 
   endBullet(id, reason) {
@@ -1299,6 +1302,7 @@ export class GameRoom {
           bots: (this.bots || []).length,
           blueBots: (this.bots || []).filter((bot) => safeTeam(bot.team) === "blue").length,
           redBots: (this.bots || []).filter((bot) => safeTeam(bot.team) === "red").length,
+          botDifficulty: safeBotDifficulty(meta.botDifficulty),
           blue,
           red,
           createdAt: meta.createdAt,
