@@ -274,7 +274,7 @@ export default {
         service: "punch-world-online",
         protocol: 6,
         version: 6,
-        game: "1.9.0",
+        game: "1.9.1",
         mode: "durable-object-team-sandbox-terrain-weapons-projectiles-bots-regen-ads-scoreboard-feedback",
       });
     }
@@ -644,11 +644,8 @@ export class GameRoom {
     }
 
     if (payload.t === "respawn") {
-      if (me.hp > 0 || now < me.wastedUntil) return;
-      const spawn = spawnForTeam(me.team, Math.floor(Math.random() * TEAM_SPAWNS[safeTeam(me.team)].length));
-      me = { ...me, ...spawn, hp: 100, wastedUntil: 0, lastHitAt: 0, regenAt: 0, weapon: "pistol", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "" };
-      socket.serializeAttachment(me);
-      this.broadcast({ t: "respawn", player: publicPlayer(me) });
+      // v1.9.0 clients may still send this. The server owns the transition now.
+      this.respawnExpiredHumans(now);
       return;
     }
 
@@ -706,6 +703,11 @@ export class GameRoom {
   }
 
   async stepSimulation(now, meta) {
+    // Human respawn is server-authoritative. Never depend on a dead client
+    // sending a one-shot respawn request. Any room activity advances expired
+    // human respawns, which also keeps all clients on the same life state.
+    this.respawnExpiredHumans(now);
+
     const elapsed = this.lastSimAt ? Math.min(0.12, Math.max(0, (now - this.lastSimAt) / 1000)) : 0;
     this.lastSimAt = now;
     if (elapsed <= 0) return;
@@ -726,6 +728,34 @@ export class GameRoom {
       meta.expiresAt = now + ROOM_MAX_LIFETIME_MS;
       await this.ctx.storage.put("meta", meta);
       await this.updateDirectory(this.ctx.getWebSockets().length, meta);
+    }
+  }
+
+  respawnExpiredHumans(now) {
+    for (const socket of this.ctx.getWebSockets()) {
+      const player = socket.deserializeAttachment() || {};
+      if (!player.clientId || player.replaced || player.hp > 0) continue;
+      if (!player.wastedUntil || now < player.wastedUntil) continue;
+
+      const team = safeTeam(player.team);
+      const spawn = spawnForTeam(
+        team,
+        Math.floor(Math.random() * TEAM_SPAWNS[team].length),
+      );
+      const respawned = {
+        ...player,
+        ...spawn,
+        hp: 100,
+        wastedUntil: 0,
+        lastHitAt: 0,
+        regenAt: 0,
+        weapon: "pistol",
+        ammo: freshAmmo(),
+        reloadAt: 0,
+        reloadWeapon: "",
+      };
+      socket.serializeAttachment(respawned);
+      this.broadcast({ t: "respawn", player: publicPlayer(respawned) });
     }
   }
 
