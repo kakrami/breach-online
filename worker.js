@@ -7,18 +7,23 @@ const ROOM_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
 const EMPTY_ROOM_GRACE_MS = 10 * 60 * 1000;
 const RECONNECT_GRACE_MS = 45 * 1000;
 const PUNCH_COOLDOWN_MS = 430;
-const PUNCH_DAMAGE = 25;
 const PUNCH_REACH = 2.55;
 const PUNCH_VERTICAL_REACH = 2.1;
-const BOT_RIFLE_DAMAGE = 18;
-const HEALTH_REGEN_DELAY_MS = 5000;
 const HEALTH_REGEN_TICK_MS = 500;
-const HEALTH_REGEN_PER_TICK = 4;
 const WEAPONS = {
-  pistol: { mag: 12, reloadMs: 475, cooldownMs: 190, damage: 34, speed: 42, lifetimeMs: 3200 },
-  assault: { mag: 12, reloadMs: 650, cooldownMs: 105, damage: 26, speed: 82, lifetimeMs: 3400 },
-  sniper: { mag: 12, reloadMs: 1100, cooldownMs: 950, damage: 120, speed: 180, lifetimeMs: 3600 },
+  pistol: { mag: 12, lifetimeMs: 3200 },
+  assault: { mag: 12, lifetimeMs: 3400 },
+  sniper: { mag: 12, lifetimeMs: 3600 },
 };
+const DEFAULT_WORLD_SETTINGS = Object.freeze({
+  movement: Object.freeze({ runSpeed: 8.4, walkSpeed: 4.6, jumpHeight: 1.6, gravity: 23 }),
+  combat: Object.freeze({ punchDamage: 25, regenDelayMs: 5000, regenPerSecond: 8, respawnMs: 2800 }),
+  weapons: Object.freeze({
+    pistol: Object.freeze({ damage: 34, speed: 42, reloadMs: 475, cooldownMs: 190 }),
+    assault: Object.freeze({ damage: 26, speed: 82, reloadMs: 650, cooldownMs: 105 }),
+    sniper: Object.freeze({ damage: 120, speed: 180, reloadMs: 1100, cooldownMs: 950 }),
+  }),
+});
 const TEAM_COLORS = { blue: "#46a7ff", red: "#ff5c6c" };
 const PLAYER_HEIGHT = 1.7;
 const ARENA_LIMIT = 120;
@@ -142,6 +147,38 @@ function normalizeAmmo(value) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function normalizeWorldSettings(value) {
+  const v = value && typeof value === "object" ? value : {};
+  const mv = v.movement && typeof v.movement === "object" ? v.movement : {};
+  const cv = v.combat && typeof v.combat === "object" ? v.combat : {};
+  const wv = v.weapons && typeof v.weapons === "object" ? v.weapons : {};
+  const weapon = (name) => {
+    const src = wv[name] && typeof wv[name] === "object" ? wv[name] : {};
+    const def = DEFAULT_WORLD_SETTINGS.weapons[name];
+    return {
+      damage: clamp(finiteNumber(src.damage, def.damage), 1, 400),
+      speed: clamp(finiteNumber(src.speed, def.speed), 10, 400),
+      reloadMs: clamp(Math.round(finiteNumber(src.reloadMs, def.reloadMs)), 100, 5000),
+      cooldownMs: clamp(Math.round(finiteNumber(src.cooldownMs, def.cooldownMs)), 50, 2500),
+    };
+  };
+  return {
+    movement: {
+      runSpeed: clamp(finiteNumber(mv.runSpeed, DEFAULT_WORLD_SETTINGS.movement.runSpeed), 3, 16),
+      walkSpeed: clamp(finiteNumber(mv.walkSpeed, DEFAULT_WORLD_SETTINGS.movement.walkSpeed), 1.5, 9),
+      jumpHeight: clamp(finiteNumber(mv.jumpHeight, DEFAULT_WORLD_SETTINGS.movement.jumpHeight), 0.4, 5),
+      gravity: clamp(finiteNumber(mv.gravity, DEFAULT_WORLD_SETTINGS.movement.gravity), 8, 40),
+    },
+    combat: {
+      punchDamage: clamp(finiteNumber(cv.punchDamage, DEFAULT_WORLD_SETTINGS.combat.punchDamage), 5, 100),
+      regenDelayMs: clamp(Math.round(finiteNumber(cv.regenDelayMs, DEFAULT_WORLD_SETTINGS.combat.regenDelayMs)), 0, 15000),
+      regenPerSecond: clamp(finiteNumber(cv.regenPerSecond, DEFAULT_WORLD_SETTINGS.combat.regenPerSecond), 0, 30),
+      respawnMs: clamp(Math.round(finiteNumber(cv.respawnMs, DEFAULT_WORLD_SETTINGS.combat.respawnMs)), 1000, 10000),
+    },
+    weapons: { pistol: weapon("pistol"), assault: weapon("assault"), sniper: weapon("sniper") },
+  };
 }
 
 function terrainHeight(x, z) {
@@ -300,10 +337,10 @@ export default {
       return json(request, env, {
         ok: true,
         service: "punch-world-online",
-        protocol: 10,
-        version: 10,
-        game: "1.13.0",
-        mode: "durable-object-team-sandbox-terrain-three-weapons-godmode-natural-cover-auto-reload-firemodes",
+        protocol: 11,
+        version: 11,
+        game: "1.14.0",
+        mode: "durable-object-team-sandbox-admin-rules-sniper-penetration-godmode",
       });
     }
 
@@ -328,7 +365,7 @@ export default {
         const code = makeRoomCode();
         const room = env.ROOMS.get(env.ROOMS.idFromName(code));
         const created = await room.fetch(
-          `https://room.internal/create?code=${code}&client=${encodeURIComponent(clientId)}&name=${encodeURIComponent(name)}&blueBots=${blueBots}&redBots=${redBots}`,
+          `https://room.internal/create?code=${code}&owner=${encodeURIComponent(clientId)}&name=${encodeURIComponent(name)}&blueBots=${blueBots}&redBots=${redBots}`,
           { method: "POST" },
         );
         if (created.status === 201) {
@@ -443,12 +480,14 @@ export class GameRoom {
       if (existing) return json(request, this.env, { error: "World already exists." }, 409);
 
       const code = normalizeRoomCode(url.searchParams.get("code"));
+      const ownerClientId = safeClientId(url.searchParams.get("owner"));
+      if (!ownerClientId) return json(request, this.env, { error: "Missing world owner." }, 400);
       const blueBots = clamp(Math.floor(finiteNumber(url.searchParams.get("blueBots"), 0)), 0, MAX_BOTS);
       const redBots = clamp(Math.floor(finiteNumber(url.searchParams.get("redBots"), 0)), 0, MAX_BOTS);
       const botCount = blueBots + redBots;
       if (botCount > MAX_BOTS) return json(request, this.env, { error: `Maximum ${MAX_BOTS} bots per world.` }, 400);
       const now = Date.now();
-      const meta = { code, botCount, blueBots, redBots, createdAt: now, expiresAt: now + ROOM_MAX_LIFETIME_MS };
+      const meta = { code, ownerClientId, botCount, blueBots, redBots, settings: normalizeWorldSettings(), createdAt: now, expiresAt: now + ROOM_MAX_LIFETIME_MS };
       await this.ctx.storage.put("meta", meta);
       this.bots = makeBots(blueBots, redBots);
       await this.ctx.storage.put("bots", this.bots);
@@ -539,6 +578,8 @@ export class GameRoom {
       code: meta.code,
       maxPlayers: MAX_PLAYERS,
       botCount: meta.botCount,
+      isAdmin: clientId === meta.ownerClientId,
+      settings: normalizeWorldSettings(meta.settings),
       serverTime: Date.now(),
     }));
 
@@ -567,6 +608,7 @@ export class GameRoom {
     let me = socket.deserializeAttachment() || {};
     if (!me.clientId || me.replaced) return;
     const now = Date.now();
+    const settings = normalizeWorldSettings(meta.settings);
 
     if (me.reloadAt && now >= me.reloadAt) {
       const weapon = safeWeapon(me.reloadWeapon || me.weapon);
@@ -607,14 +649,14 @@ export class GameRoom {
       me.lastPunch = now;
       socket.serializeAttachment(me);
       this.broadcast({ t: "swing", id: me.clientId, at: now });
-      this.humanPunch(socket, me, now);
+      this.humanPunch(socket, me, now, settings);
       await this.stepSimulation(now, meta);
       return;
     }
 
     if (payload.t === "fire") {
       const weapon = safeWeapon(me.weapon);
-      const spec = WEAPONS[weapon];
+      const spec = settings.weapons[weapon];
       me.ammo = normalizeAmmo(me.ammo);
       if (me.hp <= 0 || now < me.wastedUntil || me.reloadAt || now - me.lastShot < spec.cooldownMs) return;
       if (me.ammo[weapon] <= 0) {
@@ -634,7 +676,7 @@ export class GameRoom {
         ownerTeam: safeTeam(me.team),
         damage: spec.damage,
         weapon,
-        lifetimeMs: spec.lifetimeMs,
+        lifetimeMs: WEAPONS[weapon].lifetimeMs,
         x: me.x + fx * 0.62,
         y: me.y + PLAYER_HEIGHT - 0.18 + fy * 0.25,
         z: me.z + fz * 0.62,
@@ -650,9 +692,9 @@ export class GameRoom {
 
     if (payload.t === "reload") {
       const weapon = safeWeapon(me.weapon);
-      const spec = WEAPONS[weapon];
+      const spec = settings.weapons[weapon];
       me.ammo = normalizeAmmo(me.ammo);
-      if (me.hp <= 0 || me.reloadAt || me.ammo[weapon] >= spec.mag) return;
+      if (me.hp <= 0 || me.reloadAt || me.ammo[weapon] >= WEAPONS[weapon].mag) return;
       me.reloadAt = now + spec.reloadMs;
       me.reloadWeapon = weapon;
       socket.serializeAttachment(me);
@@ -681,6 +723,18 @@ export class GameRoom {
       return;
     }
 
+    if (payload.t === "adminSettings") {
+      if (me.clientId !== meta.ownerClientId) {
+        try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "Admin access required." })); } catch {}
+        return;
+      }
+      const nextSettings = normalizeWorldSettings(payload.settings);
+      meta.settings = nextSettings;
+      await this.ctx.storage.put("meta", meta);
+      this.broadcast({ t: "settings", settings: nextSettings, by: me.clientId });
+      return;
+    }
+
     if (payload.t === "respawn") {
       // v1.9.0 clients may still send this. The server owns the transition now.
       this.respawnExpiredHumans(now);
@@ -693,7 +747,7 @@ export class GameRoom {
     }
   }
 
-  humanPunch(socket, me, now) {
+  humanPunch(socket, me, now, settings) {
     const forwardX = -Math.sin(me.yaw);
     const forwardZ = -Math.cos(me.yaw);
     let best = null;
@@ -718,8 +772,8 @@ export class GameRoom {
       z: (best.dz / distance) * 6.4,
       y: 2.7,
     };
-    if (best.type === "human") this.damageHuman(best.socket, best.target, me.clientId, PUNCH_DAMAGE, "punch", knockback, now);
-    else this.damageBot(best.bot, me.clientId, PUNCH_DAMAGE, "punch", knockback, now);
+    if (best.type === "human") this.damageHuman(best.socket, best.target, me.clientId, settings.combat.punchDamage, "punch", knockback, now, "", settings);
+    else this.damageBot(best.bot, me.clientId, settings.combat.punchDamage, "punch", knockback, now, "", settings);
   }
 
   punchCandidate(me, target, forwardX, forwardZ) {
@@ -735,24 +789,31 @@ export class GameRoom {
 
   spawnBullet({ ownerId, ownerTeam, damage, weapon, lifetimeMs, x, y, z, vx, vy, vz, now }) {
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-    const bullet = { id, ownerId, ownerTeam: safeTeam(ownerTeam), damage, weapon, lifetimeMs: lifetimeMs || WEAPONS[safeWeapon(weapon)].lifetimeMs, x, y, z, vx, vy, vz, born: now, lastAt: now };
+    const safe = safeWeapon(weapon);
+    const bullet = {
+      id, ownerId, ownerTeam: safeTeam(ownerTeam), damage, weapon: safe,
+      penetrationPower: safe === "sniper" ? Math.max(1, damage) : 0,
+      hitTargets: new Set(),
+      lifetimeMs: lifetimeMs || WEAPONS[safe].lifetimeMs, x, y, z, vx, vy, vz, born: now, lastAt: now,
+    };
     this.bullets.set(id, bullet);
-    this.broadcast({ t: "shot", ...bullet, at: now });
+    this.broadcast({ t: "shot", id, ownerId, ownerTeam: bullet.ownerTeam, damage, weapon: safe, lifetimeMs: bullet.lifetimeMs, x, y, z, vx, vy, vz, at: now });
   }
 
   async stepSimulation(now, meta) {
     // Human respawn is server-authoritative. Never depend on a dead client
     // sending a one-shot respawn request. Any room activity advances expired
     // human respawns, which also keeps all clients on the same life state.
+    const settings = normalizeWorldSettings(meta.settings);
     this.respawnExpiredHumans(now);
 
     const elapsed = this.lastSimAt ? Math.min(0.12, Math.max(0, (now - this.lastSimAt) / 1000)) : 0;
     this.lastSimAt = now;
     if (elapsed <= 0) return;
 
-    this.stepBots(now, elapsed);
-    this.stepBullets(now);
-    this.stepRegeneration(now);
+    this.stepBots(now, elapsed, settings);
+    this.stepBullets(now, settings);
+    this.stepRegeneration(now, settings);
 
     if (now - this.lastBotBroadcastAt >= 100) {
       this.lastBotBroadcastAt = now;
@@ -797,14 +858,14 @@ export class GameRoom {
     }
   }
 
-  stepRegeneration(now) {
+  stepRegeneration(now, settings) {
     for (const socket of this.ctx.getWebSockets()) {
       const player = socket.deserializeAttachment() || {};
       if (!player.clientId || player.replaced || player.hp <= 0 || player.hp >= 100 || now < (player.wastedUntil || 0)) continue;
-      if (!player.regenAt) player.regenAt = (player.lastHitAt || now) + HEALTH_REGEN_DELAY_MS;
+      if (!player.regenAt) player.regenAt = (player.lastHitAt || now) + settings.combat.regenDelayMs;
       if (now < player.regenAt) continue;
       const ticks = 1 + Math.floor((now - player.regenAt) / HEALTH_REGEN_TICK_MS);
-      player.hp = Math.min(100, player.hp + ticks * HEALTH_REGEN_PER_TICK);
+      player.hp = Math.min(100, player.hp + ticks * settings.combat.regenPerSecond * (HEALTH_REGEN_TICK_MS / 1000));
       player.regenAt += ticks * HEALTH_REGEN_TICK_MS;
       socket.serializeAttachment(player);
       this.broadcast({ t: "health", id: player.clientId, hp: player.hp });
@@ -812,16 +873,16 @@ export class GameRoom {
 
     for (const bot of this.bots) {
       if (bot.hp <= 0 || bot.hp >= 100 || now < (bot.wastedUntil || 0)) continue;
-      if (!bot.regenAt) bot.regenAt = (bot.lastHitAt || now) + HEALTH_REGEN_DELAY_MS;
+      if (!bot.regenAt) bot.regenAt = (bot.lastHitAt || now) + settings.combat.regenDelayMs;
       if (now < bot.regenAt) continue;
       const ticks = 1 + Math.floor((now - bot.regenAt) / HEALTH_REGEN_TICK_MS);
-      bot.hp = Math.min(100, bot.hp + ticks * HEALTH_REGEN_PER_TICK);
+      bot.hp = Math.min(100, bot.hp + ticks * settings.combat.regenPerSecond * (HEALTH_REGEN_TICK_MS / 1000));
       bot.regenAt += ticks * HEALTH_REGEN_TICK_MS;
       this.broadcast({ t: "health", id: bot.id, hp: bot.hp });
     }
   }
 
-  stepBots(now, dt) {
+  stepBots(now, dt, settings) {
     const humans = this.ctx.getWebSockets()
       .map((socket) => ({ socket, player: socket.deserializeAttachment() || {} }))
       .filter(({ player }) => player.clientId && !player.replaced && player.hp > 0 && now >= (player.wastedUntil || 0));
@@ -858,7 +919,7 @@ export class GameRoom {
       bot.yaw = Math.atan2(-nearest.dx, -nearest.dz);
 
       if (d > 3.0) {
-        const speed = d > 16 ? 4.8 : 3.3;
+        const speed = d > 16 ? settings.movement.runSpeed * 0.57 : settings.movement.walkSpeed * 0.72;
         const step = Math.min(speed * dt, Math.max(0, d - 2.1));
         const nx = bot.x + nearest.dx / d * step;
         const nz = bot.z + nearest.dz / d * step;
@@ -871,20 +932,20 @@ export class GameRoom {
         bot.lastPunch = now;
         this.broadcast({ t: "swing", id: bot.id, at: now });
         const knockback = { x: nearest.dx / d * 4.8, z: nearest.dz / d * 4.8, y: 2.1 };
-        this.damageHuman(nearest.socket, nearest.player, bot.id, 18, "punch", knockback, now);
+        this.damageHuman(nearest.socket, nearest.player, bot.id, settings.combat.punchDamage * 0.72, "punch", knockback, now, "", settings);
         continue;
       }
 
       if (d <= 24 && now - bot.lastShot >= bot.nextShotDelay) {
         bot.ammo = normalizeAmmo(bot.ammo);
         if (bot.ammo.assault <= 0) {
-          if (!bot.reloadAt) { bot.reloadAt = now + WEAPONS.assault.reloadMs; bot.reloadWeapon = "assault"; }
+          if (!bot.reloadAt) { bot.reloadAt = now + settings.weapons.assault.reloadMs; bot.reloadWeapon = "assault"; }
           continue;
         }
         bot.lastShot = now;
         bot.nextShotDelay = 480 + Math.floor(Math.random() * 420);
         bot.ammo.assault -= 1;
-        if (bot.ammo.assault === 0) { bot.reloadAt = now + WEAPONS.assault.reloadMs; bot.reloadWeapon = 'assault'; }
+        if (bot.ammo.assault === 0) { bot.reloadAt = now + settings.weapons.assault.reloadMs; bot.reloadWeapon = 'assault'; }
         const tx = nearest.player.x - bot.x;
         const ty = (nearest.player.y + 1.05) - (bot.y + 1.28);
         const tz = nearest.player.z - bot.z;
@@ -897,22 +958,22 @@ export class GameRoom {
         this.spawnBullet({
           ownerId: bot.id,
           ownerTeam: safeTeam(bot.team),
-          damage: BOT_RIFLE_DAMAGE,
+          damage: settings.weapons.assault.damage * 0.70,
           weapon: "assault",
           lifetimeMs: WEAPONS.assault.lifetimeMs,
           x: bot.x + fx * 0.55,
           y: bot.y + 1.25,
           z: bot.z + fz * 0.55,
-          vx: fx * WEAPONS.assault.speed,
-          vy: fy * WEAPONS.assault.speed,
-          vz: fz * WEAPONS.assault.speed,
+          vx: fx * settings.weapons.assault.speed,
+          vy: fy * settings.weapons.assault.speed,
+          vz: fz * settings.weapons.assault.speed,
           now,
         });
       }
     }
   }
 
-  stepBullets(now) {
+  stepBullets(now, settings) {
     const humans = this.ctx.getWebSockets().map((socket) => ({ socket, player: socket.deserializeAttachment() || {} }));
     for (const [id, bullet] of this.bullets) {
       if (now - bullet.born > bullet.lifetimeMs) {
@@ -939,39 +1000,61 @@ export class GameRoom {
 
         for (const h of humans) {
           const target = h.player;
-          if (!target.clientId || target.replaced || target.clientId === bullet.ownerId || target.hp <= 0 || now < (target.wastedUntil || 0) || safeTeam(target.team) === bullet.ownerTeam) continue;
+          if (!target.clientId || target.replaced || target.clientId === bullet.ownerId || target.hp <= 0 || now < (target.wastedUntil || 0) || safeTeam(target.team) === bullet.ownerTeam || bullet.hitTargets.has(target.clientId)) continue;
           const dx = target.x - bullet.x;
           const dy = target.y + 1.0 - bullet.y;
           const dz = target.z - bullet.z;
           if (dx * dx + dy * dy + dz * dz <= 0.36) {
+            bullet.hitTargets.add(target.clientId);
             const horizontal = Math.hypot(bullet.vx, bullet.vz) || 1;
-            this.damageHuman(h.socket, target, bullet.ownerId, bullet.damage, bullet.weapon, {
+            const targetHpBefore = Math.max(1, finiteNumber(target.hp, 100));
+            const hitDamage = bullet.weapon === "sniper" ? Math.max(1, bullet.penetrationPower) : bullet.damage;
+            const applied = this.damageHuman(h.socket, target, bullet.ownerId, hitDamage, bullet.weapon, {
               x: bullet.vx / horizontal * 2.4,
               z: bullet.vz / horizontal * 2.4,
               y: 1.1,
-            }, now, bullet.id);
-            this.endBullet(id, "hit");
-            ended = true;
-            break;
+            }, now, bullet.id, settings);
+            if (!applied || bullet.weapon !== "sniper") {
+              this.endBullet(id, applied ? "hit" : "blocked");
+              ended = true;
+              break;
+            }
+            bullet.penetrationPower = Math.max(0, bullet.penetrationPower - targetHpBefore);
+            if (bullet.penetrationPower <= 0) {
+              this.endBullet(id, "spent");
+              ended = true;
+              break;
+            }
           }
         }
         if (ended) break;
 
         for (const bot of this.bots) {
-          if (bot.id === bullet.ownerId || bot.hp <= 0 || now < bot.wastedUntil || safeTeam(bot.team) === bullet.ownerTeam) continue;
+          if (bot.id === bullet.ownerId || bot.hp <= 0 || now < bot.wastedUntil || safeTeam(bot.team) === bullet.ownerTeam || bullet.hitTargets.has(bot.id)) continue;
           const dx = bot.x - bullet.x;
           const dy = bot.y + 1.0 - bullet.y;
           const dz = bot.z - bullet.z;
           if (dx * dx + dy * dy + dz * dz <= 0.36) {
+            bullet.hitTargets.add(bot.id);
             const horizontal = Math.hypot(bullet.vx, bullet.vz) || 1;
-            this.damageBot(bot, bullet.ownerId, bullet.damage, bullet.weapon, {
+            const targetHpBefore = Math.max(1, finiteNumber(bot.hp, 100));
+            const hitDamage = bullet.weapon === "sniper" ? Math.max(1, bullet.penetrationPower) : bullet.damage;
+            this.damageBot(bot, bullet.ownerId, hitDamage, bullet.weapon, {
               x: bullet.vx / horizontal * 2.4,
               z: bullet.vz / horizontal * 2.4,
               y: 1.1,
-            }, now, bullet.id);
-            this.endBullet(id, "hit");
-            ended = true;
-            break;
+            }, now, bullet.id, settings);
+            if (bullet.weapon !== "sniper") {
+              this.endBullet(id, "hit");
+              ended = true;
+              break;
+            }
+            bullet.penetrationPower = Math.max(0, bullet.penetrationPower - targetHpBefore);
+            if (bullet.penetrationPower <= 0) {
+              this.endBullet(id, "spent");
+              ended = true;
+              break;
+            }
           }
         }
       }
@@ -991,17 +1074,17 @@ export class GameRoom {
     if (bot) bot.kills = Math.max(0, Math.floor(finiteNumber(bot.kills, 0))) + 1;
   }
 
-  damageHuman(socket, target, attackerId, damage, weapon, knockback, now, bulletId = "") {
+  damageHuman(socket, target, attackerId, damage, weapon, knockback, now, bulletId = "", settings = normalizeWorldSettings()) {
     if (target.godMode) {
       this.broadcast({ t: "blocked", attacker: attackerId, target: target.clientId, weapon, bulletId, godMode: true });
       return false;
     }
     target.hp = Math.max(0, target.hp - damage);
     target.lastHitAt = now;
-    target.regenAt = now + HEALTH_REGEN_DELAY_MS;
+    target.regenAt = now + settings.combat.regenDelayMs;
     const wasted = target.hp <= 0;
     if (wasted) {
-      target.wastedUntil = now + 2800;
+      target.wastedUntil = now + settings.combat.respawnMs;
       target.deaths = Math.max(0, Math.floor(finiteNumber(target.deaths, 0))) + 1;
       this.awardKill(attackerId, target.clientId);
     }
@@ -1015,13 +1098,13 @@ export class GameRoom {
     return true;
   }
 
-  damageBot(bot, attackerId, damage, weapon, knockback, now, bulletId = "") {
+  damageBot(bot, attackerId, damage, weapon, knockback, now, bulletId = "", settings = normalizeWorldSettings()) {
     bot.hp = Math.max(0, bot.hp - damage);
     bot.lastHitAt = now;
-    bot.regenAt = now + HEALTH_REGEN_DELAY_MS;
+    bot.regenAt = now + settings.combat.regenDelayMs;
     const wasted = bot.hp <= 0;
     if (wasted) {
-      bot.wastedUntil = now + 2800;
+      bot.wastedUntil = now + settings.combat.respawnMs;
       bot.deaths = Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))) + 1;
       this.awardKill(attackerId, bot.id);
     }
