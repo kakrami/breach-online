@@ -10,12 +10,13 @@ const PUNCH_COOLDOWN_MS = 430;
 const PUNCH_DAMAGE = 25;
 const PUNCH_REACH = 2.55;
 const PUNCH_VERTICAL_REACH = 2.1;
-const BOT_PISTOL_DAMAGE = 18;
+const BOT_RIFLE_DAMAGE = 18;
 const HEALTH_REGEN_DELAY_MS = 5000;
 const HEALTH_REGEN_TICK_MS = 500;
 const HEALTH_REGEN_PER_TICK = 4;
 const WEAPONS = {
   pistol: { mag: 12, reloadMs: 475, cooldownMs: 190, damage: 34, speed: 42, lifetimeMs: 3200 },
+  assault: { mag: 12, reloadMs: 650, cooldownMs: 105, damage: 26, speed: 82, lifetimeMs: 3400 },
   sniper: { mag: 12, reloadMs: 1100, cooldownMs: 950, damage: 120, speed: 180, lifetimeMs: 3600 },
 };
 const TEAM_COLORS = { blue: "#46a7ff", red: "#ff5c6c" };
@@ -123,17 +124,18 @@ function safeTeam(value) {
 }
 
 function safeWeapon(value) {
-  return value === "sniper" ? "sniper" : "pistol";
+  return value === "sniper" || value === "assault" ? value : "pistol";
 }
 
 function freshAmmo() {
-  return { pistol: WEAPONS.pistol.mag, sniper: WEAPONS.sniper.mag };
+  return { pistol: WEAPONS.pistol.mag, assault: WEAPONS.assault.mag, sniper: WEAPONS.sniper.mag };
 }
 
 function normalizeAmmo(value) {
   const v = value && typeof value === "object" ? value : {};
   return {
     pistol: clamp(Math.floor(finiteNumber(v.pistol, WEAPONS.pistol.mag)), 0, WEAPONS.pistol.mag),
+    assault: clamp(Math.floor(finiteNumber(v.assault, WEAPONS.assault.mag)), 0, WEAPONS.assault.mag),
     sniper: clamp(Math.floor(finiteNumber(v.sniper, WEAPONS.sniper.mag)), 0, WEAPONS.sniper.mag),
   };
 }
@@ -226,7 +228,7 @@ function publicBot(bot) {
     z: bot.z,
     yaw: bot.yaw,
     pitch: 0,
-    weapon: "pistol",
+    weapon: "assault",
     kills: Math.max(0, Math.floor(finiteNumber(bot.kills, 0))),
     deaths: Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))),
   };
@@ -260,7 +262,7 @@ function makeBot(index, team, teamIndex) {
     ammo: freshAmmo(),
     reloadAt: 0,
     reloadWeapon: "",
-    weapon: "pistol",
+    weapon: "assault",
     lastHitAt: 0,
     regenAt: 0,
     kills: 0,
@@ -297,10 +299,10 @@ export default {
       return json(request, env, {
         ok: true,
         service: "punch-world-online",
-        protocol: 8,
-        version: 8,
-        game: "1.11.0",
-        mode: "durable-object-team-sandbox-terrain-weapons-natural-cover-auto-reload-firemodes",
+        protocol: 9,
+        version: 9,
+        game: "1.12.0",
+        mode: "durable-object-team-sandbox-terrain-three-weapons-natural-cover-auto-reload-firemodes",
       });
     }
 
@@ -819,7 +821,7 @@ export class GameRoom {
       if (bot.hp <= 0) {
         if (now >= bot.wastedUntil) {
           const spawn = spawnForTeam(bot.team, i + Math.floor(Math.random() * TEAM_SPAWNS[safeTeam(bot.team)].length));
-          Object.assign(bot, spawn, { hp: 100, wastedUntil: 0, regenAt: 0, weapon: "pistol", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "", lastHitAt: 0 });
+          Object.assign(bot, spawn, { hp: 100, wastedUntil: 0, regenAt: 0, weapon: "assault", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "", lastHitAt: 0 });
           this.broadcast({ t: "respawn", player: publicBot(bot) });
         }
         continue;
@@ -828,7 +830,7 @@ export class GameRoom {
         bot.reloadAt = 0;
         bot.reloadWeapon = "";
         bot.ammo = normalizeAmmo(bot.ammo);
-        bot.ammo.pistol = WEAPONS.pistol.mag;
+        bot.ammo.assault = WEAPONS.assault.mag;
       }
       if (!humans.length) continue;
 
@@ -865,14 +867,14 @@ export class GameRoom {
 
       if (d <= 24 && now - bot.lastShot >= bot.nextShotDelay) {
         bot.ammo = normalizeAmmo(bot.ammo);
-        if (bot.ammo.pistol <= 0) {
-          if (!bot.reloadAt) { bot.reloadAt = now + WEAPONS.pistol.reloadMs; bot.reloadWeapon = "pistol"; }
+        if (bot.ammo.assault <= 0) {
+          if (!bot.reloadAt) { bot.reloadAt = now + WEAPONS.assault.reloadMs; bot.reloadWeapon = "assault"; }
           continue;
         }
         bot.lastShot = now;
-        bot.nextShotDelay = 760 + Math.floor(Math.random() * 520);
-        bot.ammo.pistol -= 1;
-        if (bot.ammo.pistol === 0) { bot.reloadAt = now + WEAPONS.pistol.reloadMs; bot.reloadWeapon = 'pistol'; }
+        bot.nextShotDelay = 480 + Math.floor(Math.random() * 420);
+        bot.ammo.assault -= 1;
+        if (bot.ammo.assault === 0) { bot.reloadAt = now + WEAPONS.assault.reloadMs; bot.reloadWeapon = 'assault'; }
         const tx = nearest.player.x - bot.x;
         const ty = (nearest.player.y + 1.05) - (bot.y + 1.28);
         const tz = nearest.player.z - bot.z;
@@ -885,15 +887,15 @@ export class GameRoom {
         this.spawnBullet({
           ownerId: bot.id,
           ownerTeam: safeTeam(bot.team),
-          damage: BOT_PISTOL_DAMAGE,
-          weapon: "pistol",
-          lifetimeMs: WEAPONS.pistol.lifetimeMs,
+          damage: BOT_RIFLE_DAMAGE,
+          weapon: "assault",
+          lifetimeMs: WEAPONS.assault.lifetimeMs,
           x: bot.x + fx * 0.55,
           y: bot.y + 1.25,
           z: bot.z + fz * 0.55,
-          vx: fx * WEAPONS.pistol.speed,
-          vy: fy * WEAPONS.pistol.speed,
-          vz: fz * WEAPONS.pistol.speed,
+          vx: fx * WEAPONS.assault.speed,
+          vy: fy * WEAPONS.assault.speed,
+          vz: fz * WEAPONS.assault.speed,
           now,
         });
       }
@@ -1036,7 +1038,7 @@ export class GameRoom {
   killEvent(attackerId, victimId, weapon, now) {
     const attacker = this.findCombatant(attackerId);
     const victim = this.findCombatant(victimId);
-    return { t: "kill", at: now, weapon: safeWeapon(weapon) === "sniper" ? "sniper" : weapon === "punch" ? "punch" : "pistol", attacker, victim };
+    return { t: "kill", at: now, weapon: weapon === "punch" ? "punch" : safeWeapon(weapon), attacker, victim };
   }
 
   endBullet(id, reason) {
