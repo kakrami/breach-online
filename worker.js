@@ -1,5 +1,5 @@
 const PROTOCOL_VERSION = 13;
-const GAME_VERSION = "1.15.5";
+const GAME_VERSION = "1.15.6";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -87,64 +87,6 @@ function json(request, env, data, status = 200) {
     headers: {
       ...corsHeaders(request, env),
       "content-type": "application/json; charset=utf-8",
-    },
-  });
-}
-
-const ENGINE_CORE_UPSTREAMS = [
-  "https://raw.githubusercontent.com/mrdoob/three.js/r185/build/three.core.min.js",
-  "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.core.min.js",
-  "https://unpkg.com/three@0.185.1/build/three.core.min.js",
-];
-
-async function fetchWithTimeout(url, ms = 3500) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
-  try {
-    return await fetch(url, { signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function engineCoreResponse(request, env, ctx) {
-  const cache = caches.default;
-  const cacheKey = new Request(new URL("/engine/three.core.min.js", request.url).toString(), { method: "GET" });
-  const cached = await cache.match(cacheKey);
-  if (cached) return cached;
-
-  let lastStatus = 502;
-  for (const source of ENGINE_CORE_UPSTREAMS) {
-    try {
-      const upstream = await fetchWithTimeout(source);
-      lastStatus = upstream.status;
-      if (!upstream.ok) continue;
-      const body = await upstream.arrayBuffer();
-      if (body.byteLength < 100000) continue;
-      const response = new Response(body, {
-        status: 200,
-        headers: {
-          "content-type": "text/javascript; charset=utf-8",
-          "access-control-allow-origin": safeOrigin(request, env),
-          "cache-control": "public, max-age=31536000, immutable",
-          "x-punch-world-engine": "three-r185",
-          vary: "Origin",
-        },
-      });
-      ctx?.waitUntil(cache.put(cacheKey, response.clone()));
-      return response;
-    } catch (error) {
-      console.warn("3D engine upstream failed", source, error?.message || error);
-    }
-  }
-
-  return new Response("3D engine dependency unavailable", {
-    status: lastStatus >= 400 ? lastStatus : 502,
-    headers: {
-      "content-type": "text/plain; charset=utf-8",
-      "access-control-allow-origin": safeOrigin(request, env),
-      "cache-control": "no-store",
-      vary: "Origin",
     },
   });
 }
@@ -434,11 +376,6 @@ export default {
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(request, env) });
-    }
-
-
-    if (url.pathname === "/engine/three.core.min.js" && request.method === "GET") {
-      return engineCoreResponse(request, env, ctx);
     }
 
     if (url.pathname === "/health") {
