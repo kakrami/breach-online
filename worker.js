@@ -16,7 +16,7 @@ const HEALTH_REGEN_TICK_MS = 500;
 const HEALTH_REGEN_PER_TICK = 4;
 const WEAPONS = {
   pistol: { mag: 7, reloadMs: 950, cooldownMs: 190, damage: 34, speed: 42, lifetimeMs: 3200 },
-  sniper: { mag: 5, reloadMs: 2200, cooldownMs: 950, damage: 90, speed: 88, lifetimeMs: 4800 },
+  sniper: { mag: 5, reloadMs: 2200, cooldownMs: 950, damage: 120, speed: 88, lifetimeMs: 4800 },
 };
 const TEAM_COLORS = { blue: "#46a7ff", red: "#ff5c6c" };
 const PLAYER_HEIGHT = 1.7;
@@ -196,6 +196,8 @@ function publicPlayer(attachment) {
     ammo: normalizeAmmo(attachment.ammo),
     reloadAt: attachment.reloadAt || 0,
     reloadWeapon: attachment.reloadWeapon || "",
+    kills: Math.max(0, Math.floor(finiteNumber(attachment.kills, 0))),
+    deaths: Math.max(0, Math.floor(finiteNumber(attachment.deaths, 0))),
   };
 }
 
@@ -214,6 +216,8 @@ function publicBot(bot) {
     yaw: bot.yaw,
     pitch: 0,
     weapon: "pistol",
+    kills: Math.max(0, Math.floor(finiteNumber(bot.kills, 0))),
+    deaths: Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))),
   };
 }
 
@@ -247,6 +251,8 @@ function makeBot(index) {
     weapon: "pistol",
     lastHitAt: 0,
     regenAt: 0,
+    kills: 0,
+    deaths: 0,
   };
 }
 
@@ -266,10 +272,10 @@ export default {
       return json(request, env, {
         ok: true,
         service: "punch-world-online",
-        protocol: 5,
-        version: 5,
-        game: "1.8.0",
-        mode: "durable-object-team-sandbox-terrain-weapons-projectiles-bots-regen-ads-ui",
+        protocol: 6,
+        version: 6,
+        game: "1.9.0",
+        mode: "durable-object-team-sandbox-terrain-weapons-projectiles-bots-regen-ads-scoreboard-feedback",
       });
     }
 
@@ -484,6 +490,8 @@ export class GameRoom {
       ammo: normalizeAmmo(spawn.ammo),
       reloadAt: finiteNumber(spawn.reloadAt, 0),
       reloadWeapon: safeWeapon(spawn.reloadWeapon || spawn.weapon),
+      kills: Math.max(0, Math.floor(finiteNumber(spawn.kills, 0))),
+      deaths: Math.max(0, Math.floor(finiteNumber(spawn.deaths, 0))),
     };
 
     server.serializeAttachment(attachment);
@@ -899,12 +907,29 @@ export class GameRoom {
     }
   }
 
+  awardKill(attackerId, victimId) {
+    if (!attackerId || attackerId === victimId) return;
+    for (const socket of this.ctx.getWebSockets()) {
+      const p = socket.deserializeAttachment() || {};
+      if (p.clientId !== attackerId || p.replaced) continue;
+      p.kills = Math.max(0, Math.floor(finiteNumber(p.kills, 0))) + 1;
+      socket.serializeAttachment(p);
+      return;
+    }
+    const bot = this.bots.find((b) => b.id === attackerId);
+    if (bot) bot.kills = Math.max(0, Math.floor(finiteNumber(bot.kills, 0))) + 1;
+  }
+
   damageHuman(socket, target, attackerId, damage, weapon, knockback, now, bulletId = "") {
     target.hp = Math.max(0, target.hp - damage);
     target.lastHitAt = now;
     target.regenAt = now + HEALTH_REGEN_DELAY_MS;
     const wasted = target.hp <= 0;
-    if (wasted) target.wastedUntil = now + 2800;
+    if (wasted) {
+      target.wastedUntil = now + 2800;
+      target.deaths = Math.max(0, Math.floor(finiteNumber(target.deaths, 0))) + 1;
+      this.awardKill(attackerId, target.clientId);
+    }
     socket.serializeAttachment(target);
     this.broadcast({
       t: "hit", attacker: attackerId, target: target.clientId, hp: target.hp, damage, weapon, bulletId,
@@ -919,7 +944,11 @@ export class GameRoom {
     bot.lastHitAt = now;
     bot.regenAt = now + HEALTH_REGEN_DELAY_MS;
     const wasted = bot.hp <= 0;
-    if (wasted) bot.wastedUntil = now + 2800;
+    if (wasted) {
+      bot.wastedUntil = now + 2800;
+      bot.deaths = Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))) + 1;
+      this.awardKill(attackerId, bot.id);
+    }
     this.broadcast({
       t: "hit", attacker: attackerId, target: bot.id, hp: bot.hp, damage, weapon, bulletId,
       wasted, respawnAt: bot.wastedUntil || 0, knockback,
@@ -930,11 +959,19 @@ export class GameRoom {
   findCombatant(id) {
     for (const socket of this.ctx.getWebSockets()) {
       const p = socket.deserializeAttachment() || {};
-      if (p.clientId === id) return { id, name: p.name || "Player", team: safeTeam(p.team), bot: false };
+      if (p.clientId === id) return {
+        id, name: p.name || "Player", team: safeTeam(p.team), bot: false,
+        kills: Math.max(0, Math.floor(finiteNumber(p.kills, 0))),
+        deaths: Math.max(0, Math.floor(finiteNumber(p.deaths, 0))),
+      };
     }
     const bot = this.bots.find((b) => b.id === id);
-    if (bot) return { id, name: bot.name || "Bot", team: safeTeam(bot.team), bot: true };
-    return { id, name: "Player", team: "blue", bot: false };
+    if (bot) return {
+      id, name: bot.name || "Bot", team: safeTeam(bot.team), bot: true,
+      kills: Math.max(0, Math.floor(finiteNumber(bot.kills, 0))),
+      deaths: Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))),
+    };
+    return { id, name: "Player", team: "blue", bot: false, kills: 0, deaths: 0 };
   }
 
   killEvent(attackerId, victimId, weapon, now) {
