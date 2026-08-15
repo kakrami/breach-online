@@ -10,20 +10,19 @@ const PUNCH_COOLDOWN_MS = 430;
 const PUNCH_DAMAGE = 25;
 const PUNCH_REACH = 2.55;
 const PUNCH_VERTICAL_REACH = 2.1;
-const FIRE_COOLDOWN_MS = 190;
-const PISTOL_DAMAGE = 34;
 const BOT_PISTOL_DAMAGE = 18;
-const BULLET_SPEED = 42;
-const BULLET_LIFETIME_MS = 3200;
-const MAG_SIZE = 7;
-const RELOAD_MS = 950;
+const WEAPONS = {
+  pistol: { mag: 7, reloadMs: 950, cooldownMs: 190, damage: 34, speed: 42, lifetimeMs: 3200 },
+  sniper: { mag: 5, reloadMs: 2200, cooldownMs: 950, damage: 90, speed: 88, lifetimeMs: 4800 },
+};
+const TEAM_COLORS = { blue: "#46a7ff", red: "#ff5c6c" };
 const PLAYER_HEIGHT = 1.7;
 const ARENA_LIMIT = 88;
 const PLAYER_COLORS = [
   "#4cc9f0", "#f72585", "#80ed99", "#ffd166",
   "#b388ff", "#ff8c42", "#90e0ef", "#f28482",
 ];
-const BOT_COLORS = ["#ffb45e", "#d3a8ff", "#ff7f7f", "#9ee493", "#7fd7ff", "#f4d35e"];
+const BOT_COLORS = ["#78baff", "#ff8290"];
 
 const WORLD_OBSTACLES = [
   { type: "box", x: 0, z: 0, w: 8, d: 8, h: 3.2 },
@@ -109,6 +108,26 @@ function finiteNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function safeTeam(value) {
+  return String(value || "blue").toLowerCase() === "red" ? "red" : "blue";
+}
+
+function safeWeapon(value) {
+  return value === "sniper" ? "sniper" : "pistol";
+}
+
+function freshAmmo() {
+  return { pistol: WEAPONS.pistol.mag, sniper: WEAPONS.sniper.mag };
+}
+
+function normalizeAmmo(value) {
+  const v = value && typeof value === "object" ? value : {};
+  return {
+    pistol: clamp(Math.floor(finiteNumber(v.pistol, WEAPONS.pistol.mag)), 0, WEAPONS.pistol.mag),
+    sniper: clamp(Math.floor(finiteNumber(v.sniper, WEAPONS.sniper.mag)), 0, WEAPONS.sniper.mag),
+  };
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -152,7 +171,8 @@ function publicPlayer(attachment) {
   return {
     id: attachment.clientId,
     name: attachment.name,
-    color: attachment.color,
+    color: TEAM_COLORS[safeTeam(attachment.team)],
+    team: safeTeam(attachment.team),
     bot: false,
     hp: attachment.hp,
     koUntil: attachment.koUntil || 0,
@@ -161,8 +181,10 @@ function publicPlayer(attachment) {
     z: attachment.z,
     yaw: attachment.yaw,
     pitch: attachment.pitch,
-    ammo: attachment.ammo ?? MAG_SIZE,
+    weapon: safeWeapon(attachment.weapon),
+    ammo: normalizeAmmo(attachment.ammo),
     reloadAt: attachment.reloadAt || 0,
+    reloadWeapon: attachment.reloadWeapon || "",
   };
 }
 
@@ -170,7 +192,8 @@ function publicBot(bot) {
   return {
     id: bot.id,
     name: bot.name,
-    color: bot.color,
+    color: TEAM_COLORS[safeTeam(bot.team)],
+    team: safeTeam(bot.team),
     bot: true,
     hp: bot.hp,
     koUntil: bot.koUntil || 0,
@@ -179,6 +202,7 @@ function publicBot(bot) {
     z: bot.z,
     yaw: bot.yaw,
     pitch: 0,
+    weapon: "pistol",
   };
 }
 
@@ -194,10 +218,12 @@ function spawnFor(index) {
 
 function makeBot(index) {
   const spawn = spawnFor(index + 2);
+  const team = index % 2 === 0 ? "red" : "blue";
   return {
     id: `bot-${index + 1}`,
     name: `Bot ${index + 1}`,
-    color: BOT_COLORS[index % BOT_COLORS.length],
+    team,
+    color: TEAM_COLORS[team],
     ...spawn,
     yaw: 0,
     hp: 100,
@@ -205,8 +231,10 @@ function makeBot(index) {
     lastPunch: 0,
     lastShot: 0,
     nextShotDelay: 800 + Math.floor(Math.random() * 450),
-    ammo: MAG_SIZE,
+    ammo: freshAmmo(),
     reloadAt: 0,
+    reloadWeapon: "",
+    weapon: "pistol",
     lastHitAt: 0,
   };
 }
@@ -227,10 +255,10 @@ export default {
       return json(request, env, {
         ok: true,
         service: "punch-world-online",
-        protocol: 2,
-        version: 2,
-        game: "1.5.0",
-        mode: "durable-object-realtime-sandbox-projectiles-bots",
+        protocol: 3,
+        version: 3,
+        game: "1.6.0",
+        mode: "durable-object-team-sandbox-weapons-projectiles-bots",
       });
     }
 
@@ -384,6 +412,7 @@ export class GameRoom {
 
     const clientId = safeClientId(url.searchParams.get("client"));
     const name = safeName(url.searchParams.get("name"));
+    const requestedTeam = safeTeam(url.searchParams.get("team"));
     if (!clientId) return json(request, this.env, { error: "Missing client ID." }, 400);
 
     const sockets = this.ctx.getWebSockets();
@@ -409,11 +438,20 @@ export class GameRoom {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
+    if (!preserved && liveMembers.length === 0 && this.bots.length) {
+      const opposite = requestedTeam === "red" ? "blue" : "red";
+      for (let i = 0; i < this.bots.length; i += 1) {
+        this.bots[i].team = i % 2 === 0 ? opposite : requestedTeam;
+        this.bots[i].color = TEAM_COLORS[this.bots[i].team];
+      }
+    }
+
     const attachment = {
       clientId,
       name,
+      team: preserved?.team || requestedTeam,
       colorIndex,
-      color: PLAYER_COLORS[colorIndex],
+      color: TEAM_COLORS[preserved?.team || requestedTeam],
       connectedAt: Date.now(),
       replaced: false,
       x: clamp(finiteNumber(spawn.x, 0), -ARENA_LIMIT, ARENA_LIMIT),
@@ -426,8 +464,10 @@ export class GameRoom {
       lastPunch: 0,
       lastShot: 0,
       lastHitAt: finiteNumber(spawn.lastHitAt, 0),
-      ammo: clamp(Math.floor(finiteNumber(spawn.ammo, MAG_SIZE)), 0, MAG_SIZE),
+      weapon: safeWeapon(spawn.weapon),
+      ammo: normalizeAmmo(spawn.ammo),
       reloadAt: finiteNumber(spawn.reloadAt, 0),
+      reloadWeapon: safeWeapon(spawn.reloadWeapon || spawn.weapon),
     };
 
     server.serializeAttachment(attachment);
@@ -475,10 +515,13 @@ export class GameRoom {
     const now = Date.now();
 
     if (me.reloadAt && now >= me.reloadAt) {
+      const weapon = safeWeapon(me.reloadWeapon || me.weapon);
       me.reloadAt = 0;
-      me.ammo = MAG_SIZE;
+      me.reloadWeapon = "";
+      me.ammo = normalizeAmmo(me.ammo);
+      me.ammo[weapon] = WEAPONS[weapon].mag;
       socket.serializeAttachment(me);
-      try { socket.send(JSON.stringify({ t: "ammo", ammo: me.ammo, reloadAt: 0 })); } catch {}
+      try { socket.send(JSON.stringify({ t: "loadout", weapon: me.weapon, ammo: me.ammo, reloadAt: 0, reloadWeapon: "" })); } catch {}
     }
 
     if (payload.t === "state") {
@@ -516,13 +559,16 @@ export class GameRoom {
     }
 
     if (payload.t === "fire") {
-      if (me.hp <= 0 || now < me.koUntil || me.reloadAt || now - me.lastShot < FIRE_COOLDOWN_MS) return;
-      if (me.ammo <= 0) {
-        try { socket.send(JSON.stringify({ t: "ammo", ammo: 0, reloadAt: me.reloadAt || 0 })); } catch {}
+      const weapon = safeWeapon(me.weapon);
+      const spec = WEAPONS[weapon];
+      me.ammo = normalizeAmmo(me.ammo);
+      if (me.hp <= 0 || now < me.koUntil || me.reloadAt || now - me.lastShot < spec.cooldownMs) return;
+      if (me.ammo[weapon] <= 0) {
+        try { socket.send(JSON.stringify({ t: "loadout", weapon, ammo: me.ammo, reloadAt: me.reloadAt || 0, reloadWeapon: me.reloadWeapon || "" })); } catch {}
         return;
       }
       me.lastShot = now;
-      me.ammo -= 1;
+      me.ammo[weapon] -= 1;
       socket.serializeAttachment(me);
       const cp = Math.cos(me.pitch), sp = Math.sin(me.pitch);
       const fx = -Math.sin(me.yaw) * cp;
@@ -530,33 +576,53 @@ export class GameRoom {
       const fz = -Math.cos(me.yaw) * cp;
       this.spawnBullet({
         ownerId: me.clientId,
-        damage: PISTOL_DAMAGE,
-        weapon: "pistol",
+        ownerTeam: safeTeam(me.team),
+        damage: spec.damage,
+        weapon,
+        lifetimeMs: spec.lifetimeMs,
         x: me.x + fx * 0.62,
         y: me.y + PLAYER_HEIGHT - 0.18 + fy * 0.25,
         z: me.z + fz * 0.62,
-        vx: fx * BULLET_SPEED,
-        vy: fy * BULLET_SPEED,
-        vz: fz * BULLET_SPEED,
+        vx: fx * spec.speed,
+        vy: fy * spec.speed,
+        vz: fz * spec.speed,
         now,
       });
-      try { socket.send(JSON.stringify({ t: "ammo", ammo: me.ammo, reloadAt: 0 })); } catch {}
+      try { socket.send(JSON.stringify({ t: "loadout", weapon, ammo: me.ammo, reloadAt: 0, reloadWeapon: "" })); } catch {}
       await this.stepSimulation(now, meta);
       return;
     }
 
     if (payload.t === "reload") {
-      if (me.hp <= 0 || me.reloadAt || me.ammo >= MAG_SIZE) return;
-      me.reloadAt = now + RELOAD_MS;
+      const weapon = safeWeapon(me.weapon);
+      const spec = WEAPONS[weapon];
+      me.ammo = normalizeAmmo(me.ammo);
+      if (me.hp <= 0 || me.reloadAt || me.ammo[weapon] >= spec.mag) return;
+      me.reloadAt = now + spec.reloadMs;
+      me.reloadWeapon = weapon;
       socket.serializeAttachment(me);
-      try { socket.send(JSON.stringify({ t: "ammo", ammo: me.ammo, reloadAt: me.reloadAt })); } catch {}
+      try { socket.send(JSON.stringify({ t: "loadout", weapon, ammo: me.ammo, reloadAt: me.reloadAt, reloadWeapon: weapon })); } catch {}
+      return;
+    }
+
+    if (payload.t === "weapon") {
+      if (me.hp <= 0 || now < me.koUntil) return;
+      const weapon = safeWeapon(payload.weapon);
+      if (weapon === me.weapon) return;
+      me.weapon = weapon;
+      me.reloadAt = 0;
+      me.reloadWeapon = "";
+      me.ammo = normalizeAmmo(me.ammo);
+      socket.serializeAttachment(me);
+      try { socket.send(JSON.stringify({ t: "loadout", weapon, ammo: me.ammo, reloadAt: 0, reloadWeapon: "" })); } catch {}
+      this.broadcast({ t: "weapon", id: me.clientId, weapon }, socket);
       return;
     }
 
     if (payload.t === "respawn") {
       if (me.hp > 0 || now < me.koUntil) return;
       const spawn = spawnFor(Math.floor(Math.random() * 12));
-      me = { ...me, ...spawn, hp: 100, koUntil: 0, lastHitAt: 0, ammo: MAG_SIZE, reloadAt: 0 };
+      me = { ...me, ...spawn, hp: 100, koUntil: 0, lastHitAt: 0, weapon: "pistol", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "" };
       socket.serializeAttachment(me);
       this.broadcast({ t: "respawn", player: publicPlayer(me) });
       return;
@@ -576,12 +642,12 @@ export class GameRoom {
     for (const targetSocket of this.ctx.getWebSockets()) {
       if (targetSocket === socket) continue;
       const target = targetSocket.deserializeAttachment() || {};
-      if (!target.clientId || target.replaced || target.hp <= 0 || now < target.koUntil) continue;
+      if (!target.clientId || target.replaced || target.hp <= 0 || now < target.koUntil || safeTeam(target.team) === safeTeam(me.team)) continue;
       const candidate = this.punchCandidate(me, target, forwardX, forwardZ);
       if (candidate && (!best || candidate.distance < best.distance)) best = { ...candidate, type: "human", socket: targetSocket, target };
     }
     for (const bot of this.bots) {
-      if (bot.hp <= 0 || now < bot.koUntil) continue;
+      if (bot.hp <= 0 || now < bot.koUntil || safeTeam(bot.team) === safeTeam(me.team)) continue;
       const candidate = this.punchCandidate(me, bot, forwardX, forwardZ);
       if (candidate && (!best || candidate.distance < best.distance)) best = { ...candidate, type: "bot", bot };
     }
@@ -608,9 +674,9 @@ export class GameRoom {
     return { distance, dx, dz };
   }
 
-  spawnBullet({ ownerId, damage, weapon, x, y, z, vx, vy, vz, now }) {
+  spawnBullet({ ownerId, ownerTeam, damage, weapon, lifetimeMs, x, y, z, vx, vy, vz, now }) {
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-    const bullet = { id, ownerId, damage, weapon, x, y, z, vx, vy, vz, born: now, lastAt: now };
+    const bullet = { id, ownerId, ownerTeam: safeTeam(ownerTeam), damage, weapon, lifetimeMs: lifetimeMs || WEAPONS[safeWeapon(weapon)].lifetimeMs, x, y, z, vx, vy, vz, born: now, lastAt: now };
     this.bullets.set(id, bullet);
     this.broadcast({ t: "shot", ...bullet, at: now });
   }
@@ -648,19 +714,22 @@ export class GameRoom {
       if (bot.hp <= 0) {
         if (now >= bot.koUntil) {
           const spawn = spawnFor(i + Math.floor(Math.random() * 8));
-          Object.assign(bot, spawn, { hp: 100, koUntil: 0, ammo: MAG_SIZE, reloadAt: 0, lastHitAt: 0 });
+          Object.assign(bot, spawn, { hp: 100, koUntil: 0, weapon: "pistol", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "", lastHitAt: 0 });
           this.broadcast({ t: "respawn", player: publicBot(bot) });
         }
         continue;
       }
       if (bot.reloadAt && now >= bot.reloadAt) {
         bot.reloadAt = 0;
-        bot.ammo = MAG_SIZE;
+        bot.reloadWeapon = "";
+        bot.ammo = normalizeAmmo(bot.ammo);
+        bot.ammo.pistol = WEAPONS.pistol.mag;
       }
       if (!humans.length) continue;
 
       let nearest = null;
       for (const h of humans) {
+        if (safeTeam(h.player.team) === safeTeam(bot.team)) continue;
         const dx = h.player.x - bot.x;
         const dz = h.player.z - bot.z;
         const distance = Math.hypot(dx, dz);
@@ -690,13 +759,14 @@ export class GameRoom {
       }
 
       if (d <= 24 && now - bot.lastShot >= bot.nextShotDelay) {
-        if (bot.ammo <= 0) {
-          if (!bot.reloadAt) bot.reloadAt = now + RELOAD_MS;
+        bot.ammo = normalizeAmmo(bot.ammo);
+        if (bot.ammo.pistol <= 0) {
+          if (!bot.reloadAt) { bot.reloadAt = now + WEAPONS.pistol.reloadMs; bot.reloadWeapon = "pistol"; }
           continue;
         }
         bot.lastShot = now;
         bot.nextShotDelay = 760 + Math.floor(Math.random() * 520);
-        bot.ammo -= 1;
+        bot.ammo.pistol -= 1;
         const tx = nearest.player.x - bot.x;
         const ty = (nearest.player.y + 1.05) - (bot.y + 1.28);
         const tz = nearest.player.z - bot.z;
@@ -708,14 +778,16 @@ export class GameRoom {
         fx /= len; fy /= len; fz /= len;
         this.spawnBullet({
           ownerId: bot.id,
+          ownerTeam: safeTeam(bot.team),
           damage: BOT_PISTOL_DAMAGE,
           weapon: "pistol",
+          lifetimeMs: WEAPONS.pistol.lifetimeMs,
           x: bot.x + fx * 0.55,
           y: bot.y + 1.25,
           z: bot.z + fz * 0.55,
-          vx: fx * BULLET_SPEED,
-          vy: fy * BULLET_SPEED,
-          vz: fz * BULLET_SPEED,
+          vx: fx * WEAPONS.pistol.speed,
+          vy: fy * WEAPONS.pistol.speed,
+          vz: fz * WEAPONS.pistol.speed,
           now,
         });
       }
@@ -725,7 +797,7 @@ export class GameRoom {
   stepBullets(now) {
     const humans = this.ctx.getWebSockets().map((socket) => ({ socket, player: socket.deserializeAttachment() || {} }));
     for (const [id, bullet] of this.bullets) {
-      if (now - bullet.born > BULLET_LIFETIME_MS) {
+      if (now - bullet.born > bullet.lifetimeMs) {
         this.endBullet(id, "expired");
         continue;
       }
@@ -747,7 +819,7 @@ export class GameRoom {
 
         for (const h of humans) {
           const target = h.player;
-          if (!target.clientId || target.replaced || target.clientId === bullet.ownerId || target.hp <= 0 || now < (target.koUntil || 0)) continue;
+          if (!target.clientId || target.replaced || target.clientId === bullet.ownerId || target.hp <= 0 || now < (target.koUntil || 0) || safeTeam(target.team) === bullet.ownerTeam) continue;
           const dx = target.x - bullet.x;
           const dy = target.y + 1.0 - bullet.y;
           const dz = target.z - bullet.z;
@@ -766,7 +838,7 @@ export class GameRoom {
         if (ended) break;
 
         for (const bot of this.bots) {
-          if (bot.id === bullet.ownerId || bot.hp <= 0 || now < bot.koUntil) continue;
+          if (bot.id === bullet.ownerId || bot.hp <= 0 || now < bot.koUntil || safeTeam(bot.team) === bullet.ownerTeam) continue;
           const dx = bot.x - bullet.x;
           const dy = bot.y + 1.0 - bullet.y;
           const dz = bot.z - bullet.z;
@@ -797,6 +869,7 @@ export class GameRoom {
       ko, respawnAt: target.koUntil || 0,
       knockback: ko ? { x: knockback.x * 1.35, z: knockback.z * 1.35, y: Math.max(3.8, knockback.y) } : knockback,
     });
+    if (ko) this.broadcast(this.killEvent(attackerId, target.clientId, weapon, now));
   }
 
   damageBot(bot, attackerId, damage, weapon, knockback, now, bulletId = "") {
@@ -808,6 +881,23 @@ export class GameRoom {
       t: "hit", attacker: attackerId, target: bot.id, hp: bot.hp, damage, weapon, bulletId,
       ko, respawnAt: bot.koUntil || 0, knockback,
     });
+    if (ko) this.broadcast(this.killEvent(attackerId, bot.id, weapon, now));
+  }
+
+  findCombatant(id) {
+    for (const socket of this.ctx.getWebSockets()) {
+      const p = socket.deserializeAttachment() || {};
+      if (p.clientId === id) return { id, name: p.name || "Player", team: safeTeam(p.team), bot: false };
+    }
+    const bot = this.bots.find((b) => b.id === id);
+    if (bot) return { id, name: bot.name || "Bot", team: safeTeam(bot.team), bot: true };
+    return { id, name: "Player", team: "blue", bot: false };
+  }
+
+  killEvent(attackerId, victimId, weapon, now) {
+    const attacker = this.findCombatant(attackerId);
+    const victim = this.findCombatant(victimId);
+    return { t: "kill", at: now, weapon: safeWeapon(weapon) === "sniper" ? "sniper" : weapon === "punch" ? "punch" : "pistol", attacker, victim };
   }
 
   endBullet(id, reason) {
