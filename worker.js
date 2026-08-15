@@ -211,6 +211,7 @@ function publicPlayer(attachment) {
     reloadWeapon: attachment.reloadWeapon || "",
     kills: Math.max(0, Math.floor(finiteNumber(attachment.kills, 0))),
     deaths: Math.max(0, Math.floor(finiteNumber(attachment.deaths, 0))),
+    godMode: !!attachment.godMode,
   };
 }
 
@@ -299,10 +300,10 @@ export default {
       return json(request, env, {
         ok: true,
         service: "punch-world-online",
-        protocol: 9,
-        version: 9,
-        game: "1.12.0",
-        mode: "durable-object-team-sandbox-terrain-three-weapons-natural-cover-auto-reload-firemodes",
+        protocol: 10,
+        version: 10,
+        game: "1.13.0",
+        mode: "durable-object-team-sandbox-terrain-three-weapons-godmode-natural-cover-auto-reload-firemodes",
       });
     }
 
@@ -468,6 +469,7 @@ export class GameRoom {
     const clientId = safeClientId(url.searchParams.get("client"));
     const name = safeName(url.searchParams.get("name"));
     const requestedTeam = safeTeam(url.searchParams.get("team"));
+    const requestedGodMode = String(url.searchParams.get("god") || "") === "1";
     if (!clientId) return json(request, this.env, { error: "Missing client ID." }, 400);
 
     const sockets = this.ctx.getWebSockets();
@@ -519,6 +521,7 @@ export class GameRoom {
       reloadWeapon: safeWeapon(spawn.reloadWeapon || spawn.weapon),
       kills: Math.max(0, Math.floor(finiteNumber(spawn.kills, 0))),
       deaths: Math.max(0, Math.floor(finiteNumber(spawn.deaths, 0))),
+      godMode: requestedGodMode,
     };
 
     server.serializeAttachment(attachment);
@@ -668,6 +671,13 @@ export class GameRoom {
       socket.serializeAttachment(me);
       try { socket.send(JSON.stringify({ t: "loadout", weapon, ammo: me.ammo, reloadAt: 0, reloadWeapon: "" })); } catch {}
       this.broadcast({ t: "weapon", id: me.clientId, weapon }, socket);
+      return;
+    }
+
+    if (payload.t === "god") {
+      me.godMode = !!payload.enabled;
+      socket.serializeAttachment(me);
+      this.broadcast({ t: "god", id: me.clientId, enabled: me.godMode });
       return;
     }
 
@@ -982,6 +992,10 @@ export class GameRoom {
   }
 
   damageHuman(socket, target, attackerId, damage, weapon, knockback, now, bulletId = "") {
+    if (target.godMode) {
+      this.broadcast({ t: "blocked", attacker: attackerId, target: target.clientId, weapon, bulletId, godMode: true });
+      return false;
+    }
     target.hp = Math.max(0, target.hp - damage);
     target.lastHitAt = now;
     target.regenAt = now + HEALTH_REGEN_DELAY_MS;
@@ -998,6 +1012,7 @@ export class GameRoom {
       knockback: wasted ? { x: knockback.x * 1.35, z: knockback.z * 1.35, y: Math.max(3.8, knockback.y) } : knockback,
     });
     if (wasted) this.broadcast(this.killEvent(attackerId, target.clientId, weapon, now));
+    return true;
   }
 
   damageBot(bot, attackerId, damage, weapon, knockback, now, bulletId = "") {
