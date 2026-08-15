@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "punch-world-online",
+  "main": "worker.js",
+  "compatibility_date": "2026-08-14",
+  "vars": {
+    "GAME_ORIGIN": "*"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "ROOMS", "class_name": "GameRoom" },
+      { "name": "DIRECTORY", "class_name": "WorldDirectory" }
+    ]
+  },
+  "exports": {
+    "GameRoom": { "type": "durable-object", "storage": "sqlite" },
+    "WorldDirectory": { "type": "durable-object", "storage": "sqlite" }
+  },
+  "observability": {
+    "enabled": true
+  }
+}
