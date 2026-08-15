@@ -15,8 +15,8 @@ const HEALTH_REGEN_DELAY_MS = 5000;
 const HEALTH_REGEN_TICK_MS = 500;
 const HEALTH_REGEN_PER_TICK = 4;
 const WEAPONS = {
-  pistol: { mag: 7, reloadMs: 950, cooldownMs: 190, damage: 34, speed: 42, lifetimeMs: 3200 },
-  sniper: { mag: 5, reloadMs: 2200, cooldownMs: 950, damage: 120, speed: 88, lifetimeMs: 4800 },
+  pistol: { mag: 12, reloadMs: 475, cooldownMs: 190, damage: 34, speed: 42, lifetimeMs: 3200 },
+  sniper: { mag: 12, reloadMs: 1100, cooldownMs: 950, damage: 120, speed: 180, lifetimeMs: 3600 },
 };
 const TEAM_COLORS = { blue: "#46a7ff", red: "#ff5c6c" };
 const PLAYER_HEIGHT = 1.7;
@@ -40,6 +40,13 @@ const WORLD_OBSTACLES = [
   { type: "pyramid", x: 52, z: 4, base: 11, h: 7 },
   { type: "pyramid", x: -55, z: 2, base: 13, h: 9 },
   { type: "pyramid", x: 18, z: -24, base: 9, h: 6 },
+  { type: "tree", x: -72, z: -28, r: .75, h: 7.5 }, { type: "tree", x: -58, z: 56, r: .82, h: 8.2 }, { type: "tree", x: -38, z: 72, r: .70, h: 7.0 }, { type: "tree", x: -18, z: -78, r: .78, h: 7.8 },
+  { type: "tree", x: 16, z: 72, r: .76, h: 8.0 }, { type: "tree", x: 34, z: -66, r: .82, h: 8.4 }, { type: "tree", x: 62, z: 58, r: .75, h: 7.6 }, { type: "tree", x: 74, z: -30, r: .86, h: 8.6 },
+  { type: "tree", x: -80, z: 18, r: .72, h: 7.2 }, { type: "tree", x: 82, z: 16, r: .78, h: 8.0 }, { type: "tree", x: -48, z: -66, r: .76, h: 7.7 }, { type: "tree", x: 50, z: 76, r: .72, h: 7.4 },
+  { type: "bush", x: -62, z: -6, r: 1.7, h: 1.5 }, { type: "bush", x: -31, z: 51, r: 1.9, h: 1.6 }, { type: "bush", x: -12, z: -34, r: 1.6, h: 1.4 }, { type: "bush", x: 10, z: 31, r: 1.8, h: 1.5 },
+  { type: "bush", x: 31, z: -45, r: 1.7, h: 1.5 }, { type: "bush", x: 57, z: 23, r: 1.9, h: 1.6 }, { type: "bush", x: 76, z: -58, r: 1.6, h: 1.4 }, { type: "bush", x: -78, z: 62, r: 1.8, h: 1.5 },
+  { type: "rock", x: -54, z: 20, r: 2.2, h: 2.7 }, { type: "rock", x: -22, z: 16, r: 1.8, h: 2.2 }, { type: "rock", x: 15, z: -58, r: 2.1, h: 2.5 }, { type: "rock", x: 44, z: 54, r: 2.3, h: 2.8 },
+  { type: "rock", x: 68, z: -4, r: 1.9, h: 2.3 }, { type: "rock", x: -70, z: -52, r: 2.0, h: 2.4 }, { type: "rock", x: 8, z: 82, r: 1.8, h: 2.1 }, { type: "rock", x: 86, z: 46, r: 2.1, h: 2.6 },
 ];
 
 function safeOrigin(request, env) {
@@ -156,8 +163,10 @@ function worldBlocked(x, z, radius = 0.38) {
   for (const o of WORLD_OBSTACLES) {
     if (o.type === "box") {
       if (Math.abs(x - o.x) < o.w / 2 + radius && Math.abs(z - o.z) < o.d / 2 + radius) return true;
-    } else {
+    } else if (o.type === "pyramid") {
       if (Math.hypot(x - o.x, z - o.z) < o.base * 0.52 + radius) return true;
+    } else {
+      if (Math.hypot(x - o.x, z - o.z) < o.r + radius) return true;
     }
   }
   return false;
@@ -169,10 +178,12 @@ function pointHitsObstacle(x, y, z) {
     if (y < baseY || y > baseY + o.h + 0.15) continue;
     if (o.type === "box") {
       if (Math.abs(x - o.x) <= o.w / 2 && Math.abs(z - o.z) <= o.d / 2) return true;
-    } else {
+    } else if (o.type === "pyramid") {
       const t = clamp((y - baseY) / o.h, 0, 1);
       const r = o.base * 0.52 * (1 - t);
       if (Math.hypot(x - o.x, z - o.z) <= r) return true;
+    } else {
+      if (Math.hypot(x - o.x, z - o.z) <= o.r) return true;
     }
   }
   return false;
@@ -230,12 +241,13 @@ function spawnForTeam(team,index){
   return {x:p[0],y:terrainHeight(p[0],p[1]),z:p[1]};
 }
 function spawnFor(index){const team=index%2===0?'blue':'red';return spawnForTeam(team,Math.floor(index/2));}
-function makeBot(index) {
-  const team = index % 2 === 0 ? "red" : "blue";
-  const spawn = spawnForTeam(team, Math.floor(index / 2));
+function makeBot(index, team, teamIndex) {
+  team = safeTeam(team);
+  const spawn = spawnForTeam(team, teamIndex);
+  const label = team === "red" ? "Red" : "Blue";
   return {
     id: `bot-${index + 1}`,
-    name: `Bot ${index + 1}`,
+    name: `${label} Bot ${teamIndex + 1}`,
     team,
     color: TEAM_COLORS[team],
     ...spawn,
@@ -255,6 +267,19 @@ function makeBot(index) {
     deaths: 0,
   };
 }
+function makeBots(blueBots, redBots) {
+  blueBots = clamp(Math.floor(finiteNumber(blueBots, 0)), 0, MAX_BOTS);
+  redBots = clamp(Math.floor(finiteNumber(redBots, 0)), 0, MAX_BOTS);
+  const bots = [];
+  for (let i = 0; i < blueBots; i += 1) bots.push(makeBot(bots.length, "blue", i));
+  for (let i = 0; i < redBots; i += 1) bots.push(makeBot(bots.length, "red", i));
+  return bots;
+}
+function botCountsFromMeta(meta) {
+  const blueBots = clamp(Math.floor(finiteNumber(meta?.blueBots, 0)), 0, MAX_BOTS);
+  const redBots = clamp(Math.floor(finiteNumber(meta?.redBots, 0)), 0, MAX_BOTS);
+  return { blueBots, redBots, botCount: Math.min(MAX_BOTS, blueBots + redBots) };
+}
 
 async function directoryStub(env) {
   return env.DIRECTORY.get(env.DIRECTORY.idFromName("global"));
@@ -272,10 +297,10 @@ export default {
       return json(request, env, {
         ok: true,
         service: "punch-world-online",
-        protocol: 6,
-        version: 6,
-        game: "1.9.1",
-        mode: "durable-object-team-sandbox-terrain-weapons-projectiles-bots-regen-ads-scoreboard-feedback",
+        protocol: 8,
+        version: 8,
+        game: "1.11.0",
+        mode: "durable-object-team-sandbox-terrain-weapons-natural-cover-auto-reload-firemodes",
       });
     }
 
@@ -290,18 +315,21 @@ export default {
       try { body = await request.json(); } catch {}
       const clientId = safeClientId(body.client);
       const name = safeName(body.name);
-      const botCount = clamp(Math.floor(finiteNumber(body.bots, 0)), 0, MAX_BOTS);
+      const blueBots = clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS);
+      const redBots = clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS);
+      const botCount = blueBots + redBots;
       if (!clientId) return json(request, env, { error: "Missing client ID." }, 400);
+      if (botCount > MAX_BOTS) return json(request, env, { error: `Maximum ${MAX_BOTS} bots per world.` }, 400);
 
       for (let attempt = 0; attempt < 20; attempt += 1) {
         const code = makeRoomCode();
         const room = env.ROOMS.get(env.ROOMS.idFromName(code));
         const created = await room.fetch(
-          `https://room.internal/create?code=${code}&client=${encodeURIComponent(clientId)}&name=${encodeURIComponent(name)}&bots=${botCount}`,
+          `https://room.internal/create?code=${code}&client=${encodeURIComponent(clientId)}&name=${encodeURIComponent(name)}&blueBots=${blueBots}&redBots=${redBots}`,
           { method: "POST" },
         );
         if (created.status === 201) {
-          return json(request, env, { code, maxPlayers: MAX_PLAYERS, bots: botCount }, 201);
+          return json(request, env, { code, maxPlayers: MAX_PLAYERS, bots: botCount, blueBots, redBots }, 201);
         }
       }
       return json(request, env, { error: "Could not create a world. Try again." }, 503);
@@ -354,6 +382,8 @@ export class WorldDirectory {
         code,
         players: clamp(Math.floor(finiteNumber(body.players, 0)), 0, MAX_PLAYERS),
         bots: clamp(Math.floor(finiteNumber(body.bots, 0)), 0, MAX_BOTS),
+        blueBots: clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS),
+        redBots: clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS),
         blue: clamp(Math.floor(finiteNumber(body.blue, 0)), 0, MAX_PLAYERS + MAX_BOTS),
         red: clamp(Math.floor(finiteNumber(body.red, 0)), 0, MAX_PLAYERS + MAX_BOTS),
         maxPlayers: MAX_PLAYERS,
@@ -392,10 +422,11 @@ export class GameRoom {
 
   async ensureSimulation(meta) {
     if (this.bots) return;
+    const counts = botCountsFromMeta(meta);
     const stored = await this.ctx.storage.get("bots");
-    if (Array.isArray(stored) && stored.length === meta.botCount) this.bots = stored;
+    if (Array.isArray(stored) && stored.length === counts.botCount) this.bots = stored;
     else {
-      this.bots = Array.from({ length: meta.botCount }, (_, i) => makeBot(i));
+      this.bots = makeBots(counts.blueBots, counts.redBots);
       await this.ctx.storage.put("bots", this.bots);
     }
     this.lastSimAt = Date.now();
@@ -409,11 +440,14 @@ export class GameRoom {
       if (existing) return json(request, this.env, { error: "World already exists." }, 409);
 
       const code = normalizeRoomCode(url.searchParams.get("code"));
-      const botCount = clamp(Math.floor(finiteNumber(url.searchParams.get("bots"), 0)), 0, MAX_BOTS);
+      const blueBots = clamp(Math.floor(finiteNumber(url.searchParams.get("blueBots"), 0)), 0, MAX_BOTS);
+      const redBots = clamp(Math.floor(finiteNumber(url.searchParams.get("redBots"), 0)), 0, MAX_BOTS);
+      const botCount = blueBots + redBots;
+      if (botCount > MAX_BOTS) return json(request, this.env, { error: `Maximum ${MAX_BOTS} bots per world.` }, 400);
       const now = Date.now();
-      const meta = { code, botCount, createdAt: now, expiresAt: now + ROOM_MAX_LIFETIME_MS };
+      const meta = { code, botCount, blueBots, redBots, createdAt: now, expiresAt: now + ROOM_MAX_LIFETIME_MS };
       await this.ctx.storage.put("meta", meta);
-      this.bots = Array.from({ length: botCount }, (_, i) => makeBot(i));
+      this.bots = makeBots(blueBots, redBots);
       await this.ctx.storage.put("bots", this.bots);
       await this.ctx.storage.setAlarm(meta.expiresAt);
       await this.updateDirectory(0, meta);
@@ -458,15 +492,6 @@ export class GameRoom {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    if (!preserved && liveMembers.length === 0 && this.bots.length) {
-      const opposite = requestedTeam === "red" ? "blue" : "red";
-      for (let i = 0; i < this.bots.length; i += 1) {
-        this.bots[i].team = i % 2 === 0 ? opposite : requestedTeam;
-        this.bots[i].color = TEAM_COLORS[this.bots[i].team];
-        Object.assign(this.bots[i], spawnForTeam(this.bots[i].team, Math.floor(i / 2)));
-      }
-    }
-
     const attachment = {
       clientId,
       name,
@@ -593,6 +618,7 @@ export class GameRoom {
       }
       me.lastShot = now;
       me.ammo[weapon] -= 1;
+      if (me.ammo[weapon] === 0) { me.reloadAt = now + spec.reloadMs; me.reloadWeapon = weapon; }
       socket.serializeAttachment(me);
       const cp = Math.cos(me.pitch), sp = Math.sin(me.pitch);
       const fx = -Math.sin(me.yaw) * cp;
@@ -612,7 +638,7 @@ export class GameRoom {
         vz: fz * spec.speed,
         now,
       });
-      try { socket.send(JSON.stringify({ t: "loadout", weapon, ammo: me.ammo, reloadAt: 0, reloadWeapon: "" })); } catch {}
+      try { socket.send(JSON.stringify({ t: "loadout", weapon, ammo: me.ammo, reloadAt: me.reloadAt || 0, reloadWeapon: me.reloadWeapon || "" })); } catch {}
       await this.stepSimulation(now, meta);
       return;
     }
@@ -846,6 +872,7 @@ export class GameRoom {
         bot.lastShot = now;
         bot.nextShotDelay = 760 + Math.floor(Math.random() * 520);
         bot.ammo.pistol -= 1;
+        if (bot.ammo.pistol === 0) { bot.reloadAt = now + WEAPONS.pistol.reloadMs; bot.reloadWeapon = 'pistol'; }
         const tx = nearest.player.x - bot.x;
         const ty = (nearest.player.y + 1.05) - (bot.y + 1.28);
         const tz = nearest.player.z - bot.z;
@@ -883,8 +910,10 @@ export class GameRoom {
       let remaining = Math.min(0.14, Math.max(0, (now - bullet.lastAt) / 1000));
       bullet.lastAt = now;
       let ended = false;
+      const speed = Math.max(1, Math.hypot(bullet.vx, bullet.vy, bullet.vz));
+      const collisionStep = Math.min(0.01, 0.24 / speed);
       while (remaining > 0 && !ended) {
-        const step = Math.min(0.01, remaining);
+        const step = Math.min(collisionStep, remaining);
         remaining -= step;
         bullet.x += bullet.vx * step;
         bullet.y += bullet.vy * step;
@@ -1090,7 +1119,9 @@ export class GameRoom {
         body: JSON.stringify({
           code: meta.code,
           players,
-          bots: meta.botCount || 0,
+          bots: (this.bots || []).length,
+          blueBots: (this.bots || []).filter((bot) => safeTeam(bot.team) === "blue").length,
+          redBots: (this.bots || []).filter((bot) => safeTeam(bot.team) === "red").length,
           blue,
           red,
           createdAt: meta.createdAt,
