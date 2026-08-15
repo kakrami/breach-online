@@ -11,13 +11,16 @@ const PUNCH_DAMAGE = 25;
 const PUNCH_REACH = 2.55;
 const PUNCH_VERTICAL_REACH = 2.1;
 const BOT_PISTOL_DAMAGE = 18;
+const HEALTH_REGEN_DELAY_MS = 5000;
+const HEALTH_REGEN_TICK_MS = 500;
+const HEALTH_REGEN_PER_TICK = 4;
 const WEAPONS = {
   pistol: { mag: 7, reloadMs: 950, cooldownMs: 190, damage: 34, speed: 42, lifetimeMs: 3200 },
   sniper: { mag: 5, reloadMs: 2200, cooldownMs: 950, damage: 90, speed: 88, lifetimeMs: 4800 },
 };
 const TEAM_COLORS = { blue: "#46a7ff", red: "#ff5c6c" };
 const PLAYER_HEIGHT = 1.7;
-const ARENA_LIMIT = 88;
+const ARENA_LIMIT = 120;
 const PLAYER_COLORS = [
   "#4cc9f0", "#f72585", "#80ed99", "#ffd166",
   "#b388ff", "#ff8c42", "#90e0ef", "#f28482",
@@ -133,11 +136,19 @@ function clamp(value, min, max) {
 }
 
 function terrainHeight(x, z) {
-  const rolling = 0.52 + 0.52 * Math.sin(x * 0.052) * Math.cos(z * 0.047) + 0.28 * Math.sin((x + z) * 0.034);
-  const hillA = 1.45 * Math.exp(-((x + 34) ** 2 + (z - 24) ** 2) / 900);
-  const hillB = 1.15 * Math.exp(-((x - 43) ** 2 + (z + 30) ** 2) / 720);
-  const low = 0.55 * Math.exp(-((x - 2) ** 2 + (z + 50) ** 2) / 520);
-  return clamp(rolling + hillA + hillB - low, -0.25, 2.9);
+  // Deterministic large-scale terrain shared by server physics and the client mesh.
+  const rolling =
+    0.55 +
+    1.15 * Math.sin(x * 0.031) * Math.cos(z * 0.027) +
+    0.72 * Math.sin((x + z) * 0.021) +
+    0.48 * Math.cos((x - z) * 0.018);
+  const westRidge = 8.8 * Math.exp(-((x + 62) ** 2) / 1150) * Math.exp(-((z - 20) ** 2) / 6200);
+  const northHill = 10.5 * Math.exp(-((x - 34) ** 2 + (z - 68) ** 2) / 1450);
+  const southHill = 7.2 * Math.exp(-((x + 20) ** 2 + (z + 67) ** 2) / 1200);
+  const eastRise = 6.5 * Math.exp(-((x - 78) ** 2 + (z + 10) ** 2) / 1750);
+  const centerKnoll = 4.4 * Math.exp(-((x - 8) ** 2 + (z - 4) ** 2) / 900);
+  const valley = 4.0 * Math.exp(-((x + 12) ** 2 + (z - 34) ** 2) / 1050);
+  return clamp(rolling + westRidge + northHill + southHill + eastRise + centerKnoll - valley, -2.4, 13.8);
 }
 
 function worldBlocked(x, z, radius = 0.38) {
@@ -175,7 +186,7 @@ function publicPlayer(attachment) {
     team: safeTeam(attachment.team),
     bot: false,
     hp: attachment.hp,
-    koUntil: attachment.koUntil || 0,
+    wastedUntil: attachment.wastedUntil || 0,
     x: attachment.x,
     y: attachment.y,
     z: attachment.z,
@@ -196,7 +207,7 @@ function publicBot(bot) {
     team: safeTeam(bot.team),
     bot: true,
     hp: bot.hp,
-    koUntil: bot.koUntil || 0,
+    wastedUntil: bot.wastedUntil || 0,
     x: bot.x,
     y: bot.y,
     z: bot.z,
@@ -206,19 +217,18 @@ function publicBot(bot) {
   };
 }
 
-function spawnFor(index) {
-  const points = [
-    [-58, -58], [58, 58], [-58, 58], [58, -58],
-    [0, -66], [66, 0], [0, 66], [-66, 0],
-    [-42, 4], [42, -4], [-6, 42], [6, -42],
-  ];
-  const p = points[index % points.length];
-  return { x: p[0], y: terrainHeight(p[0], p[1]), z: p[1] };
+const TEAM_SPAWNS = {
+  blue: [[-92,-82],[-98,74],[-104,0],[-66,24],[-28,-96],[-76,-48]],
+  red: [[92,82],[98,-74],[104,0],[66,-24],[28,96],[76,48]],
+};
+function spawnForTeam(team,index){
+  team=safeTeam(team);const points=TEAM_SPAWNS[team],p=points[Math.abs(index)%points.length];
+  return {x:p[0],y:terrainHeight(p[0],p[1]),z:p[1]};
 }
-
+function spawnFor(index){const team=index%2===0?'blue':'red';return spawnForTeam(team,Math.floor(index/2));}
 function makeBot(index) {
-  const spawn = spawnFor(index + 2);
   const team = index % 2 === 0 ? "red" : "blue";
+  const spawn = spawnForTeam(team, Math.floor(index / 2));
   return {
     id: `bot-${index + 1}`,
     name: `Bot ${index + 1}`,
@@ -227,7 +237,7 @@ function makeBot(index) {
     ...spawn,
     yaw: 0,
     hp: 100,
-    koUntil: 0,
+    wastedUntil: 0,
     lastPunch: 0,
     lastShot: 0,
     nextShotDelay: 800 + Math.floor(Math.random() * 450),
@@ -236,6 +246,7 @@ function makeBot(index) {
     reloadWeapon: "",
     weapon: "pistol",
     lastHitAt: 0,
+    regenAt: 0,
   };
 }
 
@@ -255,10 +266,10 @@ export default {
       return json(request, env, {
         ok: true,
         service: "punch-world-online",
-        protocol: 3,
-        version: 3,
-        game: "1.6.0",
-        mode: "durable-object-team-sandbox-weapons-projectiles-bots",
+        protocol: 5,
+        version: 5,
+        game: "1.8.0",
+        mode: "durable-object-team-sandbox-terrain-weapons-projectiles-bots-regen-ads-ui",
       });
     }
 
@@ -337,6 +348,8 @@ export class WorldDirectory {
         code,
         players: clamp(Math.floor(finiteNumber(body.players, 0)), 0, MAX_PLAYERS),
         bots: clamp(Math.floor(finiteNumber(body.bots, 0)), 0, MAX_BOTS),
+        blue: clamp(Math.floor(finiteNumber(body.blue, 0)), 0, MAX_PLAYERS + MAX_BOTS),
+        red: clamp(Math.floor(finiteNumber(body.red, 0)), 0, MAX_PLAYERS + MAX_BOTS),
         maxPlayers: MAX_PLAYERS,
         createdAt: finiteNumber(body.createdAt, now),
         updatedAt: now,
@@ -433,7 +446,8 @@ export class GameRoom {
       return json(request, this.env, { error: "World is full." }, 409);
     }
 
-    const spawn = preserved || spawnFor(liveMembers.length);
+    const requestedTeamCount = liveMembers.filter(({attachment:a}) => safeTeam(a.team) === requestedTeam).length;
+    const spawn = preserved || spawnForTeam(requestedTeam, requestedTeamCount);
     const colorIndex = preserved?.colorIndex ?? (liveMembers.length % PLAYER_COLORS.length);
     const pair = new WebSocketPair();
     const client = pair[0];
@@ -443,6 +457,7 @@ export class GameRoom {
       for (let i = 0; i < this.bots.length; i += 1) {
         this.bots[i].team = i % 2 === 0 ? opposite : requestedTeam;
         this.bots[i].color = TEAM_COLORS[this.bots[i].team];
+        Object.assign(this.bots[i], spawnForTeam(this.bots[i].team, Math.floor(i / 2)));
       }
     }
 
@@ -460,10 +475,11 @@ export class GameRoom {
       yaw: finiteNumber(spawn.yaw, 0),
       pitch: clamp(finiteNumber(spawn.pitch, 0), -1.4, 1.4),
       hp: clamp(Math.floor(finiteNumber(spawn.hp, 100)), 0, 100),
-      koUntil: finiteNumber(spawn.koUntil, 0),
+      wastedUntil: finiteNumber(spawn.wastedUntil, 0),
       lastPunch: 0,
       lastShot: 0,
       lastHitAt: finiteNumber(spawn.lastHitAt, 0),
+      regenAt: finiteNumber(spawn.regenAt, 0),
       weapon: safeWeapon(spawn.weapon),
       ammo: normalizeAmmo(spawn.ammo),
       reloadAt: finiteNumber(spawn.reloadAt, 0),
@@ -525,7 +541,7 @@ export class GameRoom {
     }
 
     if (payload.t === "state") {
-      if (me.hp > 0 || now >= me.koUntil) {
+      if (me.hp > 0 || now >= me.wastedUntil) {
         let nx = clamp(finiteNumber(payload.x, me.x), -ARENA_LIMIT, ARENA_LIMIT);
         let nz = clamp(finiteNumber(payload.z, me.z), -ARENA_LIMIT, ARENA_LIMIT);
         if (worldBlocked(nx, nz)) { nx = me.x; nz = me.z; }
@@ -549,7 +565,7 @@ export class GameRoom {
     }
 
     if (payload.t === "punch") {
-      if (me.hp <= 0 || now < me.koUntil || now - me.lastPunch < PUNCH_COOLDOWN_MS) return;
+      if (me.hp <= 0 || now < me.wastedUntil || now - me.lastPunch < PUNCH_COOLDOWN_MS) return;
       me.lastPunch = now;
       socket.serializeAttachment(me);
       this.broadcast({ t: "swing", id: me.clientId, at: now });
@@ -562,7 +578,7 @@ export class GameRoom {
       const weapon = safeWeapon(me.weapon);
       const spec = WEAPONS[weapon];
       me.ammo = normalizeAmmo(me.ammo);
-      if (me.hp <= 0 || now < me.koUntil || me.reloadAt || now - me.lastShot < spec.cooldownMs) return;
+      if (me.hp <= 0 || now < me.wastedUntil || me.reloadAt || now - me.lastShot < spec.cooldownMs) return;
       if (me.ammo[weapon] <= 0) {
         try { socket.send(JSON.stringify({ t: "loadout", weapon, ammo: me.ammo, reloadAt: me.reloadAt || 0, reloadWeapon: me.reloadWeapon || "" })); } catch {}
         return;
@@ -606,7 +622,7 @@ export class GameRoom {
     }
 
     if (payload.t === "weapon") {
-      if (me.hp <= 0 || now < me.koUntil) return;
+      if (me.hp <= 0 || now < me.wastedUntil) return;
       const weapon = safeWeapon(payload.weapon);
       if (weapon === me.weapon) return;
       me.weapon = weapon;
@@ -620,9 +636,9 @@ export class GameRoom {
     }
 
     if (payload.t === "respawn") {
-      if (me.hp > 0 || now < me.koUntil) return;
-      const spawn = spawnFor(Math.floor(Math.random() * 12));
-      me = { ...me, ...spawn, hp: 100, koUntil: 0, lastHitAt: 0, weapon: "pistol", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "" };
+      if (me.hp > 0 || now < me.wastedUntil) return;
+      const spawn = spawnForTeam(me.team, Math.floor(Math.random() * TEAM_SPAWNS[safeTeam(me.team)].length));
+      me = { ...me, ...spawn, hp: 100, wastedUntil: 0, lastHitAt: 0, regenAt: 0, weapon: "pistol", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "" };
       socket.serializeAttachment(me);
       this.broadcast({ t: "respawn", player: publicPlayer(me) });
       return;
@@ -642,12 +658,12 @@ export class GameRoom {
     for (const targetSocket of this.ctx.getWebSockets()) {
       if (targetSocket === socket) continue;
       const target = targetSocket.deserializeAttachment() || {};
-      if (!target.clientId || target.replaced || target.hp <= 0 || now < target.koUntil || safeTeam(target.team) === safeTeam(me.team)) continue;
+      if (!target.clientId || target.replaced || target.hp <= 0 || now < target.wastedUntil || safeTeam(target.team) === safeTeam(me.team)) continue;
       const candidate = this.punchCandidate(me, target, forwardX, forwardZ);
       if (candidate && (!best || candidate.distance < best.distance)) best = { ...candidate, type: "human", socket: targetSocket, target };
     }
     for (const bot of this.bots) {
-      if (bot.hp <= 0 || now < bot.koUntil || safeTeam(bot.team) === safeTeam(me.team)) continue;
+      if (bot.hp <= 0 || now < bot.wastedUntil || safeTeam(bot.team) === safeTeam(me.team)) continue;
       const candidate = this.punchCandidate(me, bot, forwardX, forwardZ);
       if (candidate && (!best || candidate.distance < best.distance)) best = { ...candidate, type: "bot", bot };
     }
@@ -688,6 +704,7 @@ export class GameRoom {
 
     this.stepBots(now, elapsed);
     this.stepBullets(now);
+    this.stepRegeneration(now);
 
     if (now - this.lastBotBroadcastAt >= 100) {
       this.lastBotBroadcastAt = now;
@@ -704,17 +721,41 @@ export class GameRoom {
     }
   }
 
+  stepRegeneration(now) {
+    for (const socket of this.ctx.getWebSockets()) {
+      const player = socket.deserializeAttachment() || {};
+      if (!player.clientId || player.replaced || player.hp <= 0 || player.hp >= 100 || now < (player.wastedUntil || 0)) continue;
+      if (!player.regenAt) player.regenAt = (player.lastHitAt || now) + HEALTH_REGEN_DELAY_MS;
+      if (now < player.regenAt) continue;
+      const ticks = 1 + Math.floor((now - player.regenAt) / HEALTH_REGEN_TICK_MS);
+      player.hp = Math.min(100, player.hp + ticks * HEALTH_REGEN_PER_TICK);
+      player.regenAt += ticks * HEALTH_REGEN_TICK_MS;
+      socket.serializeAttachment(player);
+      this.broadcast({ t: "health", id: player.clientId, hp: player.hp });
+    }
+
+    for (const bot of this.bots) {
+      if (bot.hp <= 0 || bot.hp >= 100 || now < (bot.wastedUntil || 0)) continue;
+      if (!bot.regenAt) bot.regenAt = (bot.lastHitAt || now) + HEALTH_REGEN_DELAY_MS;
+      if (now < bot.regenAt) continue;
+      const ticks = 1 + Math.floor((now - bot.regenAt) / HEALTH_REGEN_TICK_MS);
+      bot.hp = Math.min(100, bot.hp + ticks * HEALTH_REGEN_PER_TICK);
+      bot.regenAt += ticks * HEALTH_REGEN_TICK_MS;
+      this.broadcast({ t: "health", id: bot.id, hp: bot.hp });
+    }
+  }
+
   stepBots(now, dt) {
     const humans = this.ctx.getWebSockets()
       .map((socket) => ({ socket, player: socket.deserializeAttachment() || {} }))
-      .filter(({ player }) => player.clientId && !player.replaced && player.hp > 0 && now >= (player.koUntil || 0));
+      .filter(({ player }) => player.clientId && !player.replaced && player.hp > 0 && now >= (player.wastedUntil || 0));
 
     for (let i = 0; i < this.bots.length; i += 1) {
       const bot = this.bots[i];
       if (bot.hp <= 0) {
-        if (now >= bot.koUntil) {
-          const spawn = spawnFor(i + Math.floor(Math.random() * 8));
-          Object.assign(bot, spawn, { hp: 100, koUntil: 0, weapon: "pistol", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "", lastHitAt: 0 });
+        if (now >= bot.wastedUntil) {
+          const spawn = spawnForTeam(bot.team, i + Math.floor(Math.random() * TEAM_SPAWNS[safeTeam(bot.team)].length));
+          Object.assign(bot, spawn, { hp: 100, wastedUntil: 0, regenAt: 0, weapon: "pistol", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "", lastHitAt: 0 });
           this.broadcast({ t: "respawn", player: publicBot(bot) });
         }
         continue;
@@ -819,7 +860,7 @@ export class GameRoom {
 
         for (const h of humans) {
           const target = h.player;
-          if (!target.clientId || target.replaced || target.clientId === bullet.ownerId || target.hp <= 0 || now < (target.koUntil || 0) || safeTeam(target.team) === bullet.ownerTeam) continue;
+          if (!target.clientId || target.replaced || target.clientId === bullet.ownerId || target.hp <= 0 || now < (target.wastedUntil || 0) || safeTeam(target.team) === bullet.ownerTeam) continue;
           const dx = target.x - bullet.x;
           const dy = target.y + 1.0 - bullet.y;
           const dz = target.z - bullet.z;
@@ -838,7 +879,7 @@ export class GameRoom {
         if (ended) break;
 
         for (const bot of this.bots) {
-          if (bot.id === bullet.ownerId || bot.hp <= 0 || now < bot.koUntil || safeTeam(bot.team) === bullet.ownerTeam) continue;
+          if (bot.id === bullet.ownerId || bot.hp <= 0 || now < bot.wastedUntil || safeTeam(bot.team) === bullet.ownerTeam) continue;
           const dx = bot.x - bullet.x;
           const dy = bot.y + 1.0 - bullet.y;
           const dz = bot.z - bullet.z;
@@ -861,27 +902,29 @@ export class GameRoom {
   damageHuman(socket, target, attackerId, damage, weapon, knockback, now, bulletId = "") {
     target.hp = Math.max(0, target.hp - damage);
     target.lastHitAt = now;
-    const ko = target.hp <= 0;
-    if (ko) target.koUntil = now + 2800;
+    target.regenAt = now + HEALTH_REGEN_DELAY_MS;
+    const wasted = target.hp <= 0;
+    if (wasted) target.wastedUntil = now + 2800;
     socket.serializeAttachment(target);
     this.broadcast({
       t: "hit", attacker: attackerId, target: target.clientId, hp: target.hp, damage, weapon, bulletId,
-      ko, respawnAt: target.koUntil || 0,
-      knockback: ko ? { x: knockback.x * 1.35, z: knockback.z * 1.35, y: Math.max(3.8, knockback.y) } : knockback,
+      wasted, respawnAt: target.wastedUntil || 0,
+      knockback: wasted ? { x: knockback.x * 1.35, z: knockback.z * 1.35, y: Math.max(3.8, knockback.y) } : knockback,
     });
-    if (ko) this.broadcast(this.killEvent(attackerId, target.clientId, weapon, now));
+    if (wasted) this.broadcast(this.killEvent(attackerId, target.clientId, weapon, now));
   }
 
   damageBot(bot, attackerId, damage, weapon, knockback, now, bulletId = "") {
     bot.hp = Math.max(0, bot.hp - damage);
     bot.lastHitAt = now;
-    const ko = bot.hp <= 0;
-    if (ko) bot.koUntil = now + 2800;
+    bot.regenAt = now + HEALTH_REGEN_DELAY_MS;
+    const wasted = bot.hp <= 0;
+    if (wasted) bot.wastedUntil = now + 2800;
     this.broadcast({
       t: "hit", attacker: attackerId, target: bot.id, hp: bot.hp, damage, weapon, bulletId,
-      ko, respawnAt: bot.koUntil || 0, knockback,
+      wasted, respawnAt: bot.wastedUntil || 0, knockback,
     });
-    if (ko) this.broadcast(this.killEvent(attackerId, bot.id, weapon, now));
+    if (wasted) this.broadcast(this.killEvent(attackerId, bot.id, weapon, now));
   }
 
   findCombatant(id) {
@@ -925,7 +968,7 @@ export class GameRoom {
       await this.ctx.storage.put("emptySince", now);
       await this.ctx.storage.setAlarm(Math.min(meta.expiresAt, now + EMPTY_ROOM_GRACE_MS));
     }
-    await this.updateDirectory(live.length, meta);
+    await this.updateDirectory(live.length, meta, attachment.replaced ? "" : (attachment.clientId || ""));
   }
 
   async webSocketError(socket) {
@@ -962,8 +1005,17 @@ export class GameRoom {
     }
   }
 
-  async updateDirectory(players, meta) {
+  async updateDirectory(players, meta, excludeClientId = "") {
     const directory = await directoryStub(this.env);
+    let blue = 0, red = 0;
+    for (const socket of this.ctx.getWebSockets()) {
+      const p = socket.deserializeAttachment() || {};
+      if (!p.clientId || p.replaced || p.clientId === excludeClientId) continue;
+      if (safeTeam(p.team) === "red") red += 1; else blue += 1;
+    }
+    for (const bot of this.bots || []) {
+      if (safeTeam(bot.team) === "red") red += 1; else blue += 1;
+    }
     try {
       await directory.fetch("https://directory.internal/upsert", {
         method: "POST",
@@ -972,6 +1024,8 @@ export class GameRoom {
           code: meta.code,
           players,
           bots: meta.botCount || 0,
+          blue,
+          red,
           createdAt: meta.createdAt,
           expiresAt: meta.expiresAt,
         }),
