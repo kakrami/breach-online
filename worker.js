@@ -1,5 +1,5 @@
-const PROTOCOL_VERSION = 16;
-const GAME_VERSION = "1.15.12";
+const PROTOCOL_VERSION = 17;
+const GAME_VERSION = "1.15.13";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -48,22 +48,21 @@ function safeBotDifficulty(value) {
   return Object.prototype.hasOwnProperty.call(BOT_DIFFICULTIES, key) ? key : "normal";
 }
 
+const STATIC_BOXES=[
+  {x:0,z:0,w:8,d:8,h:3.2},{x:-24,z:-14,w:12,d:5,h:3.0},{x:28,z:19,w:11,d:6,h:3.8},{x:-42,z:34,w:7,d:13,h:4.2},
+  {x:46,z:-36,w:9,d:9,h:3.4},{x:6,z:48,w:14,d:5,h:2.8},{x:-8,z:-52,w:6,d:15,h:3.1}
+];
 const BUILDINGS=[
   {x:-8,z:28,w:18,d:14,floorH:3.25,balcony:4.2,stairDir:1},
   {x:63,z:-54,w:16,d:12,floorH:3.15,balcony:3.8,stairDir:-1},
   {x:-70,z:42,w:14,d:11,floorH:3.05,balcony:3.4,stairDir:1}
 ];
-function makeBuildingObstacles(){const out=[];for(const b of BUILDINGS){const t=.34,door=2.35,side=(b.w-door)/2;for(let level=0;level<2;level++){const y=level*b.floorH;out.push({type:'box',x:b.x-side/2-door/2,z:b.z-b.d/2+t/2,w:side,d:t,h:2.55,y,fx:b.x,fz:b.z},{type:'box',x:b.x+side/2+door/2,z:b.z-b.d/2+t/2,w:side,d:t,h:2.55,y,fx:b.x,fz:b.z},{type:'box',x:b.x,z:b.z-b.d/2+t/2,w:door,d:t,h:.70,y:y+2.55,fx:b.x,fz:b.z},{type:'box',x:b.x,z:b.z+b.d/2-t/2,w:b.w,d:t,h:3.25,y,fx:b.x,fz:b.z},{type:'box',x:b.x-b.w/2+t/2,z:b.z,w:t,d:b.d,h:3.25,y,fx:b.x,fz:b.z},{type:'box',x:b.x+b.w/2-t/2,z:b.z,w:t,d:b.d,h:3.25,y,fx:b.x,fz:b.z});}out.push({type:'box',x:b.x,z:b.z,w:b.w-.7,d:b.d-.7,h:.18,y:b.floorH-.18,fx:b.x,fz:b.z,walkable:true});const bz=b.z-b.d/2-b.balcony/2;out.push({type:'box',x:b.x,z:bz,w:b.w*.52,d:b.balcony,h:.16,y:b.floorH-.12,fx:b.x,fz:b.z,walkable:true},{type:'box',x:b.x,z:b.z,w:b.w+.1,d:b.d+.1,h:.18,y:b.floorH*2-.16,fx:b.x,fz:b.z,walkable:true},{type:'box',x:b.x,z:bz-b.balcony/2+.08,w:b.w*.52,d:.12,h:.78,y:b.floorH+.15,fx:b.x,fz:b.z},{type:'box',x:b.x-b.w*.26,z:bz,w:.12,d:b.balcony,h:.78,y:b.floorH+.15,fx:b.x,fz:b.z},{type:'box',x:b.x+b.w*.26,z:bz,w:.12,d:b.balcony,h:.78,y:b.floorH+.15,fx:b.x,fz:b.z});}return out;}
-function makeBuildingWalkables(){const out=[];for(const b of BUILDINGS){const base=rawTerrainHeight(b.x,b.z),bz=b.z-b.d/2-b.balcony/2,stairLen=Math.min(7,b.w*.44),stairZ=b.z+b.d*.25;out.push({type:'rect',x:b.x,z:b.z,w:b.w-.8,d:b.d-.8,y:base+b.floorH},{type:'rect',x:b.x,z:bz,w:b.w*.52,d:b.balcony,y:base+b.floorH},{type:'ramp',x1:b.x-b.stairDir*stairLen/2,x2:b.x+b.stairDir*stairLen/2,z:stairZ,w:2.2,y0:base,y1:base+b.floorH});}return out;}
+function buildingPlan(b){const stairW=2.2,stairLen=Math.min(7,b.w*.44),stairZ=b.z+b.d*.25,innerW=b.w-.7,innerD=b.d-.7,innerL=b.x-innerW/2,innerR=b.x+innerW/2,innerMinZ=b.z-innerD/2,innerMaxZ=b.z+innerD/2,holeW=Math.min(stairLen+.35,innerW-1),holeD=Math.min(stairW+.35,innerD-1),holeL=b.x-holeW/2,holeR=b.x+holeW/2,holeMinZ=stairZ-holeD/2,holeMaxZ=stairZ+holeD/2,front=b.z-b.d/2,balconyOverlap=.78,balconyD=b.balcony+balconyOverlap,balconyZ=front-b.balcony/2+balconyOverlap/2,balconyOutsideZ=front-b.balcony/2;const panels=[{x1:innerL,x2:holeL,z1:innerMinZ,z2:innerMaxZ},{x1:holeR,x2:innerR,z1:innerMinZ,z2:innerMaxZ},{x1:holeL,x2:holeR,z1:innerMinZ,z2:holeMinZ},{x1:holeL,x2:holeR,z1:holeMaxZ,z2:innerMaxZ}].filter(p=>p.x2-p.x1>.12&&p.z2-p.z1>.12).map(p=>({x:(p.x1+p.x2)/2,z:(p.z1+p.z2)/2,w:p.x2-p.x1,d:p.z2-p.z1}));return{stairW,stairLen,stairZ,panels,front,balconyOverlap,balconyD,balconyZ,balconyOutsideZ};}
+function makeBuildingObstacles(){const out=[];for(const b of BUILDINGS){const t=.34,door=2.35,side=(b.w-door)/2,plan=buildingPlan(b);for(let level=0;level<2;level++){const y=level*b.floorH;out.push({type:'box',x:b.x-side/2-door/2,z:b.z-b.d/2+t/2,w:side,d:t,h:2.55,y,fx:b.x,fz:b.z},{type:'box',x:b.x+side/2+door/2,z:b.z-b.d/2+t/2,w:side,d:t,h:2.55,y,fx:b.x,fz:b.z},{type:'box',x:b.x,z:b.z-b.d/2+t/2,w:door,d:t,h:.70,y:y+2.55,fx:b.x,fz:b.z},{type:'box',x:b.x,z:b.z+b.d/2-t/2,w:b.w,d:t,h:3.25,y,fx:b.x,fz:b.z},{type:'box',x:b.x-b.w/2+t/2,z:b.z,w:t,d:b.d,h:3.25,y,fx:b.x,fz:b.z},{type:'box',x:b.x+b.w/2-t/2,z:b.z,w:t,d:b.d,h:3.25,y,fx:b.x,fz:b.z});}for(const p of plan.panels)out.push({type:'box',x:p.x,z:p.z,w:p.w,d:p.d,h:.18,y:b.floorH-.18,fx:b.x,fz:b.z,walkable:true});out.push({type:'box',x:b.x,z:plan.balconyZ,w:b.w*.52,d:plan.balconyD,h:.16,y:b.floorH-.16,fx:b.x,fz:b.z,walkable:true},{type:'box',x:b.x,z:b.z,w:b.w+.1,d:b.d+.1,h:.18,y:b.floorH*2-.16,fx:b.x,fz:b.z,walkable:true},{type:'box',x:b.x,z:plan.front-b.balcony+.08,w:b.w*.52,d:.12,h:.78,y:b.floorH+.15,fx:b.x,fz:b.z},{type:'box',x:b.x-b.w*.26,z:plan.balconyOutsideZ,w:.12,d:b.balcony,h:.78,y:b.floorH+.15,fx:b.x,fz:b.z},{type:'box',x:b.x+b.w*.26,z:plan.balconyOutsideZ,w:.12,d:b.balcony,h:.78,y:b.floorH+.15,fx:b.x,fz:b.z});}return out;}
+function makeBuildingWalkables(){const out=[];for(const b of BUILDINGS){const base=rawTerrainHeight(b.x,b.z),plan=buildingPlan(b);for(const p of plan.panels)out.push({type:'rect',x:p.x,z:p.z,w:p.w,d:p.d,y:base+b.floorH});out.push({type:'rect',x:b.x,z:plan.balconyZ,w:b.w*.52,d:plan.balconyD,y:base+b.floorH},{type:'ramp',x1:b.x-b.stairDir*plan.stairLen/2,x2:b.x+b.stairDir*plan.stairLen/2,z:plan.stairZ,w:plan.stairW,y0:base,y1:base+b.floorH});}return out;}
 
 const WORLD_OBSTACLES = [
-  { type: "box", x: 0, z: 0, w: 8, d: 8, h: 3.2 },
-  { type: "box", x: -24, z: -14, w: 12, d: 5, h: 3.0 },
-  { type: "box", x: 28, z: 19, w: 11, d: 6, h: 3.8 },
-  { type: "box", x: -42, z: 34, w: 7, d: 13, h: 4.2 },
-  { type: "box", x: 46, z: -36, w: 9, d: 9, h: 3.4 },
-  { type: "box", x: 6, z: 48, w: 14, d: 5, h: 2.8 },
-  { type: "box", x: -8, z: -52, w: 6, d: 15, h: 3.1 },
+  ...STATIC_BOXES.map(o=>({type:"box",...o})),
   { type: "pyramid", x: -34, z: -40, base: 12, h: 8 },
   { type: "pyramid", x: 38, z: 42, base: 14, h: 10 },
   { type: "pyramid", x: 52, z: 4, base: 11, h: 7 },
@@ -79,7 +78,7 @@ const WORLD_OBSTACLES = [
   ...makeBuildingObstacles(),
 ];
 const PYRAMIDS=WORLD_OBSTACLES.filter(o=>o.type==="pyramid");
-const TERRAIN_FLATS=[...PYRAMIDS.map(p=>({x:p.x,z:p.z,r:p.base*.62})),...BUILDINGS.map(b=>({x:b.x,z:b.z,r:Math.hypot(b.w,b.d)*.62})),...WORLD_OBSTACLES.filter(o=>o.type==="tree"||o.type==="bush"||o.type==="rock").map(o=>({x:o.x,z:o.z,r:o.type==="tree"?Math.max(1.2,o.r*1.8):Math.max(1.4,o.r*.9)}))];
+const TERRAIN_FOUNDATIONS=[...PYRAMIDS.map(p=>{const flat=p.base/Math.sqrt(2)+2;return{x:p.x,z:p.z,flat,blend:flat+4};}),...STATIC_BOXES.map(o=>{const flat=Math.hypot(o.w,o.d)/2+1.8;return{x:o.x,z:o.z,flat,blend:flat+4};}),...BUILDINGS.map(b=>{const flat=Math.hypot(b.w,b.d)/2+2;return{x:b.x,z:b.z,flat,blend:flat+4.5};})];
 
 function safeOrigin(request, env) {
   const configured = String(env.GAME_ORIGIN || "*").trim();
@@ -224,10 +223,12 @@ function rawTerrainHeight(x, z) {
   const valley=4.0*Math.exp(-((x+12)**2+(z-34)**2)/1050);
   return clamp(rolling+westRidge+northHill+southHill+eastRise+centerKnoll-valley,-2.4,13.8);
 }
-function terrainHeight(x,z){let h=rawTerrainHeight(x,z);for(const f of TERRAIN_FLATS){const d=Math.hypot(x-f.x,z-f.z);if(d>=f.r)continue;const t=clamp(d/f.r,0,1),blend=t*t*(3-2*t);h=rawTerrainHeight(f.x,f.z)*(1-blend)+h*blend;}return h;}
+function terrainHeight(x,z){let h=rawTerrainHeight(x,z);for(const f of TERRAIN_FOUNDATIONS){const d=Math.hypot(x-f.x,z-f.z);if(d>=f.blend)continue;const center=rawTerrainHeight(f.x,f.z);if(d<=f.flat){h=center;continue;}const t=clamp((d-f.flat)/Math.max(.001,f.blend-f.flat),0,1),blend=t*t*(3-2*t);h=center*(1-blend)+h*blend;}return h;}
 const BUILDING_WALKABLES=makeBuildingWalkables();
 function worldSupportHeight(x,z,currentY=terrainHeight(x,z)){let best=terrainHeight(x,z),limit=currentY+.62;for(const p of PYRAMIDS){const dx=Math.abs(x-p.x),dz=Math.abs(z-p.z),half=p.base/2;if(dx<=half&&dz<=half){const y=terrainHeight(p.x,p.z)+p.h*(1-Math.max(dx,dz)/half);if(y<=limit&&y>best)best=y;}}for(const w of BUILDING_WALKABLES){let y=null;if(w.type==='rect'){if(Math.abs(x-w.x)<=w.w/2&&Math.abs(z-w.z)<=w.d/2)y=w.y;}else if(Math.abs(z-w.z)<=w.w/2){const lo=Math.min(w.x1,w.x2),hi=Math.max(w.x1,w.x2);if(x>=lo&&x<=hi){const t=(x-w.x1)/(w.x2-w.x1);y=w.y0+(w.y1-w.y0)*t;}}if(y!=null&&y<=limit&&y>best)best=y;}return best;}
-function obstacleBaseY(o){return terrainHeight(o.fx??o.x,o.fz??o.z)+finiteNumber(o.y,0);}
+function terrainMinAround(x,z,r){let min=terrainHeight(x,z);for(let i=0;i<10;i++){const a=i*Math.PI*2/10;min=Math.min(min,terrainHeight(x+Math.cos(a)*r,z+Math.sin(a)*r));}return min;}
+function naturalGroundBase(type,x,z,r){const footprint=type==='tree'?r:type==='bush'?r*.95:r*.9,burial=type==='tree'?.14:type==='bush'?.10:.20;return terrainMinAround(x,z,footprint)-burial;}
+function obstacleBaseY(o){if(o.type==='tree'||o.type==='bush'||o.type==='rock')return naturalGroundBase(o.type,o.x,o.z,o.r);return terrainHeight(o.fx??o.x,o.fz??o.z)+finiteNumber(o.y,0);}
 
 function projectileHitZone(target, bullet) {
   const tx = finiteNumber(target?.x, 0);
