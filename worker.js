@@ -3,8 +3,8 @@ import {
   terrainHeight, naturalGroundBase, worldSupportHeight, resolveCeilingCollision, MAX_STEP_HEIGHT, BUILDING_PARTS
 } from './world-geometry.js';
 
-const PROTOCOL_VERSION = 23;
-const GAME_VERSION = "1.15.19";
+const PROTOCOL_VERSION = 24;
+const GAME_VERSION = "1.15.20";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;

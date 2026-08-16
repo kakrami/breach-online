@@ -130,18 +130,22 @@ function panelsAroundHole(b,hole){
 }
 
 export function buildingPlan(b){
-  const wallT=.36;
-  // Each story uses one uninterrupted straight flight. Multi-story buildings
-  // alternate between two adjacent lanes only after reaching a full floor.
-  const stairW=Math.min(1.82,Math.max(1.58,b.d*.125)),stairGap=.48;
-  const stairD=stairW*2+stairGap,runLen=Math.min(6.2,Math.max(5.15,b.w*.38));
-  const stairZ=clamp(b.z+b.d*.13,b.z-b.d/2+stairD/2+.62,b.z+b.d/2-stairD/2-.62);
-  const laneOffset=stairGap/2+stairW/2,laneA=stairZ-laneOffset,laneB=stairZ+laneOffset;
+  const wallT=.36,levels=Math.max(2,Math.min(6,Math.floor(b.levels||2)));
+  // One simple straight flight connects each pair of floors. In tall buildings
+  // successive flights are deliberately placed on opposite sides of the room,
+  // so reaching a new floor never feeds directly into a U-turn/switchback.
+  const stairW=Math.min(2.25,Math.max(2.0,b.d*.15));
+  const runLen=Math.min(6.35,Math.max(5.45,b.w*.39));
   const lowX=b.x-runLen/2,highX=b.x+runLen/2;
-  const makeHole=z=>({left:lowX-.08,right:highX+.08,minZ:z-stairW/2-.10,maxZ:z+stairW/2+.10});
-  const holes=[makeHole(laneA),makeHole(laneB)];
+  const laneInset=Math.max(stairW/2+.72,Math.min(b.d*.255,b.d/2-stairW/2-.78));
+  const backLane=clamp(b.z+laneInset,b.z-b.d/2+stairW/2+.72,b.z+b.d/2-stairW/2-.72);
+  const frontLane=clamp(b.z-laneInset,b.z-b.d/2+stairW/2+.72,b.z+b.d/2-stairW/2-.72);
+  const stairZs=Array.from({length:Math.max(1,levels-1)},(_,story)=>story%2===0?backLane:frontLane);
+  // The opening ends exactly at the flight ends. Previous extra padding left a
+  // support gap at the top edge that could make a player fall or fail to climb.
+  const holes=stairZs.map(z=>({left:lowX,right:highX,minZ:z-stairW/2-.06,maxZ:z+stairW/2+.06}));
   const front=b.z-b.d/2,balconyOverlap=.92,balconyD=b.balcony+balconyOverlap,balconyZ=front-b.balcony/2+balconyOverlap/2,balconyOutsideZ=front-b.balcony/2;
-  return{wallT,stairW,stairGap,stairD,runLen,stairZ,laneA,laneB,lowX,highX,holes,front,balconyOverlap,balconyD,balconyZ,balconyOutsideZ};
+  return{wallT,stairW,runLen,lowX,highX,backLane,frontLane,stairZs,holes,front,balconyOverlap,balconyD,balconyZ,balconyOutsideZ};
 }
 
 function addBox(parts,role,x,z,w,d,bottomY,topY,flags={}){
@@ -184,7 +188,7 @@ export function makeBuildingGeometry(b){
   }
 
   for(let floorLevel=1;floorLevel<levels;floorLevel++){
-    const floorY=base+floorLevel*b.floorH,hole=plan.holes[(floorLevel-1)%2],panels=panelsAroundHole(b,hole);
+    const floorY=base+floorLevel*b.floorH,hole=plan.holes[floorLevel-1],panels=panelsAroundHole(b,hole);
     for(const panel of panels){
       addBox(parts,'floor',panel.x,panel.z,panel.w+.03,panel.d+.03,floorY-.18,floorY,{supportTop:true});
       supports.push({type:'rect',x:panel.x,z:panel.z,w:panel.w,d:panel.d,y:floorY});
@@ -199,8 +203,8 @@ export function makeBuildingGeometry(b){
     addBox(parts,'rail',b.x+b.w*.28,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82);
 
     const guardY=floorY+.05,guardH=.76;
-    // Guard only the long sides of the stair opening. Both ends remain open so
-    // the straight flight has a clean, continuous transition at each floor.
+    // Guard the long edges only. The bottom and top of every straight flight
+    // stay open so the player can walk directly onto and off the staircase.
     addBox(parts,'rail',(hole.left+hole.right)/2,hole.minZ+.05,hole.right-hole.left,.12,guardY,guardY+guardH);
     addBox(parts,'rail',(hole.left+hole.right)/2,hole.maxZ-.05,hole.right-hole.left,.12,guardY,guardY+guardH);
   }
@@ -215,21 +219,24 @@ export function makeBuildingGeometry(b){
     addBox(parts,'rail',b.x-b.w/2+.10,b.z,.20,b.d,py,py+.55);addBox(parts,'rail',b.x+b.w/2-.10,b.z,.20,b.d,py,py+.55);
   }
 
+  // Visual treads follow one smooth walkable ramp. Treads themselves do not
+  // block player movement; the ramp is the authoritative walking surface. This
+  // removes the old step-height race where one tread could reject movement
+  // before support-height reconciliation advanced the player onto it.
   const steps=12,stepLen=plan.runLen/steps;
   for(let story=0;story<levels-1;story++){
-    const floorY=base+story*b.floorH,nextY=floorY+b.floorH;
-    const ascendingRight=story%2===0,laneZ=story%2===0?plan.laneA:plan.laneB;
-    const x0=ascendingRight?plan.lowX:plan.highX,x1=ascendingRight?plan.highX:plan.lowX;
-    supports.push({type:'ramp',x1:x0,x2:x1,z:laneZ,w:plan.stairW-.12,y0:floorY,y1:nextY});
+    const floorY=base+story*b.floorH,nextY=floorY+b.floorH,laneZ=plan.stairZs[story],x0=plan.lowX,x1=plan.highX;
+    supports.push({type:'ramp',x1:x0,x2:x1,z:laneZ,w:plan.stairW,y0:floorY,y1:nextY});
     for(let i=0;i<steps;i++){
       const p0=i/steps,p1=(i+1)/steps,mid=(p0+p1)/2,tread=floorY+(nextY-floorY)*p1,x=x0+(x1-x0)*mid;
-      addBox(parts,'stairStep',x,laneZ,stepLen+.04,plan.stairW,tread-.16,tread,{playerSolid:true,projectileSolid:true,supportTop:true});
-      horizontalSolids.push({x,z:laneZ,w:stepLen+.04,d:plan.stairW,bottomY:tread-.16,topY:tread});
-      // Solid stair stringers prevent sideways clipping through the flight and
-      // also make the visible staircase match player/projectile collision.
+      addBox(parts,'stairStep',x,laneZ,stepLen+.045,plan.stairW,tread-.16,tread,{playerSolid:false,projectileSolid:true,supportTop:false});
+      horizontalSolids.push({x,z:laneZ,w:stepLen+.045,d:plan.stairW,bottomY:tread-.16,topY:tread});
+      // Side rails sit outside the walkable width and follow the stair rise.
+      // They prevent entering/crossing the staircase sideways without narrowing
+      // the usable center lane or creating an invisible wall at the first step.
       for(const side of [-1,1]){
-        const sideZ=laneZ+side*(plan.stairW/2-.06);
-        addBox(parts,'stairSide',x,sideZ,stepLen+.055,.14,floorY,tread+.78,{playerSolid:true,projectileSolid:true});
+        const sideZ=laneZ+side*(plan.stairW/2+.07);
+        addBox(parts,'stairSide',x,sideZ,stepLen+.075,.14,tread-.18,tread+.72,{playerSolid:true,projectileSolid:true});
       }
     }
   }
