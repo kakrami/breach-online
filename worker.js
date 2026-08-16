@@ -4,7 +4,7 @@ import {
 } from './world-geometry.js';
 
 const PROTOCOL_VERSION = 25;
-const GAME_VERSION = "1.15.21";
+const GAME_VERSION = "1.15.22";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -12,6 +12,7 @@ const MAX_BOTS = 8;
 const MAX_MESSAGE_BYTES = 24 * 1024;
 const ROOM_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
 const EMPTY_ROOM_GRACE_MS = 10 * 60 * 1000;
+const ALARM_MIN_FUTURE_MS = 5 * 1000;
 const DIRECTORY_LEASE_MS = 15 * 1000;
 const DIRECTORY_HEARTBEAT_MS = 5 * 1000;
 const SIM_MIN_STEP_MS = 16;
@@ -571,6 +572,51 @@ export class GameRoom {
     this.lastBotBroadcastAt = 0;
     this.lastPersistAt = 0;
     this.lastDirectoryHeartbeatAt = 0;
+    this.metaCache = null;
+  }
+
+  async getMeta() {
+    if (this.metaCache) return this.metaCache;
+    const meta = await this.ctx.storage.get("meta");
+    if (meta) this.metaCache = meta;
+    return meta || null;
+  }
+
+  async putMeta(meta) {
+    this.metaCache = meta;
+    await this.ctx.storage.put("meta", meta);
+  }
+
+  liveSockets(exceptSocket = null) {
+    return this.ctx.getWebSockets().filter((socket) => {
+      if (socket === exceptSocket) return false;
+      const attachment = socket.deserializeAttachment() || {};
+      return !!attachment.clientId && !attachment.replaced;
+    });
+  }
+
+  async scheduleRoomAlarm(targetAt) {
+    const now = Date.now();
+    const target = finiteNumber(targetAt, 0);
+    // Never schedule an alarm at or near a timestamp that has already passed.
+    // A past alarm time can execute again immediately and create an alarm storm.
+    if (target <= now + ALARM_MIN_FUTURE_MS) {
+      await this.ctx.storage.deleteAlarm();
+      return false;
+    }
+    const current = await this.ctx.storage.getAlarm();
+    if (current != null && Math.abs(current - target) < 1000) return true;
+    await this.ctx.storage.setAlarm(target);
+    return true;
+  }
+
+  async cleanupRoom(meta) {
+    this.metaCache = null;
+    if (meta?.code) await this.removeDirectory(meta.code);
+    // Explicitly clear the alarm before storage. deleteAll() also clears alarms
+    // with our compatibility date, but doing both makes cleanup unambiguous.
+    try { await this.ctx.storage.deleteAlarm(); } catch {}
+    await this.ctx.storage.deleteAll();
   }
 
   async ensureSimulation(meta) {
@@ -589,7 +635,7 @@ export class GameRoom {
     const url = new URL(request.url);
 
     if (url.pathname === "/create" && request.method === "POST") {
-      const existing = await this.ctx.storage.get("meta");
+      const existing = await this.getMeta();
       if (existing) return json(request, this.env, { error: "World already exists." }, 409);
 
       const code = normalizeRoomCode(url.searchParams.get("code"));
@@ -602,18 +648,23 @@ export class GameRoom {
       if (botCount > MAX_BOTS) return json(request, this.env, { error: `Maximum ${MAX_BOTS} bots per world.` }, 400);
       const now = Date.now();
       const meta = { code, protocol: PROTOCOL_VERSION, ownerClientId, botCount, blueBots, redBots, botDifficulty, settings: normalizeWorldSettings(), createdAt: now, expiresAt: now + ROOM_MAX_LIFETIME_MS };
-      await this.ctx.storage.put("meta", meta);
+      await this.putMeta(meta);
       this.bots = makeBots(blueBots, redBots);
       await this.ctx.storage.put("bots", this.bots);
-      await this.ctx.storage.setAlarm(meta.expiresAt);
+      await this.scheduleRoomAlarm(meta.expiresAt);
       await this.updateDirectory(0, meta);
       return json(request, this.env, { ok: true }, 201);
     }
 
-    const meta = await this.ctx.storage.get("meta");
+    let meta = await this.getMeta();
     if (!meta) return json(request, this.env, { error: "World not found." }, 404);
     if (Math.floor(finiteNumber(meta.protocol, 0)) !== PROTOCOL_VERSION) return json(request, this.env, { error: "This world was created by an older game version. Create a new world.", protocol: PROTOCOL_VERSION }, 409);
-    if (Date.now() >= meta.expiresAt) return json(request, this.env, { error: "World expired." }, 410);
+    const fetchNow = Date.now();
+    if (fetchNow >= finiteNumber(meta.expiresAt, 0)) return json(request, this.env, { error: "World expired." }, 410);
+    if (finiteNumber(meta.expiresAt, 0) <= fetchNow + 60_000) {
+      meta.expiresAt = fetchNow + ROOM_MAX_LIFETIME_MS;
+      await this.putMeta(meta);
+    }
     await this.ensureSimulation(meta);
 
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
@@ -689,7 +740,7 @@ export class GameRoom {
     this.ctx.acceptWebSocket(server);
     await this.ctx.storage.delete("emptySince");
     await this.ctx.storage.delete(`reconnect:${clientId}`);
-    await this.ctx.storage.setAlarm(meta.expiresAt);
+    await this.scheduleRoomAlarm(meta.expiresAt);
 
     const currentPlayers = liveMembers.map(({ attachment: a }) => publicPlayer(a));
     server.send(JSON.stringify({
@@ -726,7 +777,7 @@ export class GameRoom {
 
     const payload = parseJson(message);
     if (!payload) return;
-    const meta = await this.ctx.storage.get("meta");
+    const meta = await this.getMeta();
     if (!meta) return;
     await this.ensureSimulation(meta);
 
@@ -813,7 +864,7 @@ export class GameRoom {
       }
       const nextSettings = normalizeWorldSettings(payload.settings);
       meta.settings = nextSettings;
-      await this.ctx.storage.put("meta", meta);
+      await this.putMeta(meta);
       this.broadcast({ t: "settings", settings: nextSettings, by: me.clientId });
       return;
     }
@@ -834,7 +885,7 @@ export class GameRoom {
       meta.redBots = redBots;
       meta.botCount = blueBots + redBots;
       meta.botDifficulty = safeBotDifficulty(payload.difficulty);
-      await this.ctx.storage.put("meta", meta);
+      await this.putMeta(meta);
       this.bots = reconcileBots(this.bots, blueBots, redBots);
       const activeBotIds = new Set(this.bots.map((bot) => bot.id));
       for (const [id, bullet] of [...this.bullets.entries()]) {
@@ -994,7 +1045,7 @@ export class GameRoom {
     }
     if (now >= meta.expiresAt - 60_000) {
       meta.expiresAt = now + ROOM_MAX_LIFETIME_MS;
-      await this.ctx.storage.put("meta", meta);
+      await this.putMeta(meta);
       await this.updateDirectory(this.ctx.getWebSockets().length, meta);
     }
   }
@@ -1367,15 +1418,36 @@ export class GameRoom {
       this.broadcast({ t: "leave", id: attachment.clientId }, socket);
     }
 
-    const live = this.ctx.getWebSockets().filter((ws) => ws !== socket);
-    const meta = await this.ctx.storage.get("meta");
-    if (!meta) return;
+    const live = this.liveSockets(socket);
+    const meta = await this.getMeta();
+    if (!meta) {
+      try { await this.ctx.storage.deleteAlarm(); } catch {}
+      return;
+    }
 
     if (live.length === 0) {
       const now = Date.now();
       await this.ctx.storage.put("emptySince", now);
-      await this.ctx.storage.setAlarm(Math.min(meta.expiresAt, now + EMPTY_ROOM_GRACE_MS));
+      const expiresAt = finiteNumber(meta.expiresAt, 0);
+      const cleanupAt = Math.min(expiresAt > 0 ? expiresAt : now, now + EMPTY_ROOM_GRACE_MS);
+      await this.updateDirectory(0, meta, attachment.replaced ? "" : (attachment.clientId || ""));
+      if (cleanupAt <= now + ALARM_MIN_FUTURE_MS) {
+        await this.cleanupRoom(meta);
+        return;
+      }
+      await this.scheduleRoomAlarm(cleanupAt);
+      return;
     }
+
+    await this.ctx.storage.delete("emptySince");
+    let expiresAt = finiteNumber(meta.expiresAt, 0);
+    const now = Date.now();
+    if (expiresAt <= now + ALARM_MIN_FUTURE_MS) {
+      meta.expiresAt = now + ROOM_MAX_LIFETIME_MS;
+      expiresAt = meta.expiresAt;
+      await this.putMeta(meta);
+    }
+    await this.scheduleRoomAlarm(expiresAt);
     await this.updateDirectory(live.length, meta, attachment.replaced ? "" : (attachment.clientId || ""));
   }
 
@@ -1384,25 +1456,52 @@ export class GameRoom {
   }
 
   async alarm() {
-    const meta = await this.ctx.storage.get("meta");
-    if (!meta) return;
-    const now = Date.now();
-    const sockets = this.ctx.getWebSockets();
-    const emptySince = await this.ctx.storage.get("emptySince");
+    // Fail-safe alarm handler: never leave a past-due alarm scheduled and never
+    // throw an exception that can turn a bad state into rapid automatic retries.
+    try {
+      const meta = await this.getMeta();
+      if (!meta) {
+        await this.ctx.storage.deleteAlarm();
+        return;
+      }
 
-    if (sockets.length === 0 && emptySince && now - emptySince >= EMPTY_ROOM_GRACE_MS) {
-      await this.removeDirectory(meta.code);
-      await this.ctx.storage.deleteAll();
-      return;
+      const now = Date.now();
+      const live = this.liveSockets();
+      const expiresAt = finiteNumber(meta.expiresAt, 0);
+
+      if (live.length === 0) {
+        let emptySince = finiteNumber(await this.ctx.storage.get("emptySince"), 0);
+        if (emptySince <= 0 || emptySince > now) {
+          emptySince = now;
+          await this.ctx.storage.put("emptySince", emptySince);
+        }
+
+        const cleanupAt = Math.min(expiresAt > 0 ? expiresAt : now, emptySince + EMPTY_ROOM_GRACE_MS);
+        if (cleanupAt <= now + ALARM_MIN_FUTURE_MS) {
+          await this.cleanupRoom(meta);
+          return;
+        }
+
+        // Empty rooms get exactly one future cleanup alarm. No active-room TTL
+        // alarm is allowed to overwrite it with an expired timestamp.
+        await this.scheduleRoomAlarm(cleanupAt);
+        return;
+      }
+
+      // A live room may extend its TTL, but the newly scheduled timestamp must
+      // always be safely in the future.
+      if (expiresAt <= now + ALARM_MIN_FUTURE_MS) {
+        meta.expiresAt = now + ROOM_MAX_LIFETIME_MS;
+        await this.putMeta(meta);
+        await this.updateDirectory(live.length, meta);
+      }
+      await this.scheduleRoomAlarm(meta.expiresAt);
+    } catch (error) {
+      console.error("GameRoom alarm failed; disabling alarm to prevent retry loops", error);
+      try { await this.ctx.storage.deleteAlarm(); } catch {}
+      // Do not rethrow. A future room request/connection will schedule the next
+      // legitimate alarm, while a broken stale room remains dormant.
     }
-
-    if (now >= meta.expiresAt && sockets.length > 0) {
-      meta.expiresAt = now + ROOM_MAX_LIFETIME_MS;
-      await this.ctx.storage.put("meta", meta);
-      await this.updateDirectory(sockets.length, meta);
-    }
-
-    await this.ctx.storage.setAlarm(meta.expiresAt);
   }
 
   broadcast(payload, exceptSocket = null) {
