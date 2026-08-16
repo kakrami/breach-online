@@ -3,8 +3,8 @@ import {
   terrainHeight, naturalGroundBase, worldSupportHeight, resolveCeilingCollision, MAX_STEP_HEIGHT, BUILDING_PARTS
 } from './world-geometry.js';
 
-const PROTOCOL_VERSION = 24;
-const GAME_VERSION = "1.15.20";
+const PROTOCOL_VERSION = 25;
+const GAME_VERSION = "1.15.21";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -906,19 +906,28 @@ export class GameRoom {
       dx *= scale; dz *= scale;
     }
 
-    let x = me.x, z = me.z;
+    let x = me.x, z = me.z, walkY = me.y;
+    const startSupport=worldSupportHeight(me.x,me.z,me.y),startedGrounded=Math.abs(me.y-startSupport)<=.24;
     const travel = Math.hypot(dx, dz),solidActors=this.solidActors(me.clientId,now);
-    const steps = Math.max(1, Math.ceil(travel / 0.28));
+    const steps = Math.max(1, Math.ceil(travel / 0.16));
     const sx = dx / steps, sz = dz / steps;
     for (let i = 0; i < steps; i += 1) {
       const fromX=x,fromZ=z,tryX = clamp(x + sx, -ARENA_LIMIT, ARENA_LIMIT);
-      if (!worldBlocked(tryX, z, PLAYER_RADIUS, me.y)&&!this.actorBlocksAt(tryX,z,me.y,fromX,fromZ,solidActors)) x = tryX; else corrected = true;
+      if (!worldBlocked(tryX, z, PLAYER_RADIUS, walkY)&&!this.actorBlocksAt(tryX,z,walkY,fromX,fromZ,solidActors)) x = tryX; else corrected = true;
+      if(startedGrounded)walkY=worldSupportHeight(x,z,walkY);
       const beforeZx=x,beforeZz=z,tryZ = clamp(z + sz, -ARENA_LIMIT, ARENA_LIMIT);
-      if (!worldBlocked(x, tryZ, PLAYER_RADIUS, me.y)&&!this.actorBlocksAt(x,tryZ,me.y,beforeZx,beforeZz,solidActors)) z = tryZ; else corrected = true;
+      if (!worldBlocked(x, tryZ, PLAYER_RADIUS, walkY)&&!this.actorBlocksAt(x,tryZ,walkY,beforeZx,beforeZz,solidActors)) z = tryZ; else corrected = true;
+      if(startedGrounded)walkY=worldSupportHeight(x,z,walkY);
     }
 
-    const rawRequestedY = finiteNumber(payload.y, me.y),ceiling=resolveCeilingCollision(me.y,rawRequestedY,x,z),requestedY=ceiling.y;
-    const ground = worldSupportHeight(x,z,Math.max(me.y,requestedY));
+    const rawRequestedY = finiteNumber(payload.y, me.y);
+    // Grounded stair movement changes Y because the support surface rises, not
+    // because the player jumped. Accept the swept tread height before applying
+    // ceiling logic so a delayed packet cannot be mistaken for a jump through a stair.
+    const followsWalkSurface=startedGrounded&&Math.abs(rawRequestedY-walkY)<=.34;
+    const ceiling=followsWalkSurface?{y:walkY,hit:false}:resolveCeilingCollision(me.y,rawRequestedY,x,z);
+    const requestedY=ceiling.y;
+    const ground = worldSupportHeight(x,z,Math.max(walkY,requestedY));
     const maxAirHeight = ground + settings.movement.jumpHeight + 0.45;
     const y = clamp(requestedY, ground, maxAirHeight);
     const verticalCorrected = ceiling.hit||Math.abs(y - rawRequestedY) > 0.02;

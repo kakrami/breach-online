@@ -219,24 +219,24 @@ export function makeBuildingGeometry(b){
     addBox(parts,'rail',b.x-b.w/2+.10,b.z,.20,b.d,py,py+.55);addBox(parts,'rail',b.x+b.w/2-.10,b.z,.20,b.d,py,py+.55);
   }
 
-  // Visual treads follow one smooth walkable ramp. Treads themselves do not
-  // block player movement; the ramp is the authoritative walking surface. This
-  // removes the old step-height race where one tread could reject movement
-  // before support-height reconciliation advanced the player onto it.
-  const steps=12,stepLen=plan.runLen/steps;
+  // The visible stair treads are also the authoritative walkable surfaces.
+  // There is no hidden ramp underneath them. Keeping rendering and support on
+  // the same geometry prevents the player from visually sinking/jumping through
+  // stairs when frame time or network updates are uneven.
+  const steps=14,stepLen=plan.runLen/steps;
   for(let story=0;story<levels-1;story++){
     const floorY=base+story*b.floorH,nextY=floorY+b.floorH,laneZ=plan.stairZs[story],x0=plan.lowX,x1=plan.highX;
-    supports.push({type:'ramp',x1:x0,x2:x1,z:laneZ,w:plan.stairW,y0:floorY,y1:nextY});
     for(let i=0;i<steps;i++){
       const p0=i/steps,p1=(i+1)/steps,mid=(p0+p1)/2,tread=floorY+(nextY-floorY)*p1,x=x0+(x1-x0)*mid;
-      addBox(parts,'stairStep',x,laneZ,stepLen+.045,plan.stairW,tread-.16,tread,{playerSolid:false,projectileSolid:true,supportTop:false});
-      horizontalSolids.push({x,z:laneZ,w:stepLen+.045,d:plan.stairW,bottomY:tread-.16,topY:tread});
-      // Side rails sit outside the walkable width and follow the stair rise.
-      // They prevent entering/crossing the staircase sideways without narrowing
-      // the usable center lane or creating an invisible wall at the first step.
+      const treadW=stepLen+.055;
+      addBox(parts,'stairStep',x,laneZ,treadW,plan.stairW,tread-.18,tread,{playerSolid:false,projectileSolid:true,supportTop:false});
+      supports.push({type:'rect',x,z:laneZ,w:treadW,d:plan.stairW,y:tread,role:'stairStep'});
+      horizontalSolids.push({x,z:laneZ,w:treadW,d:plan.stairW,bottomY:tread-.18,topY:tread,role:'stairStep'});
+      // Side rails sit just outside the tread width. They stop side entry while
+      // leaving both ends of the straight flight completely open.
       for(const side of [-1,1]){
         const sideZ=laneZ+side*(plan.stairW/2+.07);
-        addBox(parts,'stairSide',x,sideZ,stepLen+.075,.14,tread-.18,tread+.72,{playerSolid:true,projectileSolid:true});
+        addBox(parts,'stairSide',x,sideZ,stepLen+.085,.14,tread-.20,tread+.74,{playerSolid:true,projectileSolid:true});
       }
     }
   }
