@@ -1,5 +1,5 @@
 const PROTOCOL_VERSION = 15;
-const GAME_VERSION = "1.15.10";
+const GAME_VERSION = "1.15.11";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -7,6 +7,8 @@ const MAX_BOTS = 8;
 const MAX_MESSAGE_BYTES = 24 * 1024;
 const ROOM_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
 const EMPTY_ROOM_GRACE_MS = 10 * 60 * 1000;
+const DIRECTORY_LEASE_MS = 15 * 1000;
+const DIRECTORY_HEARTBEAT_MS = 5 * 1000;
 const RECONNECT_GRACE_MS = 45 * 1000;
 const HEALTH_REGEN_TICK_MS = 500;
 const HEADSHOT_MULTIPLIER = 2;
@@ -466,7 +468,9 @@ export class WorldDirectory {
     if (url.pathname === "/list") {
       let changed = false;
       for (const [code, room] of Object.entries(rooms)) {
-        if (!room || room.expiresAt <= now) {
+        const leaseExpired = !room || room.players <= 0 || now - finiteNumber(room.updatedAt, 0) > DIRECTORY_LEASE_MS;
+        const worldExpired = !room || finiteNumber(room.expiresAt, 0) <= now;
+        if (leaseExpired || worldExpired) {
           delete rooms[code];
           changed = true;
         }
@@ -526,6 +530,7 @@ export class GameRoom {
     this.lastSimAt = 0;
     this.lastBotBroadcastAt = 0;
     this.lastPersistAt = 0;
+    this.lastDirectoryHeartbeatAt = 0;
   }
 
   async ensureSimulation(meta) {
@@ -926,6 +931,10 @@ export class GameRoom {
     if (now - this.lastPersistAt >= 2000) {
       this.lastPersistAt = now;
       try { await this.ctx.storage.put("bots", this.bots); } catch {}
+    }
+    if (now - this.lastDirectoryHeartbeatAt >= DIRECTORY_HEARTBEAT_MS) {
+      this.lastDirectoryHeartbeatAt = now;
+      await this.updateDirectory(this.ctx.getWebSockets().length, meta);
     }
     if (now >= meta.expiresAt - 60_000) {
       meta.expiresAt = now + ROOM_MAX_LIFETIME_MS;
@@ -1331,6 +1340,10 @@ export class GameRoom {
   }
 
   async updateDirectory(players, meta, excludeClientId = "") {
+    if (players <= 0) {
+      await this.removeDirectory(meta.code);
+      return;
+    }
     const directory = await directoryStub(this.env);
     let blue = 0, red = 0;
     for (const socket of this.ctx.getWebSockets()) {
