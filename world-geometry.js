@@ -131,19 +131,17 @@ function panelsAroundHole(b,hole){
 
 export function buildingPlan(b){
   const wallT=.36;
-  const stairW=Math.min(1.6,Math.max(1.42,b.d*.115));
-  const stairGap=.24;
-  const stairD=stairW*2+stairGap;
-  const runLen=Math.min(5.6,Math.max(4.5,b.w*.34));
-  const landingLen=1.22;
-  const stairZ=clamp(b.z+b.d*.17,b.z-b.d/2+stairD/2+.55,b.z+b.d/2-stairD/2-.55);
-  const lowX=b.x-runLen/2,turnX=b.x+runLen/2,landingFarX=turnX+landingLen;
-  const hole={left:lowX,right:landingFarX,minZ:stairZ-stairD/2-.08,maxZ:stairZ+stairD/2+.08};
-  const laneOffset=stairGap/2+stairW/2;
-  const laneA=stairZ-laneOffset,laneB=stairZ+laneOffset;
-  const panels=panelsAroundHole(b,hole);
+  // Each story uses one uninterrupted straight flight. Multi-story buildings
+  // alternate between two adjacent lanes only after reaching a full floor.
+  const stairW=Math.min(1.82,Math.max(1.58,b.d*.125)),stairGap=.48;
+  const stairD=stairW*2+stairGap,runLen=Math.min(6.2,Math.max(5.15,b.w*.38));
+  const stairZ=clamp(b.z+b.d*.13,b.z-b.d/2+stairD/2+.62,b.z+b.d/2-stairD/2-.62);
+  const laneOffset=stairGap/2+stairW/2,laneA=stairZ-laneOffset,laneB=stairZ+laneOffset;
+  const lowX=b.x-runLen/2,highX=b.x+runLen/2;
+  const makeHole=z=>({left:lowX-.08,right:highX+.08,minZ:z-stairW/2-.10,maxZ:z+stairW/2+.10});
+  const holes=[makeHole(laneA),makeHole(laneB)];
   const front=b.z-b.d/2,balconyOverlap=.92,balconyD=b.balcony+balconyOverlap,balconyZ=front-b.balcony/2+balconyOverlap/2,balconyOutsideZ=front-b.balcony/2;
-  return{wallT,stairW,stairGap,stairD,runLen,landingLen,stairZ,laneA,laneB,lowX,turnX,landingFarX,hole,panels,front,balconyOverlap,balconyD,balconyZ,balconyOutsideZ};
+  return{wallT,stairW,stairGap,stairD,runLen,stairZ,laneA,laneB,lowX,highX,holes,front,balconyOverlap,balconyD,balconyZ,balconyOutsideZ};
 }
 
 function addBox(parts,role,x,z,w,d,bottomY,topY,flags={}){
@@ -186,8 +184,8 @@ export function makeBuildingGeometry(b){
   }
 
   for(let floorLevel=1;floorLevel<levels;floorLevel++){
-    const floorY=base+floorLevel*b.floorH;
-    for(const panel of plan.panels){
+    const floorY=base+floorLevel*b.floorH,hole=plan.holes[(floorLevel-1)%2],panels=panelsAroundHole(b,hole);
+    for(const panel of panels){
       addBox(parts,'floor',panel.x,panel.z,panel.w+.03,panel.d+.03,floorY-.18,floorY,{supportTop:true});
       supports.push({type:'rect',x:panel.x,z:panel.z,w:panel.w,d:panel.d,y:floorY});
       horizontalSolids.push({x:panel.x,z:panel.z,w:panel.w,d:panel.d,bottomY:floorY-.18,topY:floorY});
@@ -201,9 +199,10 @@ export function makeBuildingGeometry(b){
     addBox(parts,'rail',b.x+b.w*.28,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82);
 
     const guardY=floorY+.05,guardH=.76;
-    addBox(parts,'rail',(plan.hole.left+plan.hole.right)/2,plan.hole.minZ+.05,plan.hole.right-plan.hole.left,.12,guardY,guardY+guardH);
-    addBox(parts,'rail',(plan.hole.left+plan.hole.right)/2,plan.hole.maxZ-.05,plan.hole.right-plan.hole.left,.12,guardY,guardY+guardH);
-    addBox(parts,'rail',plan.hole.right-.05,plan.stairZ,.12,plan.hole.maxZ-plan.hole.minZ,guardY,guardY+guardH);
+    // Guard only the long sides of the stair opening. Both ends remain open so
+    // the straight flight has a clean, continuous transition at each floor.
+    addBox(parts,'rail',(hole.left+hole.right)/2,hole.minZ+.05,hole.right-hole.left,.12,guardY,guardY+guardH);
+    addBox(parts,'rail',(hole.left+hole.right)/2,hole.maxZ-.05,hole.right-hole.left,.12,guardY,guardY+guardH);
   }
 
   const roofY=base+b.floorH*levels;
@@ -216,27 +215,23 @@ export function makeBuildingGeometry(b){
     addBox(parts,'rail',b.x-b.w/2+.10,b.z,.20,b.d,py,py+.55);addBox(parts,'rail',b.x+b.w/2-.10,b.z,.20,b.d,py,py+.55);
   }
 
-  const steps=8,halfRise=b.floorH/2,stepLen=plan.runLen/steps;
+  const steps=12,stepLen=plan.runLen/steps;
   for(let story=0;story<levels-1;story++){
-    const floorY=base+story*b.floorH,midY=floorY+halfRise,nextY=floorY+b.floorH;
-    supports.push({type:'ramp',x1:plan.lowX,x2:plan.turnX,z:plan.laneA,w:plan.stairW-.12,y0:floorY,y1:midY});
-    supports.push({type:'rect',x:(plan.turnX+plan.landingFarX)/2,z:plan.stairZ,w:plan.landingLen,d:plan.stairD,y:midY});
-    supports.push({type:'ramp',x1:plan.turnX,x2:plan.lowX,z:plan.laneB,w:plan.stairW-.12,y0:midY,y1:nextY});
-    addBox(parts,'stairLanding',(plan.turnX+plan.landingFarX)/2,plan.stairZ,plan.landingLen,plan.stairD,midY-.18,midY,{supportTop:true});
-    horizontalSolids.push({x:(plan.turnX+plan.landingFarX)/2,z:plan.stairZ,w:plan.landingLen,d:plan.stairD,bottomY:midY-.18,topY:midY});
-
-    const makeFlight=(x0,x1,z,y0,y1)=>{
-      for(let i=0;i<steps;i++){
-        const p0=i/steps,p1=(i+1)/steps,mid=(p0+p1)/2,tread=y0+(y1-y0)*p1,x=x0+(x1-x0)*mid;
-        addBox(parts,'stairStep',x,z,stepLen+.035,plan.stairW,tread-.14,tread,{playerSolid:true,projectileSolid:true,supportTop:true});horizontalSolids.push({x,z,w:stepLen+.035,d:plan.stairW,bottomY:tread-.14,topY:tread});
-        for(const side of [-1,1]){
-          const sideZ=z+side*(plan.stairW/2-.055);
-          addBox(parts,'stairSide',x,sideZ,stepLen+.05,.13,y0,tread+.72,{playerSolid:true,projectileSolid:true});
-        }
+    const floorY=base+story*b.floorH,nextY=floorY+b.floorH;
+    const ascendingRight=story%2===0,laneZ=story%2===0?plan.laneA:plan.laneB;
+    const x0=ascendingRight?plan.lowX:plan.highX,x1=ascendingRight?plan.highX:plan.lowX;
+    supports.push({type:'ramp',x1:x0,x2:x1,z:laneZ,w:plan.stairW-.12,y0:floorY,y1:nextY});
+    for(let i=0;i<steps;i++){
+      const p0=i/steps,p1=(i+1)/steps,mid=(p0+p1)/2,tread=floorY+(nextY-floorY)*p1,x=x0+(x1-x0)*mid;
+      addBox(parts,'stairStep',x,laneZ,stepLen+.04,plan.stairW,tread-.16,tread,{playerSolid:true,projectileSolid:true,supportTop:true});
+      horizontalSolids.push({x,z:laneZ,w:stepLen+.04,d:plan.stairW,bottomY:tread-.16,topY:tread});
+      // Solid stair stringers prevent sideways clipping through the flight and
+      // also make the visible staircase match player/projectile collision.
+      for(const side of [-1,1]){
+        const sideZ=laneZ+side*(plan.stairW/2-.06);
+        addBox(parts,'stairSide',x,sideZ,stepLen+.055,.14,floorY,tread+.78,{playerSolid:true,projectileSolid:true});
       }
-    };
-    makeFlight(plan.lowX,plan.turnX,plan.laneA,floorY,midY);
-    makeFlight(plan.turnX,plan.lowX,plan.laneB,midY,nextY);
+    }
   }
 
   return{levels,base,plan,parts,supports,horizontalSolids};

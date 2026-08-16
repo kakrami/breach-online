@@ -3,8 +3,8 @@ import {
   terrainHeight, naturalGroundBase, worldSupportHeight, resolveCeilingCollision, MAX_STEP_HEIGHT, BUILDING_PARTS
 } from './world-geometry.js';
 
-const PROTOCOL_VERSION = 22;
-const GAME_VERSION = "1.15.18";
+const PROTOCOL_VERSION = 23;
+const GAME_VERSION = "1.15.19";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -44,10 +44,10 @@ const PLAYER_COLORS = [
 ];
 const BOT_COLORS = ["#78baff", "#ff8290"];
 const BOT_DIFFICULTIES = Object.freeze({
-  easy: Object.freeze({ moveRun: .42, moveWalk: .55, range: 18, fireScale: 1.55, reactionBase: 520, reactionJitter: 480, spreadBase: .105, spreadDistance: .0030 }),
-  normal: Object.freeze({ moveRun: .58, moveWalk: .72, range: 24, fireScale: 1.00, reactionBase: 170, reactionJitter: 260, spreadBase: .032, spreadDistance: .0016 }),
-  hard: Object.freeze({ moveRun: .72, moveWalk: .86, range: 30, fireScale: .78, reactionBase: 95, reactionJitter: 150, spreadBase: .018, spreadDistance: .0010 }),
-  elite: Object.freeze({ moveRun: .88, moveWalk: .96, range: 36, fireScale: .62, reactionBase: 45, reactionJitter: 85, spreadBase: .009, spreadDistance: .00055 }),
+  easy: Object.freeze({ moveRun: .44, moveWalk: .58, strafe: .08, preferredRange: 9.5, range: 19, fireScale: 1.48, reactionBase: 480, reactionJitter: 430, spreadBase: .098, spreadDistance: .0028 }),
+  normal: Object.freeze({ moveRun: .72, moveWalk: .86, strafe: .38, preferredRange: 8.0, range: 30, fireScale: .82, reactionBase: 105, reactionJitter: 160, spreadBase: .022, spreadDistance: .00105 }),
+  hard: Object.freeze({ moveRun: .94, moveWalk: 1.02, strafe: .72, preferredRange: 7.0, range: 38, fireScale: .56, reactionBase: 42, reactionJitter: 70, spreadBase: .0085, spreadDistance: .00048 }),
+  elite: Object.freeze({ moveRun: 1.06, moveWalk: 1.10, strafe: .96, preferredRange: 6.3, range: 46, fireScale: .42, reactionBase: 12, reactionJitter: 28, spreadBase: .0038, spreadDistance: .00022 }),
 });
 function safeBotDifficulty(value) {
   const key = String(value || "normal").toLowerCase();
@@ -138,25 +138,22 @@ function safeTeam(value) {
 }
 
 function safeWeapon(value) {
-  return value === "sniper" || value === "shotgun" || value === "assault" ? value : "pistol";
+  return Object.prototype.hasOwnProperty.call(WEAPONS, value) ? value : "pistol";
 }
 
-function freshAmmo() {
-  return { pistol: WEAPONS.pistol.mag, assault: WEAPONS.assault.mag, shotgun: WEAPONS.shotgun.mag, sniper: WEAPONS.sniper.mag };
+const EQUIPMENT_CAPS = Object.freeze({ flash: 2, sticky: 2 });
+function safeEquipmentKind(value){return Object.prototype.hasOwnProperty.call(EQUIPMENT_CAPS,value)?value:'flash';}
+function freshAmmo(){return Object.fromEntries(Object.entries(WEAPONS).map(([name,spec])=>[name,spec.mag]));}
+function normalizeAmmo(value){
+  const v=value&&typeof value==="object"?value:{};
+  return Object.fromEntries(Object.entries(WEAPONS).map(([name,spec])=>[name,clamp(Math.floor(finiteNumber(v[name],spec.mag)),0,spec.mag)]));
 }
-
-function normalizeAmmo(value) {
-  const v = value && typeof value === "object" ? value : {};
-  return {
-    pistol: clamp(Math.floor(finiteNumber(v.pistol, WEAPONS.pistol.mag)), 0, WEAPONS.pistol.mag),
-    assault: clamp(Math.floor(finiteNumber(v.assault, WEAPONS.assault.mag)), 0, WEAPONS.assault.mag),
-    shotgun: clamp(Math.floor(finiteNumber(v.shotgun, WEAPONS.shotgun.mag)), 0, WEAPONS.shotgun.mag),
-    sniper: clamp(Math.floor(finiteNumber(v.sniper, WEAPONS.sniper.mag)), 0, WEAPONS.sniper.mag),
-  };
+function freshEquipment(){return {...EQUIPMENT_CAPS};}
+function normalizeEquipment(v){v=v&&typeof v==="object"?v:{};return Object.fromEntries(Object.entries(EQUIPMENT_CAPS).map(([name,cap])=>[name,clamp(Math.floor(finiteNumber(v[name],cap)),0,cap)]));}
+function refreshUnlimitedResources(me){
+  if(!me?.godMode)return;
+  me.ammo=freshAmmo();me.equipment=freshEquipment();me.reloadAt=0;me.reloadWeapon='';
 }
-
-function freshEquipment(){return {flash:2,sticky:2};}
-function normalizeEquipment(v){v=v&&typeof v==="object"?v:{};return {flash:clamp(Math.floor(finiteNumber(v.flash,2)),0,2),sticky:clamp(Math.floor(finiteNumber(v.sticky,2)),0,2)};}
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -738,6 +735,7 @@ export class GameRoom {
     const now = Date.now();
     const settings = normalizeWorldSettings(meta.settings);
 
+    if(me.godMode)refreshUnlimitedResources(me);
     if (me.reloadAt && now >= me.reloadAt) {
       const weapon = safeWeapon(me.reloadWeapon || me.weapon);
       me.reloadAt = 0; me.reloadWeapon = ""; me.ammo = normalizeAmmo(me.ammo); me.ammo[weapon] = WEAPONS[weapon].mag; me.combatRev = Math.max(0,finiteNumber(me.combatRev,0)) + 1;
@@ -766,24 +764,26 @@ export class GameRoom {
       const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
       if(requestedWeapon!==me.weapon){me.weapon=requestedWeapon;me.reloadAt=0;me.reloadWeapon="";me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;this.broadcast({t:'weapon',id:me.clientId,weapon:requestedWeapon},socket);}
       me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4);
-      const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon];me.ammo=normalizeAmmo(me.ammo);
+      const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon],unlimited=!!me.godMode;me.ammo=normalizeAmmo(me.ammo);
+      if(unlimited)refreshUnlimitedResources(me);
       if(me.hp<=0||now<me.wastedUntil){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'dead'});return;}
-      if(me.reloadAt){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'reloading'});return;}
+      if(!unlimited&&me.reloadAt){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'reloading'});return;}
       if(now-me.lastShot<spec.cooldownMs){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'cooldown'});return;}
-      if(me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
-      me.lastShot=now;me.ammo[weapon]-=1;const autoReloadStarted=me.ammo[weapon]===0;if(autoReloadStarted){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;}me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);
+      if(!unlimited&&me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
+      me.lastShot=now;if(!unlimited)me.ammo[weapon]-=1;const autoReloadStarted=!unlimited&&me.ammo[weapon]===0;if(autoReloadStarted){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;}me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);
       const cp=Math.cos(me.pitch),sp=Math.sin(me.pitch),fx=-Math.sin(me.yaw)*cp,fy=sp,fz=-Math.cos(me.yaw)*cp,pellets=weapon==='shotgun'?8:1;
-      for(let i=0;i<pellets;i++){let sx=fx,sy=fy,sz=fz;if(weapon==='shotgun'){const spread=.075;sx+=(Math.random()-.5)*spread;sy+=(Math.random()-.5)*spread*.75;sz+=(Math.random()-.5)*spread;const n=Math.hypot(sx,sy,sz)||1;sx/=n;sy/=n;sz/=n;}this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage,weapon,lifetimeMs:WEAPONS[weapon].lifetimeMs,x:me.x+sx*.62,y:me.y+PLAYER_HEIGHT-.18+sy*.25,z:me.z+sz*.62,vx:sx*spec.speed,vy:sy*spec.speed,vz:sz*spec.speed,now,consumeAmmo:i===0});}
-      sendLoadout(socket,me,{action:'fire',seq,accepted:true});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
+      for(let i=0;i<pellets;i++){let sx=fx,sy=fy,sz=fz;if(weapon==='shotgun'){const spread=.075;sx+=(Math.random()-.5)*spread;sy+=(Math.random()-.5)*spread*.75;sz+=(Math.random()-.5)*spread;const n=Math.hypot(sx,sy,sz)||1;sx/=n;sy/=n;sz/=n;}this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage,weapon,lifetimeMs:WEAPONS[weapon].lifetimeMs,x:me.x+sx*.62,y:me.y+PLAYER_HEIGHT-.18+sy*.25,z:me.z+sz*.62,vx:sx*spec.speed,vy:sy*spec.speed,vz:sz*spec.speed,now,consumeAmmo:i===0&&!unlimited});}
+      sendLoadout(socket,me,{action:'fire',seq,accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
     }
 
-    if(payload.t==='throw'){const kind=payload.kind==='sticky'?'sticky':'flash';me.equipment=normalizeEquipment(me.equipment);if(me.hp<=0||now<me.wastedUntil||now-finiteNumber(me.lastThrow,0)<500||me.equipment[kind]<=0)return;me.lastThrow=now;me.equipment[kind]-=1;socket.serializeAttachment(me);try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment}));}catch{}const cp=Math.cos(me.pitch),fx=-Math.sin(me.yaw)*cp,fy=Math.sin(me.pitch),fz=-Math.cos(me.yaw)*cp;const id=crypto.randomUUID().replace(/-/g,'').slice(0,12),g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+fx*.75,y:me.y+PLAYER_HEIGHT-.25,z:me.z+fz*.75,vx:fx*14,vy:fy*14+5.2,vz:fz*14,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:1350),stuck:false,lastBroadcast:0};this.throwables.set(id,g);this.broadcast({t:'throwable',...g});await this.stepSimulation(now,meta);return;}
+    if(payload.t==='throw'){const kind=safeEquipmentKind(payload.kind),unlimited=!!me.godMode;me.equipment=normalizeEquipment(me.equipment);if(unlimited)refreshUnlimitedResources(me);if(me.hp<=0||now<me.wastedUntil||now-finiteNumber(me.lastThrow,0)<500||(!unlimited&&me.equipment[kind]<=0))return;me.lastThrow=now;if(!unlimited)me.equipment[kind]-=1;socket.serializeAttachment(me);try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment,unlimited}));}catch{}const cp=Math.cos(me.pitch),fx=-Math.sin(me.yaw)*cp,fy=Math.sin(me.pitch),fz=-Math.cos(me.yaw)*cp;const id=crypto.randomUUID().replace(/-/g,'').slice(0,12),g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+fx*.75,y:me.y+PLAYER_HEIGHT-.25,z:me.z+fz*.75,vx:fx*14,vy:fy*14+5.2,vz:fz*14,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:1350),stuck:false,lastBroadcast:0};this.throwables.set(id,g);this.broadcast({t:'throwable',...g});await this.stepSimulation(now,meta);return;}
 
     if (payload.t === "reload") {
       const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
       if(requestedWeapon!==me.weapon){me.weapon=requestedWeapon;me.reloadAt=0;me.reloadWeapon="";me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;this.broadcast({t:'weapon',id:me.clientId,weapon:requestedWeapon},socket);}
       const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon];me.ammo=normalizeAmmo(me.ammo);
       if(me.hp<=0||now<me.wastedUntil){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:false,reason:'dead'});return;}
+      if(me.godMode){refreshUnlimitedResources(me);socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:true,reason:'unlimited',unlimited:true});return;}
       if(me.reloadAt){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:true,reason:'already'});return;}
       if(me.ammo[weapon]>=WEAPONS[weapon].mag){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:false,reason:'full'});return;}
       me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:true});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;
@@ -798,8 +798,11 @@ export class GameRoom {
 
     if (payload.t === "god") {
       me.godMode = !!payload.enabled;
+      if(me.godMode)refreshUnlimitedResources(me);
+      me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;
       socket.serializeAttachment(me);
       this.broadcast({ t: "god", id: me.clientId, enabled: me.godMode });
+      if(me.godMode){try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment,unlimited:true}));}catch{}sendLoadout(socket,me,{action:'god',accepted:true,unlimited:true});}
       return;
     }
 
@@ -1088,17 +1091,24 @@ export class GameRoom {
       const difficulty = safeBotDifficulty(meta?.botDifficulty);
       const profile = BOT_DIFFICULTIES[difficulty];
       bot.yaw = Math.atan2(-nearest.dx, -nearest.dz);
-      if (d > 8.5) {
-        const speed = d > 16 ? settings.movement.runSpeed * profile.moveRun : settings.movement.walkSpeed * profile.moveWalk;
-        const step = Math.min(d - 7.5, speed * dt);
-        const ux = nearest.dx / d, uz = nearest.dz / d;
-        const attempts = [[ux, uz], [-uz, ux], [uz, -ux]],solidActors=this.solidActors(bot.id,now);
-        for (const [ax, az] of attempts) {
-          const fromX=bot.x,fromZ=bot.z,nx = bot.x + ax * step, nz = bot.z + az * step;
-          if (!worldBlocked(nx, bot.z, 0.34)&&!this.actorBlocksAt(nx,bot.z,bot.y,fromX,fromZ,solidActors) && !worldBlocked(nx, nz, 0.34)&&!this.actorBlocksAt(nx,nz,bot.y,fromX,fromZ,solidActors)) { bot.x = nx; bot.z = nz; break; }
-          if (!worldBlocked(bot.x, nz, 0.34)&&!this.actorBlocksAt(bot.x,nz,bot.y,fromX,fromZ,solidActors)) { bot.z = nz; break; }
+      {
+        const ux = nearest.dx / d, uz = nearest.dz / d, solidActors=this.solidActors(bot.id,now);
+        const tryMove=(ax,az,step)=>{
+          const fromX=bot.x,fromZ=bot.z,nx=bot.x+ax*step,nz=bot.z+az*step;
+          if(!worldBlocked(nx,bot.z,.34)&&!this.actorBlocksAt(nx,bot.z,bot.y,fromX,fromZ,solidActors)&&!worldBlocked(nx,nz,.34)&&!this.actorBlocksAt(nx,nz,bot.y,fromX,fromZ,solidActors)){bot.x=nx;bot.z=nz;return true;}
+          if(!worldBlocked(bot.x,nz,.34)&&!this.actorBlocksAt(bot.x,nz,bot.y,fromX,fromZ,solidActors)){bot.z=nz;return true;}
+          return false;
+        };
+        if(d>profile.preferredRange){
+          const speed=d>16?settings.movement.runSpeed*profile.moveRun:settings.movement.walkSpeed*profile.moveWalk;
+          const step=Math.min(d-profile.preferredRange,speed*dt);
+          if(!tryMove(ux,uz,step))tryMove(-uz,ux,step*.82)||tryMove(uz,-ux,step*.82);
+        }else if(profile.strafe>0&&d<=profile.range){
+          if(!bot.strafeUntil||now>=bot.strafeUntil){bot.strafeDir=Math.random()<.5?-1:1;bot.strafeUntil=now+650+Math.random()*850;}
+          const sx=-uz*(bot.strafeDir||1),sz=ux*(bot.strafeDir||1),step=settings.movement.walkSpeed*profile.strafe*dt;
+          if(!tryMove(sx,sz,step)){bot.strafeDir=-(bot.strafeDir||1);tryMove(-sx,-sz,step);}
         }
-        bot.y = worldSupportHeight(bot.x,bot.z,bot.y);
+        bot.y=worldSupportHeight(bot.x,bot.z,bot.y);
       }
 
       const target = nearest.target;
