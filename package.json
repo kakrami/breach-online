@@ -1,6 +1,6 @@
 {
   "name": "punch-world-online",
-  "version": "1.15.9",
+  "version": "1.15.10",
   "private": true,
   "type": "module",
   "scripts": {

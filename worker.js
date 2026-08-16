@@ -1,5 +1,5 @@
-const PROTOCOL_VERSION = 14;
-const GAME_VERSION = "1.15.9";
+const PROTOCOL_VERSION = 15;
+const GAME_VERSION = "1.15.10";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -283,6 +283,7 @@ function publicPlayer(attachment) {
     z: attachment.z,
     yaw: attachment.yaw,
     pitch: attachment.pitch,
+    ads: !!attachment.ads,
     weapon: safeWeapon(attachment.weapon),
     ammo: normalizeAmmo(attachment.ammo),
     reloadAt: attachment.reloadAt || 0,
@@ -308,6 +309,9 @@ function publicBot(bot) {
     yaw: bot.yaw,
     pitch: 0,
     weapon: "assault",
+    ads: false,
+    reloadAt: bot.reloadAt || 0,
+    reloadWeapon: bot.reloadWeapon || "",
     kills: Math.max(0, Math.floor(finiteNumber(bot.kills, 0))),
     deaths: Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))),
   };
@@ -699,7 +703,7 @@ export class GameRoom {
         const next = this.validateHumanState(me, payload, now, settings);
         me = next.player;
         socket.serializeAttachment(me);
-        const state = { t: "state", id: me.clientId, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch };
+        const state = { t: "state", id: me.clientId, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads };
         this.broadcast(state, socket);
         if (next.corrected) {
           try { socket.send(JSON.stringify({ t: "correction", x: me.x, y: me.y, z: me.z, vertical: next.verticalCorrected })); } catch {}
@@ -721,7 +725,8 @@ export class GameRoom {
       }
       me.lastShot = now;
       me.ammo[weapon] -= 1;
-      if (me.ammo[weapon] === 0) { me.reloadAt = now + spec.reloadMs; me.reloadWeapon = weapon; }
+      const autoReloadStarted = me.ammo[weapon] === 0;
+      if (autoReloadStarted) { me.reloadAt = now + spec.reloadMs; me.reloadWeapon = weapon; }
       socket.serializeAttachment(me);
       const cp = Math.cos(me.pitch), sp = Math.sin(me.pitch);
       const fx = -Math.sin(me.yaw) * cp;
@@ -742,6 +747,7 @@ export class GameRoom {
         now,
       });
       try { socket.send(JSON.stringify({ t: "loadout", weapon, ammo: me.ammo, reloadAt: me.reloadAt || 0, reloadWeapon: me.reloadWeapon || "" })); } catch {}
+      if (autoReloadStarted) this.broadcast({ t: "reload", id: me.clientId, weapon, reloadAt: me.reloadAt }, socket);
       await this.stepSimulation(now, meta);
       return;
     }
@@ -755,6 +761,7 @@ export class GameRoom {
       me.reloadWeapon = weapon;
       socket.serializeAttachment(me);
       try { socket.send(JSON.stringify({ t: "loadout", weapon, ammo: me.ammo, reloadAt: me.reloadAt, reloadWeapon: weapon })); } catch {}
+      this.broadcast({ t: "reload", id: me.clientId, weapon, reloadAt: me.reloadAt }, socket);
       return;
     }
 
@@ -1104,7 +1111,7 @@ export class GameRoom {
             const targetHpBefore = Math.max(1, finiteNumber(target.hp, 100));
             const baseDamage = bullet.weapon === "sniper" ? Math.max(1, bullet.penetrationPower) : bullet.damage;
             const headshot = hitZone === "head";
-            const hitDamage = headshot ? baseDamage * HEADSHOT_MULTIPLIER : baseDamage;
+            const hitDamage = headshot ? (bullet.weapon === "assault" ? Math.max(100, baseDamage * HEADSHOT_MULTIPLIER) : baseDamage * HEADSHOT_MULTIPLIER) : baseDamage;
             const applied = this.damageHuman(h.socket, target, bullet.ownerId, hitDamage, bullet.weapon, {
               x: bullet.vx / horizontal * 2.4,
               z: bullet.vz / horizontal * 2.4,
@@ -1134,7 +1141,7 @@ export class GameRoom {
             const targetHpBefore = Math.max(1, finiteNumber(bot.hp, 100));
             const baseDamage = bullet.weapon === "sniper" ? Math.max(1, bullet.penetrationPower) : bullet.damage;
             const headshot = hitZone === "head";
-            const hitDamage = headshot ? baseDamage * HEADSHOT_MULTIPLIER : baseDamage;
+            const hitDamage = headshot ? (bullet.weapon === "assault" ? Math.max(100, baseDamage * HEADSHOT_MULTIPLIER) : baseDamage * HEADSHOT_MULTIPLIER) : baseDamage;
             this.damageBot(bot, bullet.ownerId, hitDamage, bullet.weapon, {
               x: bullet.vx / horizontal * 2.4,
               z: bullet.vz / horizontal * 2.4,
