@@ -1,5 +1,5 @@
-const PROTOCOL_VERSION = 18;
-const GAME_VERSION = "1.15.14";
+const PROTOCOL_VERSION = 19;
+const GAME_VERSION = "1.15.15";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -9,6 +9,8 @@ const ROOM_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
 const EMPTY_ROOM_GRACE_MS = 10 * 60 * 1000;
 const DIRECTORY_LEASE_MS = 15 * 1000;
 const DIRECTORY_HEARTBEAT_MS = 5 * 1000;
+const SIM_MIN_STEP_MS = 16;
+const COLLISION_CELL_SIZE = 8;
 const RECONNECT_GRACE_MS = 45 * 1000;
 const HEALTH_REGEN_TICK_MS = 500;
 const HEADSHOT_MULTIPLIER = 2;
@@ -360,19 +362,80 @@ function projectileHitZone(target, bullet) {
   return "";
 }
 
-function worldBlocked(x,z,radius=.38,y=terrainHeight(x,z)){if(Math.abs(x)>ARENA_LIMIT||Math.abs(z)>ARENA_LIMIT)return true;for(const o of WORLD_OBSTACLES){if(o.type==='pyramid'||o.walkable)continue;const base=obstacleBaseY(o),top=base+o.h;if(y+PLAYER_HEIGHT*.92<=base||y>=top-.04)continue;if(o.type==='box'){if(Math.abs(x-o.x)<o.w/2+radius&&Math.abs(z-o.z)<o.d/2+radius)return true;}else if(Math.hypot(x-o.x,z-o.z)<o.r+radius)return true;}return false;}
-function pointHitsObstacle(x,y,z){for(const o of WORLD_OBSTACLES){const baseY=obstacleBaseY(o);if(y<baseY||y>baseY+o.h+.15)continue;if(o.type==='box'){if(Math.abs(x-o.x)<=o.w/2&&Math.abs(z-o.z)<=o.d/2)return true;}else if(o.type==='pyramid'){const t=clamp((y-baseY)/o.h,0,1),half=o.base/2*(1-t);if(Math.abs(x-o.x)<=half&&Math.abs(z-o.z)<=half)return true;}else if(Math.hypot(x-o.x,z-o.z)<=o.r)return true;}return false;}
-
+function collisionCellKey(cx, cz) { return `${cx},${cz}`; }
+let COLLISION_INDEX = null;
+function ensureCollisionIndex() {
+  if (COLLISION_INDEX) return COLLISION_INDEX;
+  const grid = new Map();
+  const entries = [];
+  for (const o of WORLD_OBSTACLES) {
+    const baseY = obstacleBaseY(o);
+    let minX, maxX, minZ, maxZ;
+    if (o.type === 'box') {
+      minX = o.x - o.w / 2; maxX = o.x + o.w / 2;
+      minZ = o.z - o.d / 2; maxZ = o.z + o.d / 2;
+    } else if (o.type === 'pyramid') {
+      minX = o.x - o.base / 2; maxX = o.x + o.base / 2;
+      minZ = o.z - o.base / 2; maxZ = o.z + o.base / 2;
+    } else {
+      minX = o.x - o.r; maxX = o.x + o.r;
+      minZ = o.z - o.r; maxZ = o.z + o.r;
+    }
+    const entry = { o, baseY, maxY: baseY + o.h + .15, minX, maxX, minZ, maxZ };
+    entries.push(entry);
+    const minCX = Math.floor(minX / COLLISION_CELL_SIZE), maxCX = Math.floor(maxX / COLLISION_CELL_SIZE);
+    const minCZ = Math.floor(minZ / COLLISION_CELL_SIZE), maxCZ = Math.floor(maxZ / COLLISION_CELL_SIZE);
+    for (let cx = minCX; cx <= maxCX; cx += 1) for (let cz = minCZ; cz <= maxCZ; cz += 1) {
+      const key = collisionCellKey(cx, cz);
+      let list = grid.get(key);
+      if (!list) { list = []; grid.set(key, list); }
+      list.push(entry);
+    }
+  }
+  COLLISION_INDEX = { grid, entries };
+  return COLLISION_INDEX;
+}
+function collisionCandidates(minX, maxX, minZ, maxZ) {
+  const { grid } = ensureCollisionIndex();
+  const minCX = Math.floor(minX / COLLISION_CELL_SIZE), maxCX = Math.floor(maxX / COLLISION_CELL_SIZE);
+  const minCZ = Math.floor(minZ / COLLISION_CELL_SIZE), maxCZ = Math.floor(maxZ / COLLISION_CELL_SIZE);
+  const out = [], seen = new Set();
+  for (let cx = minCX; cx <= maxCX; cx += 1) for (let cz = minCZ; cz <= maxCZ; cz += 1) {
+    const list = grid.get(collisionCellKey(cx, cz));
+    if (!list) continue;
+    for (const entry of list) if (!seen.has(entry)) { seen.add(entry); out.push(entry); }
+  }
+  return out;
+}
+function worldBlocked(x,z,radius=.38,y=terrainHeight(x,z)){
+  if(Math.abs(x)>ARENA_LIMIT||Math.abs(z)>ARENA_LIMIT)return true;
+  for(const entry of collisionCandidates(x-radius,x+radius,z-radius,z+radius)){
+    const o=entry.o;if(o.type==='pyramid'||o.walkable)continue;
+    if(y+PLAYER_HEIGHT*.92<=entry.baseY||y>=entry.maxY-.19)continue;
+    if(o.type==='box'){
+      if(x>entry.minX-radius&&x<entry.maxX+radius&&z>entry.minZ-radius&&z<entry.maxZ+radius)return true;
+    }else if(Math.hypot(x-o.x,z-o.z)<o.r+radius)return true;
+  }
+  return false;
+}
+function pointHitsObstacle(x,y,z){
+  for(const entry of collisionCandidates(x,x,z,z)){
+    const o=entry.o;if(y<entry.baseY||y>entry.maxY)continue;
+    if(o.type==='box'){
+      if(x>=entry.minX&&x<=entry.maxX&&z>=entry.minZ&&z<=entry.maxZ)return true;
+    }else if(o.type==='pyramid'){
+      const t=clamp((y-entry.baseY)/o.h,0,1),half=o.base/2*(1-t);
+      if(Math.abs(x-o.x)<=half&&Math.abs(z-o.z)<=half)return true;
+    }else if(Math.hypot(x-o.x,z-o.z)<=o.r)return true;
+  }
+  return false;
+}
 function segmentHitsObstacle(x1, y1, z1, x2, y2, z2) {
   const distance = Math.hypot(x2 - x1, y2 - y1, z2 - z1);
   const steps = Math.max(1, Math.ceil(distance / .10));
   for (let i = 0; i <= steps; i += 1) {
     const t = i / steps;
-    if (pointHitsObstacle(
-      x1 + (x2 - x1) * t,
-      y1 + (y2 - y1) * t,
-      z1 + (z2 - z1) * t,
-    )) return true;
+    if (pointHitsObstacle(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, z1 + (z2 - z1) * t)) return true;
   }
   return false;
 }
@@ -956,7 +1019,11 @@ export class GameRoom {
   validateHumanState(me, payload, now, settings) {
     const desiredX = clamp(finiteNumber(payload.x, me.x), -ARENA_LIMIT, ARENA_LIMIT);
     const desiredZ = clamp(finiteNumber(payload.z, me.z), -ARENA_LIMIT, ARENA_LIMIT);
-    const elapsed = clamp((now - finiteNumber(me.lastStateAt, now)) / 1000, 0.016, 0.75);
+    const serverElapsed = clamp((now - finiteNumber(me.lastStateAt, now)) / 1000, 0.016, 0.75);
+    const clientAt = finiteNumber(payload.clientAt, 0);
+    const previousClientAt = finiteNumber(me.lastClientStateAt, 0);
+    const clientElapsed = clientAt > previousClientAt && previousClientAt > 0 ? clamp((clientAt - previousClientAt) / 1000, 0.016, 0.15) : 0;
+    const elapsed = Math.max(serverElapsed, clientElapsed);
     const ads = !!payload.ads;
     const allowedSpeed = ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
     const creditCap = allowedSpeed * 0.25 + 0.12;
@@ -994,7 +1061,7 @@ export class GameRoom {
       corrected,
       verticalCorrected,
       player: {
-        ...me, x, y, z, ads, lastStateAt: now,
+        ...me, x, y, z, ads, lastStateAt: now, lastClientStateAt: clientAt > 0 ? clientAt : previousClientAt,
         moveCredit: Math.max(0, availableCredit - actualTravel),
         yaw: finiteNumber(payload.yaw, me.yaw),
         pitch: clamp(finiteNumber(payload.pitch, me.pitch), -1.4, 1.4),
@@ -1024,7 +1091,10 @@ export class GameRoom {
     const settings = normalizeWorldSettings(meta.settings);
     this.respawnExpiredHumans(now, settings);
 
-    const elapsed = this.lastSimAt ? Math.min(0.12, Math.max(0, (now - this.lastSimAt) / 1000)) : 0;
+    if (!this.lastSimAt) { this.lastSimAt = now; return; }
+    const simDeltaMs = now - this.lastSimAt;
+    if (simDeltaMs < SIM_MIN_STEP_MS) return;
+    const elapsed = Math.min(0.12, Math.max(0, simDeltaMs / 1000));
     this.lastSimAt = now;
     if (elapsed <= 0) return;
 
@@ -1131,19 +1201,21 @@ export class GameRoom {
         bot.ammo.assault = WEAPONS.assault.mag;
       }
 
-      let nearest = null;
+      const targetCandidates = [];
       const consider = (kind, target, socket = null) => {
         if (!target || target.hp <= 0 || safeTeam(target.team) === safeTeam(bot.team) || target.id === bot.id || target.clientId === bot.id) return;
-        if (!actorHasLineOfSight(bot, target)) return;
         const tx = finiteNumber(target.x, 0), tz = finiteNumber(target.z, 0);
         const dx = tx - bot.x, dz = tz - bot.z, d2 = dx * dx + dz * dz;
-        if (!nearest || d2 < nearest.d2) nearest = { kind, target, socket, dx, dz, d2 };
+        targetCandidates.push({ kind, target, socket, dx, dz, d2 });
       };
       for (const h of humans) consider("human", h.target, h.socket);
       for (const other of this.bots) {
         if (other === bot || now < (other.wastedUntil || 0)) continue;
         consider("bot", other, null);
       }
+      targetCandidates.sort((a,b)=>a.d2-b.d2);
+      let nearest = null;
+      for (const candidate of targetCandidates) { if (actorHasLineOfSight(bot, candidate.target)) { nearest = candidate; break; } }
       if (!nearest) continue;
 
       const d = Math.sqrt(nearest.d2) || 0.001;
