@@ -1,5 +1,5 @@
-const PROTOCOL_VERSION = 17;
-const GAME_VERSION = "1.15.13";
+const PROTOCOL_VERSION = 18;
+const GAME_VERSION = "1.15.14";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -57,9 +57,126 @@ const BUILDINGS=[
   {x:63,z:-54,w:16,d:12,floorH:3.15,balcony:3.8,stairDir:-1},
   {x:-70,z:42,w:14,d:11,floorH:3.05,balcony:3.4,stairDir:1}
 ];
-function buildingPlan(b){const stairW=2.2,stairLen=Math.min(7,b.w*.44),stairZ=b.z+b.d*.25,innerW=b.w-.7,innerD=b.d-.7,innerL=b.x-innerW/2,innerR=b.x+innerW/2,innerMinZ=b.z-innerD/2,innerMaxZ=b.z+innerD/2,holeW=Math.min(stairLen+.35,innerW-1),holeD=Math.min(stairW+.35,innerD-1),holeL=b.x-holeW/2,holeR=b.x+holeW/2,holeMinZ=stairZ-holeD/2,holeMaxZ=stairZ+holeD/2,front=b.z-b.d/2,balconyOverlap=.78,balconyD=b.balcony+balconyOverlap,balconyZ=front-b.balcony/2+balconyOverlap/2,balconyOutsideZ=front-b.balcony/2;const panels=[{x1:innerL,x2:holeL,z1:innerMinZ,z2:innerMaxZ},{x1:holeR,x2:innerR,z1:innerMinZ,z2:innerMaxZ},{x1:holeL,x2:holeR,z1:innerMinZ,z2:holeMinZ},{x1:holeL,x2:holeR,z1:holeMaxZ,z2:innerMaxZ}].filter(p=>p.x2-p.x1>.12&&p.z2-p.z1>.12).map(p=>({x:(p.x1+p.x2)/2,z:(p.z1+p.z2)/2,w:p.x2-p.x1,d:p.z2-p.z1}));return{stairW,stairLen,stairZ,panels,front,balconyOverlap,balconyD,balconyZ,balconyOutsideZ};}
-function makeBuildingObstacles(){const out=[];for(const b of BUILDINGS){const t=.34,door=2.35,side=(b.w-door)/2,plan=buildingPlan(b);for(let level=0;level<2;level++){const y=level*b.floorH;out.push({type:'box',x:b.x-side/2-door/2,z:b.z-b.d/2+t/2,w:side,d:t,h:2.55,y,fx:b.x,fz:b.z},{type:'box',x:b.x+side/2+door/2,z:b.z-b.d/2+t/2,w:side,d:t,h:2.55,y,fx:b.x,fz:b.z},{type:'box',x:b.x,z:b.z-b.d/2+t/2,w:door,d:t,h:.70,y:y+2.55,fx:b.x,fz:b.z},{type:'box',x:b.x,z:b.z+b.d/2-t/2,w:b.w,d:t,h:3.25,y,fx:b.x,fz:b.z},{type:'box',x:b.x-b.w/2+t/2,z:b.z,w:t,d:b.d,h:3.25,y,fx:b.x,fz:b.z},{type:'box',x:b.x+b.w/2-t/2,z:b.z,w:t,d:b.d,h:3.25,y,fx:b.x,fz:b.z});}for(const p of plan.panels)out.push({type:'box',x:p.x,z:p.z,w:p.w,d:p.d,h:.18,y:b.floorH-.18,fx:b.x,fz:b.z,walkable:true});out.push({type:'box',x:b.x,z:plan.balconyZ,w:b.w*.52,d:plan.balconyD,h:.16,y:b.floorH-.16,fx:b.x,fz:b.z,walkable:true},{type:'box',x:b.x,z:b.z,w:b.w+.1,d:b.d+.1,h:.18,y:b.floorH*2-.16,fx:b.x,fz:b.z,walkable:true},{type:'box',x:b.x,z:plan.front-b.balcony+.08,w:b.w*.52,d:.12,h:.78,y:b.floorH+.15,fx:b.x,fz:b.z},{type:'box',x:b.x-b.w*.26,z:plan.balconyOutsideZ,w:.12,d:b.balcony,h:.78,y:b.floorH+.15,fx:b.x,fz:b.z},{type:'box',x:b.x+b.w*.26,z:plan.balconyOutsideZ,w:.12,d:b.balcony,h:.78,y:b.floorH+.15,fx:b.x,fz:b.z});}return out;}
-function makeBuildingWalkables(){const out=[];for(const b of BUILDINGS){const base=rawTerrainHeight(b.x,b.z),plan=buildingPlan(b);for(const p of plan.panels)out.push({type:'rect',x:p.x,z:p.z,w:p.w,d:p.d,y:base+b.floorH});out.push({type:'rect',x:b.x,z:plan.balconyZ,w:b.w*.52,d:plan.balconyD,y:base+b.floorH},{type:'ramp',x1:b.x-b.stairDir*plan.stairLen/2,x2:b.x+b.stairDir*plan.stairLen/2,z:plan.stairZ,w:plan.stairW,y0:base,y1:base+b.floorH});}return out;}
+function buildingPlan(b) {
+  const wallT = .36;
+  const stairW = 2.35;
+  const stairLen = Math.min(7, b.w * .44);
+  const stairZ = b.z + b.d * .24;
+  const innerW = b.w - .18;
+  const innerD = b.d - .18;
+  const innerL = b.x - innerW / 2;
+  const innerR = b.x + innerW / 2;
+  const innerMinZ = b.z - innerD / 2;
+  const innerMaxZ = b.z + innerD / 2;
+  const holeW = Math.min(stairLen + .16, innerW - .8);
+  const holeD = Math.min(stairW + .18, innerD - .8);
+  const holeL = b.x - holeW / 2;
+  const holeR = b.x + holeW / 2;
+  const holeMinZ = stairZ - holeD / 2;
+  const holeMaxZ = stairZ + holeD / 2;
+  const panels = [
+    { x1: innerL, x2: holeL, z1: innerMinZ, z2: innerMaxZ },
+    { x1: holeR, x2: innerR, z1: innerMinZ, z2: innerMaxZ },
+    { x1: holeL, x2: holeR, z1: innerMinZ, z2: holeMinZ },
+    { x1: holeL, x2: holeR, z1: holeMaxZ, z2: innerMaxZ },
+  ].filter((p) => p.x2 - p.x1 > .12 && p.z2 - p.z1 > .12)
+    .map((p) => ({ x: (p.x1 + p.x2) / 2, z: (p.z1 + p.z2) / 2, w: p.x2 - p.x1, d: p.z2 - p.z1 }));
+  const front = b.z - b.d / 2;
+  const balconyOverlap = .92;
+  const balconyD = b.balcony + balconyOverlap;
+  const balconyZ = front - b.balcony / 2 + balconyOverlap / 2;
+  const balconyOutsideZ = front - b.balcony / 2;
+  const lowX = b.x - b.stairDir * stairLen / 2;
+  const highX = b.x + b.stairDir * stairLen / 2;
+  return { wallT, stairW, stairLen, stairZ, innerW, innerD, holeW, holeD, holeL, holeR, holeMinZ, holeMaxZ, lowX, highX, panels, front, balconyOverlap, balconyD, balconyZ, balconyOutsideZ };
+}
+function buildingWallOpenings(b, level, side) {
+  const windowBottom = .78;
+  const windowTop = Math.min(b.floorH - .38, 2.62);
+  const windows = [];
+  if (side === 'front' || side === 'back') {
+    const center = b.w * .285;
+    windows.push({ u: -center, w: 2.05, bottom: windowBottom, top: windowTop, kind: 'window' });
+    windows.push({ u: center, w: 2.05, bottom: windowBottom, top: windowTop, kind: 'window' });
+    if (side === 'front') windows.push({ u: 0, w: level === 0 ? 2.4 : 2.25, bottom: 0, top: Math.min(b.floorH - .38, 2.5), kind: 'door' });
+  } else {
+    const count = b.d >= 13 ? 2 : 1;
+    if (count === 1) windows.push({ u: 0, w: 2.1, bottom: windowBottom, top: windowTop, kind: 'window' });
+    else for (const sign of [-1, 1]) windows.push({ u: sign * b.d * .22, w: 1.9, bottom: windowBottom, top: windowTop, kind: 'window' });
+  }
+  return windows;
+}
+function splitWall(length, height, openings) {
+  const half = length / 2;
+  const xs = [-half, half], ys = [0, height];
+  const safe = [];
+  for (const opening of openings) {
+    const left = clamp(opening.u - opening.w / 2, -half, half);
+    const right = clamp(opening.u + opening.w / 2, -half, half);
+    const bottom = clamp(opening.bottom, 0, height);
+    const top = clamp(opening.top, 0, height);
+    if (right - left <= .02 || top - bottom <= .02) continue;
+    safe.push({ ...opening, left, right, bottom, top });
+    xs.push(left, right); ys.push(bottom, top);
+  }
+  const uniq = (values) => [...new Set(values.map((v) => Math.round(v * 10000) / 10000))].sort((a, b) => a - b);
+  const ux = uniq(xs), uy = uniq(ys), cells = [];
+  for (let xi = 0; xi < ux.length - 1; xi += 1) for (let yi = 0; yi < uy.length - 1; yi += 1) {
+    const left = ux[xi], right = ux[xi + 1], bottom = uy[yi], top = uy[yi + 1];
+    if (right - left <= .02 || top - bottom <= .02) continue;
+    const midU = (left + right) / 2, midY = (bottom + top) / 2;
+    if (safe.some((o) => midU > o.left && midU < o.right && midY > o.bottom && midY < o.top)) continue;
+    cells.push({ u: midU, y: bottom, w: right - left, h: top - bottom });
+  }
+  return cells;
+}
+function makeBuildingObstacles() {
+  const out = [];
+  for (const b of BUILDINGS) {
+    const plan = buildingPlan(b), t = plan.wallT;
+    const addWallX = (z, level, side) => {
+      for (const cell of splitWall(b.w, b.floorH, buildingWallOpenings(b, level, side))) out.push({ type:'box', x:b.x+cell.u, z, w:cell.w+.015, d:t, h:cell.h+.015, y:level*b.floorH+cell.y, fx:b.x, fz:b.z });
+    };
+    const addWallZ = (x, level, side) => {
+      for (const cell of splitWall(b.d, b.floorH, buildingWallOpenings(b, level, side))) out.push({ type:'box', x, z:b.z+cell.u, w:t, d:cell.w+.015, h:cell.h+.015, y:level*b.floorH+cell.y, fx:b.x, fz:b.z });
+    };
+    for (let level = 0; level < 2; level += 1) {
+      addWallX(b.z - b.d/2 + t/2, level, 'front');
+      addWallX(b.z + b.d/2 - t/2, level, 'back');
+      addWallZ(b.x - b.w/2 + t/2, level, 'left');
+      addWallZ(b.x + b.w/2 - t/2, level, 'right');
+    }
+    for (const panel of plan.panels) out.push({ type:'box', x:panel.x, z:panel.z, w:panel.w+.03, d:panel.d+.03, h:.18, y:b.floorH-.18, fx:b.x, fz:b.z, walkable:true });
+    out.push({ type:'box', x:b.x, z:plan.balconyZ, w:b.w*.56, d:plan.balconyD, h:.18, y:b.floorH-.18, fx:b.x, fz:b.z, walkable:true });
+    out.push({ type:'box', x:b.x, z:b.z, w:b.w+.04, d:b.d+.04, h:.2, y:b.floorH*2-.2, fx:b.x, fz:b.z, walkable:true });
+    const railY = b.floorH + .08;
+    out.push({ type:'box', x:b.x, z:plan.front-b.balcony+.06, w:b.w*.56, d:.14, h:.82, y:railY, fx:b.x, fz:b.z });
+    out.push({ type:'box', x:b.x-b.w*.28, z:plan.balconyOutsideZ, w:.14, d:b.balcony, h:.82, y:railY, fx:b.x, fz:b.z });
+    out.push({ type:'box', x:b.x+b.w*.28, z:plan.balconyOutsideZ, w:.14, d:b.balcony, h:.82, y:railY, fx:b.x, fz:b.z });
+    const steps = 10, stepLen = plan.stairLen / steps;
+    for (let i = 0; i < steps; i += 1) {
+      const progress = (i + .5) / steps;
+      const stepH = b.floorH * (i + 1) / steps;
+      const x = plan.lowX + (plan.highX - plan.lowX) * progress;
+      for (const side of [-1, 1]) out.push({ type:'box', x, z:plan.stairZ+side*(plan.stairW/2-.06), w:stepLen+.06, d:.14, h:stepH+.62, y:0, fx:b.x, fz:b.z, stairSide:true });
+    }
+    const stairRailY = b.floorH + .05;
+    out.push({ type:'box', x:b.x, z:plan.holeMinZ+.04, w:plan.holeW, d:.12, h:.76, y:stairRailY, fx:b.x, fz:b.z });
+    out.push({ type:'box', x:b.x, z:plan.holeMaxZ-.04, w:plan.holeW, d:.12, h:.76, y:stairRailY, fx:b.x, fz:b.z });
+    out.push({ type:'box', x:plan.lowX, z:plan.stairZ, w:.12, d:plan.holeD, h:.76, y:stairRailY, fx:b.x, fz:b.z });
+  }
+  return out;
+}
+function makeBuildingWalkables() {
+  const out = [];
+  for (const b of BUILDINGS) {
+    const base = rawTerrainHeight(b.x, b.z), plan = buildingPlan(b);
+    for (const panel of plan.panels) out.push({ type:'rect', x:panel.x, z:panel.z, w:panel.w, d:panel.d, y:base+b.floorH });
+    out.push({ type:'rect', x:b.x, z:plan.balconyZ, w:b.w*.56, d:plan.balconyD, y:base+b.floorH });
+    out.push({ type:'ramp', x1:plan.lowX, x2:plan.highX, z:plan.stairZ, w:plan.stairW-.16, y0:base, y1:base+b.floorH });
+  }
+  return out;
+}
 
 const WORLD_OBSTACLES = [
   ...STATIC_BOXES.map(o=>({type:"box",...o})),
@@ -248,8 +365,8 @@ function pointHitsObstacle(x,y,z){for(const o of WORLD_OBSTACLES){const baseY=ob
 
 function segmentHitsObstacle(x1, y1, z1, x2, y2, z2) {
   const distance = Math.hypot(x2 - x1, y2 - y1, z2 - z1);
-  const steps = Math.max(1, Math.ceil(distance / 0.18));
-  for (let i = 1; i < steps; i += 1) {
+  const steps = Math.max(1, Math.ceil(distance / .10));
+  for (let i = 0; i <= steps; i += 1) {
     const t = i / steps;
     if (pointHitsObstacle(
       x1 + (x2 - x1) * t,
@@ -258,6 +375,13 @@ function segmentHitsObstacle(x1, y1, z1, x2, y2, z2) {
     )) return true;
   }
   return false;
+}
+function actorHasLineOfSight(from, to) {
+  const fx = finiteNumber(from?.x, 0), fz = finiteNumber(from?.z, 0);
+  const tx = finiteNumber(to?.x, 0), tz = finiteNumber(to?.z, 0);
+  const fy = finiteNumber(from?.y, terrainHeight(fx, fz)) + 1.28;
+  const ty = finiteNumber(to?.y, terrainHeight(tx, tz)) + 1.08;
+  return !segmentHitsObstacle(fx, fy, fz, tx, ty, tz);
 }
 
 function publicPlayer(attachment) {
@@ -1010,6 +1134,7 @@ export class GameRoom {
       let nearest = null;
       const consider = (kind, target, socket = null) => {
         if (!target || target.hp <= 0 || safeTeam(target.team) === safeTeam(bot.team) || target.id === bot.id || target.clientId === bot.id) return;
+        if (!actorHasLineOfSight(bot, target)) return;
         const tx = finiteNumber(target.x, 0), tz = finiteNumber(target.z, 0);
         const dx = tx - bot.x, dz = tz - bot.z, d2 = dx * dx + dz * dz;
         if (!nearest || d2 < nearest.d2) nearest = { kind, target, socket, dx, dz, d2 };
@@ -1069,7 +1194,7 @@ export class GameRoom {
     }
   }
 
-  stepThrowables(now,dt,settings){for(const [id,g] of this.throwables){if(g.stuckTo){const a=this.findActorState(g.stuckTo);if(a){g.x=a.x;g.y=a.y+1.0;g.z=a.z;}else g.stuckTo='';}if(!g.stuck){const elapsed=Math.min(.12,Math.max(0,(now-g.lastAt)/1000));g.lastAt=now;const steps=Math.max(1,Math.ceil(elapsed/.018));for(let i=0;i<steps&&!g.stuck;i++){const st=elapsed/steps;g.vy-=18*st;const px=g.x,py=g.y,pz=g.z;g.x+=g.vx*st;g.y+=g.vy*st;g.z+=g.vz*st;const actor=this.findStickyTarget(g);if(g.kind==='sticky'&&actor){g.stuck=true;g.stuckTo=actor;break;}const hitGround=g.y<=terrainHeight(g.x,g.z)+.08,hitObj=pointHitsObstacle(g.x,g.y,g.z);if(hitGround||hitObj){if(g.kind==='sticky'){g.x=px;g.y=Math.max(py,terrainHeight(px,pz)+.10);g.z=pz;g.vx=g.vy=g.vz=0;g.stuck=true;}else{g.x=px;g.y=Math.max(py,terrainHeight(px,pz)+.12);g.z=pz;g.vy=Math.abs(g.vy)*.42;g.vx*=-.42;g.vz*=-.42;if(Math.hypot(g.vx,g.vy,g.vz)<2)g.stuck=true;}}}}if(now-g.lastBroadcast>90){g.lastBroadcast=now;this.broadcast({t:'throwableState',id:g.id,x:g.x,y:g.y,z:g.z,vx:g.vx,vy:g.vy,vz:g.vz,stuck:g.stuck});}if(now>=g.fuseAt){if(g.kind==='flash')this.broadcast({t:'flashDetonate',id:g.id,x:g.x,y:g.y,z:g.z});else this.explodeSticky(g,now,settings);this.throwables.delete(id);this.broadcast({t:'throwableEnd',id:g.id});}}}
+  stepThrowables(now,dt,settings){for(const [id,g] of this.throwables){if(g.stuckTo){const a=this.findActorState(g.stuckTo);if(a){g.x=a.x;g.y=a.y+1.0;g.z=a.z;}else g.stuckTo='';}if(!g.stuck){const elapsed=Math.min(.12,Math.max(0,(now-g.lastAt)/1000));g.lastAt=now;const steps=Math.max(1,Math.ceil(elapsed/.018));for(let i=0;i<steps&&!g.stuck;i++){const st=elapsed/steps;g.vy-=18*st;const px=g.x,py=g.y,pz=g.z;g.x+=g.vx*st;g.y+=g.vy*st;g.z+=g.vz*st;const actor=this.findStickyTarget(g);if(g.kind==='sticky'&&actor){g.stuck=true;g.stuckTo=actor;break;}const hitGround=g.y<=terrainHeight(g.x,g.z)+.08,hitObj=segmentHitsObstacle(px,py,pz,g.x,g.y,g.z);if(hitGround||hitObj){if(g.kind==='sticky'){g.x=px;g.y=Math.max(py,terrainHeight(px,pz)+.10);g.z=pz;g.vx=g.vy=g.vz=0;g.stuck=true;}else{g.x=px;g.y=Math.max(py,terrainHeight(px,pz)+.12);g.z=pz;g.vy=Math.abs(g.vy)*.42;g.vx*=-.42;g.vz*=-.42;if(Math.hypot(g.vx,g.vy,g.vz)<2)g.stuck=true;}}}}if(now-g.lastBroadcast>90){g.lastBroadcast=now;this.broadcast({t:'throwableState',id:g.id,x:g.x,y:g.y,z:g.z,vx:g.vx,vy:g.vy,vz:g.vz,stuck:g.stuck});}if(now>=g.fuseAt){if(g.kind==='flash')this.broadcast({t:'flashDetonate',id:g.id,x:g.x,y:g.y,z:g.z});else this.explodeSticky(g,now,settings);this.throwables.delete(id);this.broadcast({t:'throwableEnd',id:g.id});}}}
   findActorState(id){for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(p.clientId===id&&!p.replaced)return p;}return this.bots.find(b=>b.id===id)||null;}
   findStickyTarget(g){for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.clientId===g.ownerId||p.hp<=0||safeTeam(p.team)===g.ownerTeam)continue;if(Math.hypot(p.x-g.x,p.y+1-g.y,p.z-g.z)<.52)return p.clientId;}for(const b of this.bots){if(b.id===g.ownerId||b.hp<=0||safeTeam(b.team)===g.ownerTeam)continue;if(Math.hypot(b.x-g.x,b.y+1-g.y,b.z-g.z)<.52)return b.id;}return '';}
   explodeSticky(g,now,settings){const radius=7.5;for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0||p.clientId===g.ownerId||safeTeam(p.team)===g.ownerTeam)continue;const dx=p.x-g.x,dz=p.z-g.z,d=Math.hypot(dx,p.y+1-g.y,dz);if(d>radius)continue;const damage=Math.max(18,Math.round(138*(1-d/radius))),n=Math.hypot(dx,dz)||1;this.damageHuman(socket,p,g.ownerId,damage,'sticky',{x:dx/n*4.5,z:dz/n*4.5,y:3.1},now,g.id,settings,{distance:d});}for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||safeTeam(b.team)===g.ownerTeam)continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius)continue;const damage=Math.max(18,Math.round(138*(1-d/radius))),n=Math.hypot(dx,dz)||1;this.damageBot(b,g.ownerId,damage,'sticky',{x:dx/n*4.5,z:dz/n*4.5,y:3.1},now,g.id,settings,{distance:d});}this.broadcast({t:'explosion',id:g.id,x:g.x,y:g.y,z:g.z,kind:'sticky'});}
@@ -1090,12 +1215,13 @@ export class GameRoom {
       while (remaining > 0 && !ended) {
         const step = Math.min(collisionStep, remaining);
         remaining -= step;
+        const previousX = bullet.x, previousY = bullet.y, previousZ = bullet.z;
         bullet.x += bullet.vx * step;
         bullet.y += bullet.vy * step;
         bullet.z += bullet.vz * step;
         bullet.traveledDistance += speed * step;
 
-        if (Math.abs(bullet.x) > ARENA_LIMIT + 2 || Math.abs(bullet.z) > ARENA_LIMIT + 2 || bullet.y <= terrainHeight(bullet.x, bullet.z) + 0.06 || pointHitsObstacle(bullet.x, bullet.y, bullet.z)) {
+        if (Math.abs(bullet.x) > ARENA_LIMIT + 2 || Math.abs(bullet.z) > ARENA_LIMIT + 2 || bullet.y <= terrainHeight(bullet.x, bullet.z) + 0.06 || segmentHitsObstacle(previousX, previousY, previousZ, bullet.x, bullet.y, bullet.z)) {
           this.endBullet(id, "world");
           ended = true;
           break;
