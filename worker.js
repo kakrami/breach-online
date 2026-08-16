@@ -1,5 +1,5 @@
-const PROTOCOL_VERSION = 19;
-const GAME_VERSION = "1.15.15";
+const PROTOCOL_VERSION = 21;
+const GAME_VERSION = "1.15.17";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -33,6 +33,7 @@ const DEFAULT_WORLD_SETTINGS = Object.freeze({
 });
 const TEAM_COLORS = { blue: "#46a7ff", red: "#ff5c6c" };
 const PLAYER_HEIGHT = 1.7;
+const PLAYER_RADIUS = .38;
 const ARENA_LIMIT = 120;
 const PLAYER_COLORS = [
   "#4cc9f0", "#f72585", "#80ed99", "#ffd166",
@@ -55,9 +56,11 @@ const STATIC_BOXES=[
   {x:46,z:-36,w:9,d:9,h:3.4},{x:6,z:48,w:14,d:5,h:2.8},{x:-8,z:-52,w:6,d:15,h:3.1}
 ];
 const BUILDINGS=[
-  {x:-8,z:28,w:18,d:14,floorH:3.25,balcony:4.2,stairDir:1},
-  {x:63,z:-54,w:16,d:12,floorH:3.15,balcony:3.8,stairDir:-1},
-  {x:-70,z:42,w:14,d:11,floorH:3.05,balcony:3.4,stairDir:1}
+  {x:-8,z:28,w:18,d:14,floorH:3.25,balcony:4.2,stairDir:1,levels:2},
+  {x:63,z:-54,w:16,d:12,floorH:3.15,balcony:3.8,stairDir:-1,levels:2},
+  {x:-70,z:42,w:14,d:11,floorH:3.05,balcony:3.4,stairDir:1,levels:2},
+  {x:68,z:38,w:20,d:16,floorH:3.15,balcony:4.0,stairDir:1,levels:4,tall:true},
+  {x:-62,z:-38,w:18,d:14,floorH:3.10,balcony:3.8,stairDir:-1,levels:5,tall:true}
 ];
 function buildingPlan(b) {
   const wallT = .36;
@@ -109,76 +112,68 @@ function buildingWallOpenings(b, level, side) {
   return windows;
 }
 function splitWall(length, height, openings) {
-  const half = length / 2;
-  const xs = [-half, half], ys = [0, height];
-  const safe = [];
-  for (const opening of openings) {
-    const left = clamp(opening.u - opening.w / 2, -half, half);
-    const right = clamp(opening.u + opening.w / 2, -half, half);
-    const bottom = clamp(opening.bottom, 0, height);
-    const top = clamp(opening.top, 0, height);
-    if (right - left <= .02 || top - bottom <= .02) continue;
-    safe.push({ ...opening, left, right, bottom, top });
-    xs.push(left, right); ys.push(bottom, top);
-  }
-  const uniq = (values) => [...new Set(values.map((v) => Math.round(v * 10000) / 10000))].sort((a, b) => a - b);
-  const ux = uniq(xs), uy = uniq(ys), cells = [];
-  for (let xi = 0; xi < ux.length - 1; xi += 1) for (let yi = 0; yi < uy.length - 1; yi += 1) {
-    const left = ux[xi], right = ux[xi + 1], bottom = uy[yi], top = uy[yi + 1];
-    if (right - left <= .02 || top - bottom <= .02) continue;
-    const midU = (left + right) / 2, midY = (bottom + top) / 2;
-    if (safe.some((o) => midU > o.left && midU < o.right && midY > o.bottom && midY < o.top)) continue;
-    cells.push({ u: midU, y: bottom, w: right - left, h: top - bottom });
-  }
-  return cells;
+  const half=length/2,xs=[-half,half],ys=[0,height],safe=[];
+  for(const opening of openings){const left=clamp(opening.u-opening.w/2,-half,half),right=clamp(opening.u+opening.w/2,-half,half),bottom=clamp(opening.bottom,0,height),top=clamp(opening.top,0,height);if(right-left<=.02||top-bottom<=.02)continue;safe.push({...opening,left,right,bottom,top});xs.push(left,right);ys.push(bottom,top);}
+  const uniq=values=>[...new Set(values.map(v=>Math.round(v*10000)/10000))].sort((a,b)=>a-b),ux=uniq(xs),uy=uniq(ys),rects=[];
+  for(let xi=0;xi<ux.length-1;xi++)for(let yi=0;yi<uy.length-1;yi++){const left=ux[xi],right=ux[xi+1],bottom=uy[yi],top=uy[yi+1];if(right-left<=.02||top-bottom<=.02)continue;const midU=(left+right)/2,midY=(bottom+top)/2;if(safe.some(o=>midU>o.left&&midU<o.right&&midY>o.bottom&&midY<o.top))continue;rects.push({left,right,bottom,top});}
+  const eq=(a,b)=>Math.abs(a-b)<.001;let changed=true;
+  while(changed){changed=false;outer:for(let i=0;i<rects.length;i++)for(let j=i+1;j<rects.length;j++){const a=rects[i],b=rects[j];if(eq(a.bottom,b.bottom)&&eq(a.top,b.top)&&(eq(a.right,b.left)||eq(b.right,a.left))){rects[i]={left:Math.min(a.left,b.left),right:Math.max(a.right,b.right),bottom:a.bottom,top:a.top};rects.splice(j,1);changed=true;break outer;}if(eq(a.left,b.left)&&eq(a.right,b.right)&&(eq(a.top,b.bottom)||eq(b.top,a.bottom))){rects[i]={left:a.left,right:a.right,bottom:Math.min(a.bottom,b.bottom),top:Math.max(a.top,b.top)};rects.splice(j,1);changed=true;break outer;}}}
+  return rects.map(r=>({u:(r.left+r.right)/2,y:r.bottom,w:r.right-r.left,h:r.top-r.bottom}));
 }
 function makeBuildingObstacles() {
-  const out = [];
-  for (const b of BUILDINGS) {
-    const plan = buildingPlan(b), t = plan.wallT;
-    const addWallX = (z, level, side) => {
-      for (const cell of splitWall(b.w, b.floorH, buildingWallOpenings(b, level, side))) out.push({ type:'box', x:b.x+cell.u, z, w:cell.w+.015, d:t, h:cell.h+.015, y:level*b.floorH+cell.y, fx:b.x, fz:b.z });
-    };
-    const addWallZ = (x, level, side) => {
-      for (const cell of splitWall(b.d, b.floorH, buildingWallOpenings(b, level, side))) out.push({ type:'box', x, z:b.z+cell.u, w:t, d:cell.w+.015, h:cell.h+.015, y:level*b.floorH+cell.y, fx:b.x, fz:b.z });
-    };
-    for (let level = 0; level < 2; level += 1) {
-      addWallX(b.z - b.d/2 + t/2, level, 'front');
-      addWallX(b.z + b.d/2 - t/2, level, 'back');
-      addWallZ(b.x - b.w/2 + t/2, level, 'left');
-      addWallZ(b.x + b.w/2 - t/2, level, 'right');
+  const out=[];
+  for(const b of BUILDINGS){
+    const levels=Math.max(2,Math.min(6,Math.floor(b.levels||2))),plan=buildingPlan(b),t=plan.wallT;
+    const addWallX=(z,level,side)=>{for(const cell of splitWall(b.w,b.floorH,buildingWallOpenings(b,level,side)))out.push({type:'box',x:b.x+cell.u,z,w:cell.w+.015,d:t,h:cell.h+.015,y:level*b.floorH+cell.y,fx:b.x,fz:b.z});};
+    const addWallZ=(x,level,side)=>{for(const cell of splitWall(b.d,b.floorH,buildingWallOpenings(b,level,side)))out.push({type:'box',x,z:b.z+cell.u,w:t,d:cell.w+.015,h:cell.h+.015,y:level*b.floorH+cell.y,fx:b.x,fz:b.z});};
+    for(let level=0;level<levels;level++){addWallX(b.z-b.d/2+t/2,level,'front');addWallX(b.z+b.d/2-t/2,level,'back');addWallZ(b.x-b.w/2+t/2,level,'left');addWallZ(b.x+b.w/2-t/2,level,'right');}
+    for(let floorLevel=1;floorLevel<levels;floorLevel++){
+      const floorY=floorLevel*b.floorH;for(const panel of plan.panels)out.push({type:'box',x:panel.x,z:panel.z,w:panel.w+.03,d:panel.d+.03,h:.18,y:floorY-.18,fx:b.x,fz:b.z,walkable:true});out.push({type:'box',x:b.x,z:plan.balconyZ,w:b.w*.56,d:plan.balconyD,h:.18,y:floorY-.18,fx:b.x,fz:b.z,walkable:true});
+      const railY=floorY+.08;out.push({type:'box',x:b.x,z:plan.front-b.balcony+.06,w:b.w*.56,d:.14,h:.82,y:railY,fx:b.x,fz:b.z});out.push({type:'box',x:b.x-b.w*.28,z:plan.balconyOutsideZ,w:.14,d:b.balcony,h:.82,y:railY,fx:b.x,fz:b.z});out.push({type:'box',x:b.x+b.w*.28,z:plan.balconyOutsideZ,w:.14,d:b.balcony,h:.82,y:railY,fx:b.x,fz:b.z});
     }
-    for (const panel of plan.panels) out.push({ type:'box', x:panel.x, z:panel.z, w:panel.w+.03, d:panel.d+.03, h:.18, y:b.floorH-.18, fx:b.x, fz:b.z, walkable:true });
-    out.push({ type:'box', x:b.x, z:plan.balconyZ, w:b.w*.56, d:plan.balconyD, h:.18, y:b.floorH-.18, fx:b.x, fz:b.z, walkable:true });
-    out.push({ type:'box', x:b.x, z:b.z, w:b.w+.04, d:b.d+.04, h:.2, y:b.floorH*2-.2, fx:b.x, fz:b.z, walkable:true });
-    const railY = b.floorH + .08;
-    out.push({ type:'box', x:b.x, z:plan.front-b.balcony+.06, w:b.w*.56, d:.14, h:.82, y:railY, fx:b.x, fz:b.z });
-    out.push({ type:'box', x:b.x-b.w*.28, z:plan.balconyOutsideZ, w:.14, d:b.balcony, h:.82, y:railY, fx:b.x, fz:b.z });
-    out.push({ type:'box', x:b.x+b.w*.28, z:plan.balconyOutsideZ, w:.14, d:b.balcony, h:.82, y:railY, fx:b.x, fz:b.z });
-    const steps = 10, stepLen = plan.stairLen / steps;
-    for (let i = 0; i < steps; i += 1) {
-      const progress = (i + .5) / steps;
-      const stepH = b.floorH * (i + 1) / steps;
-      const x = plan.lowX + (plan.highX - plan.lowX) * progress;
-      for (const side of [-1, 1]) out.push({ type:'box', x, z:plan.stairZ+side*(plan.stairW/2-.06), w:stepLen+.06, d:.14, h:stepH+.62, y:0, fx:b.x, fz:b.z, stairSide:true });
+    out.push({type:'box',x:b.x,z:b.z,w:b.w+.04,d:b.d+.04,h:.2,y:b.floorH*levels-.2,fx:b.x,fz:b.z,walkable:true});
+    if(b.tall){const py=b.floorH*levels;out.push({type:'box',x:b.x,z:b.z-b.d/2+.10,w:b.w,d:.20,h:.55,y:py,fx:b.x,fz:b.z});out.push({type:'box',x:b.x,z:b.z+b.d/2-.10,w:b.w,d:.20,h:.55,y:py,fx:b.x,fz:b.z});out.push({type:'box',x:b.x-b.w/2+.10,z:b.z,w:.20,d:b.d,h:.55,y:py,fx:b.x,fz:b.z});out.push({type:'box',x:b.x+b.w/2-.10,z:b.z,w:.20,d:b.d,h:.55,y:py,fx:b.x,fz:b.z});}
+    const steps=10,stepLen=plan.stairLen/steps;
+    for(let flight=0;flight<levels-1;flight++){
+      const dir=b.stairDir*(flight%2===0?1:-1),lowX=b.x-dir*plan.stairLen/2,highX=b.x+dir*plan.stairLen/2,yBase=flight*b.floorH;
+      for(let i=0;i<steps;i++){const progress=(i+.5)/steps,stepH=b.floorH*(i+1)/steps,x=lowX+(highX-lowX)*progress;for(const side of [-1,1])out.push({type:'box',x,z:plan.stairZ+side*(plan.stairW/2-.06),w:stepLen+.06,d:.14,h:stepH+.62,y:yBase,fx:b.x,fz:b.z,stairSide:true});}
+      const railY=(flight+1)*b.floorH+.05;out.push({type:'box',x:b.x,z:plan.holeMinZ+.04,w:plan.holeW,d:.12,h:.76,y:railY,fx:b.x,fz:b.z});out.push({type:'box',x:b.x,z:plan.holeMaxZ-.04,w:plan.holeW,d:.12,h:.76,y:railY,fx:b.x,fz:b.z});out.push({type:'box',x:lowX,z:plan.stairZ,w:.12,d:plan.holeD,h:.76,y:railY,fx:b.x,fz:b.z});
     }
-    const stairRailY = b.floorH + .05;
-    out.push({ type:'box', x:b.x, z:plan.holeMinZ+.04, w:plan.holeW, d:.12, h:.76, y:stairRailY, fx:b.x, fz:b.z });
-    out.push({ type:'box', x:b.x, z:plan.holeMaxZ-.04, w:plan.holeW, d:.12, h:.76, y:stairRailY, fx:b.x, fz:b.z });
-    out.push({ type:'box', x:plan.lowX, z:plan.stairZ, w:.12, d:plan.holeD, h:.76, y:stairRailY, fx:b.x, fz:b.z });
   }
   return out;
 }
-function makeBuildingWalkables() {
-  const out = [];
-  for (const b of BUILDINGS) {
-    const base = rawTerrainHeight(b.x, b.z), plan = buildingPlan(b);
-    for (const panel of plan.panels) out.push({ type:'rect', x:panel.x, z:panel.z, w:panel.w, d:panel.d, y:base+b.floorH });
-    out.push({ type:'rect', x:b.x, z:plan.balconyZ, w:b.w*.56, d:plan.balconyD, y:base+b.floorH });
-    out.push({ type:'ramp', x1:plan.lowX, x2:plan.highX, z:plan.stairZ, w:plan.stairW-.16, y0:base, y1:base+b.floorH });
+function makeBuildingWalkables(){
+  const out=[];
+  for(const b of BUILDINGS){
+    const levels=Math.max(2,Math.min(6,Math.floor(b.levels||2))),base=rawTerrainHeight(b.x,b.z),plan=buildingPlan(b);
+    for(let floorLevel=1;floorLevel<levels;floorLevel++){
+      const floorY=base+floorLevel*b.floorH;
+      for(const panel of plan.panels)out.push({type:'rect',x:panel.x,z:panel.z,w:panel.w,d:panel.d,y:floorY});
+      out.push({type:'rect',x:b.x,z:plan.balconyZ,w:b.w*.56,d:plan.balconyD,y:floorY});
+    }
+    out.push({type:'rect',x:b.x,z:b.z,w:b.w,d:b.d,y:base+levels*b.floorH});
+    for(let flight=0;flight<levels-1;flight++){
+      const dir=b.stairDir*(flight%2===0?1:-1),lowX=b.x-dir*plan.stairLen/2,highX=b.x+dir*plan.stairLen/2;
+      out.push({type:'ramp',x1:lowX,x2:highX,z:plan.stairZ,w:plan.stairW-.16,y0:base+flight*b.floorH,y1:base+(flight+1)*b.floorH});
+    }
   }
   return out;
 }
+function makeBuildingHorizontalSolids(){
+  const out=[];
+  for(const b of BUILDINGS){
+    const levels=Math.max(2,Math.min(6,Math.floor(b.levels||2))),base=rawTerrainHeight(b.x,b.z),plan=buildingPlan(b);
+    for(let floorLevel=1;floorLevel<levels;floorLevel++){
+      const topY=base+floorLevel*b.floorH,bottomY=topY-.18;
+      for(const panel of plan.panels)out.push({x:panel.x,z:panel.z,w:panel.w,d:panel.d,bottomY,topY});
+      out.push({x:b.x,z:plan.balconyZ,w:b.w*.56,d:plan.balconyD,bottomY,topY});
+    }
+    const roofTop=base+levels*b.floorH;
+    out.push({x:b.x,z:b.z,w:b.w,d:b.d,bottomY:roofTop-.20,topY:roofTop});
+  }
+  return out;
+}
+
 
 const WORLD_OBSTACLES = [
   ...STATIC_BOXES.map(o=>({type:"box",...o})),
@@ -344,7 +339,17 @@ function rawTerrainHeight(x, z) {
 }
 function terrainHeight(x,z){let h=rawTerrainHeight(x,z);for(const f of TERRAIN_FOUNDATIONS){const d=Math.hypot(x-f.x,z-f.z);if(d>=f.blend)continue;const center=rawTerrainHeight(f.x,f.z);if(d<=f.flat){h=center;continue;}const t=clamp((d-f.flat)/Math.max(.001,f.blend-f.flat),0,1),blend=t*t*(3-2*t);h=center*(1-blend)+h*blend;}return h;}
 const BUILDING_WALKABLES=makeBuildingWalkables();
+const BUILDING_HORIZONTAL_SOLIDS=makeBuildingHorizontalSolids();
 function worldSupportHeight(x,z,currentY=terrainHeight(x,z)){let best=terrainHeight(x,z),limit=currentY+.62;for(const p of PYRAMIDS){const dx=Math.abs(x-p.x),dz=Math.abs(z-p.z),half=p.base/2;if(dx<=half&&dz<=half){const y=terrainHeight(p.x,p.z)+p.h*(1-Math.max(dx,dz)/half);if(y<=limit&&y>best)best=y;}}for(const w of BUILDING_WALKABLES){let y=null;if(w.type==='rect'){if(Math.abs(x-w.x)<=w.w/2&&Math.abs(z-w.z)<=w.d/2)y=w.y;}else if(Math.abs(z-w.z)<=w.w/2){const lo=Math.min(w.x1,w.x2),hi=Math.max(w.x1,w.x2);if(x>=lo&&x<=hi){const t=(x-w.x1)/(w.x2-w.x1);y=w.y0+(w.y1-w.y0)*t;}}if(y!=null&&y<=limit&&y>best)best=y;}return best;}
+function resolveCeilingCollision(previousY,nextY,x,z){
+  if(nextY<=previousY)return{y:nextY,hit:false};
+  const oldHead=previousY+PLAYER_HEIGHT,newHead=nextY+PLAYER_HEIGHT;let resolved=nextY,hit=false;
+  for(const s of BUILDING_HORIZONTAL_SOLIDS){
+    if(Math.abs(x-s.x)>s.w/2-.02||Math.abs(z-s.z)>s.d/2-.02)continue;
+    if(oldHead<=s.bottomY+.025&&newHead>=s.bottomY-.025){resolved=Math.min(resolved,s.bottomY-PLAYER_HEIGHT-.012);hit=true;}
+  }
+  return{y:resolved,hit};
+}
 function terrainMinAround(x,z,r){let min=terrainHeight(x,z);for(let i=0;i<10;i++){const a=i*Math.PI*2/10;min=Math.min(min,terrainHeight(x+Math.cos(a)*r,z+Math.sin(a)*r));}return min;}
 function naturalGroundBase(type,x,z,r){const footprint=type==='tree'?r:type==='bush'?r*.95:r*.9,burial=type==='tree'?.14:type==='bush'?.10:.20;return terrainMinAround(x,z,footprint)-burial;}
 function obstacleBaseY(o){if(o.type==='tree'||o.type==='bush'||o.type==='rock')return naturalGroundBase(o.type,o.x,o.z,o.r);return terrainHeight(o.fx??o.x,o.fz??o.z)+finiteNumber(o.y,0);}
@@ -467,6 +472,7 @@ function publicPlayer(attachment) {
     equipment: normalizeEquipment(attachment.equipment),
     reloadAt: attachment.reloadAt || 0,
     reloadWeapon: attachment.reloadWeapon || "",
+    combatRev: Math.max(0, Math.floor(finiteNumber(attachment.combatRev, 0))),
     kills: Math.max(0, Math.floor(finiteNumber(attachment.kills, 0))),
     deaths: Math.max(0, Math.floor(finiteNumber(attachment.deaths, 0))),
     godMode: !!attachment.godMode,
@@ -494,6 +500,10 @@ function publicBot(bot) {
     kills: Math.max(0, Math.floor(finiteNumber(bot.kills, 0))),
     deaths: Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))),
   };
+}
+
+function sendLoadout(socket, me, extra = {}) {
+  try { socket.send(JSON.stringify({ t:'loadout', weapon:safeWeapon(me.weapon), ammo:normalizeAmmo(me.ammo), reloadAt:me.reloadAt||0, reloadWeapon:me.reloadWeapon||'', rev:Math.max(0,Math.floor(finiteNumber(me.combatRev,0))), ...extra })); } catch {}
 }
 
 const TEAM_SPAWNS = {
@@ -816,6 +826,7 @@ export class GameRoom {
       equipment: normalizeEquipment(spawn.equipment),
       reloadAt: finiteNumber(spawn.reloadAt, 0),
       reloadWeapon: safeWeapon(spawn.reloadWeapon || spawn.weapon),
+      combatRev: Math.max(0, Math.floor(finiteNumber(spawn.combatRev, 0))),
       kills: Math.max(0, Math.floor(finiteNumber(spawn.kills, 0))),
       deaths: Math.max(0, Math.floor(finiteNumber(spawn.deaths, 0))),
       godMode: requestedGodMode,
@@ -876,12 +887,8 @@ export class GameRoom {
 
     if (me.reloadAt && now >= me.reloadAt) {
       const weapon = safeWeapon(me.reloadWeapon || me.weapon);
-      me.reloadAt = 0;
-      me.reloadWeapon = "";
-      me.ammo = normalizeAmmo(me.ammo);
-      me.ammo[weapon] = WEAPONS[weapon].mag;
-      socket.serializeAttachment(me);
-      try { socket.send(JSON.stringify({ t: "loadout", weapon: me.weapon, ammo: me.ammo, reloadAt: 0, reloadWeapon: "" })); } catch {}
+      me.reloadAt = 0; me.reloadWeapon = ""; me.ammo = normalizeAmmo(me.ammo); me.ammo[weapon] = WEAPONS[weapon].mag; me.combatRev = Math.max(0,finiteNumber(me.combatRev,0)) + 1;
+      socket.serializeAttachment(me); sendLoadout(socket, me, { action:'reloadComplete', accepted:true });
     }
 
     if (payload.t === "state") {
@@ -900,59 +907,40 @@ export class GameRoom {
     }
 
 
+    if (payload.t === "combatSync") { sendLoadout(socket, me, { action:'sync', accepted:true }); return; }
+
     if (payload.t === "fire") {
-      const weapon = safeWeapon(me.weapon);
-      const spec = settings.weapons[weapon];
-      me.ammo = normalizeAmmo(me.ammo);
-      if (me.hp <= 0 || now < me.wastedUntil || me.reloadAt || now - me.lastShot < spec.cooldownMs) return;
-      if (me.ammo[weapon] <= 0) {
-        try { socket.send(JSON.stringify({ t: "loadout", weapon, ammo: me.ammo, reloadAt: me.reloadAt || 0, reloadWeapon: me.reloadWeapon || "" })); } catch {}
-        return;
-      }
-      me.lastShot = now;
-      me.ammo[weapon] -= 1;
-      const autoReloadStarted = me.ammo[weapon] === 0;
-      if (autoReloadStarted) { me.reloadAt = now + spec.reloadMs; me.reloadWeapon = weapon; }
-      socket.serializeAttachment(me);
-      const cp = Math.cos(me.pitch), sp = Math.sin(me.pitch);
-      const fx = -Math.sin(me.yaw) * cp;
-      const fy = sp;
-      const fz = -Math.cos(me.yaw) * cp;
-      const pellets=weapon==='shotgun'?8:1;
+      const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
+      if(requestedWeapon!==me.weapon){me.weapon=requestedWeapon;me.reloadAt=0;me.reloadWeapon="";me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;this.broadcast({t:'weapon',id:me.clientId,weapon:requestedWeapon},socket);}
+      me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4);
+      const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon];me.ammo=normalizeAmmo(me.ammo);
+      if(me.hp<=0||now<me.wastedUntil){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'dead'});return;}
+      if(me.reloadAt){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'reloading'});return;}
+      if(now-me.lastShot<spec.cooldownMs){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'cooldown'});return;}
+      if(me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
+      me.lastShot=now;me.ammo[weapon]-=1;const autoReloadStarted=me.ammo[weapon]===0;if(autoReloadStarted){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;}me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);
+      const cp=Math.cos(me.pitch),sp=Math.sin(me.pitch),fx=-Math.sin(me.yaw)*cp,fy=sp,fz=-Math.cos(me.yaw)*cp,pellets=weapon==='shotgun'?8:1;
       for(let i=0;i<pellets;i++){let sx=fx,sy=fy,sz=fz;if(weapon==='shotgun'){const spread=.075;sx+=(Math.random()-.5)*spread;sy+=(Math.random()-.5)*spread*.75;sz+=(Math.random()-.5)*spread;const n=Math.hypot(sx,sy,sz)||1;sx/=n;sy/=n;sz/=n;}this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage,weapon,lifetimeMs:WEAPONS[weapon].lifetimeMs,x:me.x+sx*.62,y:me.y+PLAYER_HEIGHT-.18+sy*.25,z:me.z+sz*.62,vx:sx*spec.speed,vy:sy*spec.speed,vz:sz*spec.speed,now,consumeAmmo:i===0});}
-      try { socket.send(JSON.stringify({ t: "loadout", weapon, ammo: me.ammo, reloadAt: me.reloadAt || 0, reloadWeapon: me.reloadWeapon || "" })); } catch {}
-      if (autoReloadStarted) this.broadcast({ t: "reload", id: me.clientId, weapon, reloadAt: me.reloadAt }, socket);
-      await this.stepSimulation(now, meta);
-      return;
+      sendLoadout(socket,me,{action:'fire',seq,accepted:true});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
     }
 
     if(payload.t==='throw'){const kind=payload.kind==='sticky'?'sticky':'flash';me.equipment=normalizeEquipment(me.equipment);if(me.hp<=0||now<me.wastedUntil||now-finiteNumber(me.lastThrow,0)<500||me.equipment[kind]<=0)return;me.lastThrow=now;me.equipment[kind]-=1;socket.serializeAttachment(me);try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment}));}catch{}const cp=Math.cos(me.pitch),fx=-Math.sin(me.yaw)*cp,fy=Math.sin(me.pitch),fz=-Math.cos(me.yaw)*cp;const id=crypto.randomUUID().replace(/-/g,'').slice(0,12),g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+fx*.75,y:me.y+PLAYER_HEIGHT-.25,z:me.z+fz*.75,vx:fx*14,vy:fy*14+5.2,vz:fz*14,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:1350),stuck:false,lastBroadcast:0};this.throwables.set(id,g);this.broadcast({t:'throwable',...g});await this.stepSimulation(now,meta);return;}
 
     if (payload.t === "reload") {
-      const weapon = safeWeapon(me.weapon);
-      const spec = settings.weapons[weapon];
-      me.ammo = normalizeAmmo(me.ammo);
-      if (me.hp <= 0 || me.reloadAt || me.ammo[weapon] >= WEAPONS[weapon].mag) return;
-      me.reloadAt = now + spec.reloadMs;
-      me.reloadWeapon = weapon;
-      socket.serializeAttachment(me);
-      try { socket.send(JSON.stringify({ t: "loadout", weapon, ammo: me.ammo, reloadAt: me.reloadAt, reloadWeapon: weapon })); } catch {}
-      this.broadcast({ t: "reload", id: me.clientId, weapon, reloadAt: me.reloadAt }, socket);
-      return;
+      const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
+      if(requestedWeapon!==me.weapon){me.weapon=requestedWeapon;me.reloadAt=0;me.reloadWeapon="";me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;this.broadcast({t:'weapon',id:me.clientId,weapon:requestedWeapon},socket);}
+      const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon];me.ammo=normalizeAmmo(me.ammo);
+      if(me.hp<=0||now<me.wastedUntil){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:false,reason:'dead'});return;}
+      if(me.reloadAt){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:true,reason:'already'});return;}
+      if(me.ammo[weapon]>=WEAPONS[weapon].mag){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:false,reason:'full'});return;}
+      me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:true});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;
     }
 
     if (payload.t === "weapon") {
-      if (me.hp <= 0 || now < me.wastedUntil) return;
-      const weapon = safeWeapon(payload.weapon);
-      if (weapon === me.weapon) return;
-      me.weapon = weapon;
-      me.reloadAt = 0;
-      me.reloadWeapon = "";
-      me.ammo = normalizeAmmo(me.ammo);
-      socket.serializeAttachment(me);
-      try { socket.send(JSON.stringify({ t: "loadout", weapon, ammo: me.ammo, reloadAt: 0, reloadWeapon: "" })); } catch {}
-      this.broadcast({ t: "weapon", id: me.clientId, weapon }, socket);
-      return;
+      if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'weapon',seq:Math.max(0,Math.floor(finiteNumber(payload.seq,0))),accepted:false,reason:'dead'});return;}
+      const weapon=safeWeapon(payload.weapon),seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));
+      if(weapon!==me.weapon){me.weapon=weapon;me.reloadAt=0;me.reloadWeapon="";me.ammo=normalizeAmmo(me.ammo);me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);this.broadcast({t:'weapon',id:me.clientId,weapon},socket);}
+      sendLoadout(socket,me,{action:'weapon',seq,accepted:true});return;
     }
 
     if (payload.t === "god") {
@@ -1016,6 +1004,30 @@ export class GameRoom {
     }
   }
 
+  solidActors(excludeId, now=Date.now()) {
+    const out=[];
+    for(const socket of this.ctx.getWebSockets()){
+      const p=socket.deserializeAttachment()||{};
+      if(!p.clientId||p.replaced||p.clientId===excludeId||p.hp<=0||now<(p.wastedUntil||0))continue;
+      out.push(p);
+    }
+    for(const bot of this.bots||[]){
+      if(!bot?.id||bot.id===excludeId||bot.hp<=0||now<(bot.wastedUntil||0))continue;
+      out.push(bot);
+    }
+    return out;
+  }
+
+  actorBlocksAt(x,z,y,fromX,fromZ,actors) {
+    for(const actor of actors||[]){
+      const ax=finiteNumber(actor.x,0),ay=finiteNumber(actor.y,terrainHeight(ax,finiteNumber(actor.z,0))),az=finiteNumber(actor.z,0);
+      if(y+PLAYER_HEIGHT-.08<=ay||y>=ay+PLAYER_HEIGHT-.08)continue;
+      const minDist=PLAYER_RADIUS*2+.02,newDist=Math.hypot(x-ax,z-az),oldDist=Math.hypot(fromX-ax,fromZ-az);
+      if(newDist<minDist&&(oldDist>=minDist||newDist<oldDist-.002))return true;
+    }
+    return false;
+  }
+
   validateHumanState(me, payload, now, settings) {
     const desiredX = clamp(finiteNumber(payload.x, me.x), -ARENA_LIMIT, ARENA_LIMIT);
     const desiredZ = clamp(finiteNumber(payload.z, me.z), -ARENA_LIMIT, ARENA_LIMIT);
@@ -1039,21 +1051,21 @@ export class GameRoom {
     }
 
     let x = me.x, z = me.z;
-    const travel = Math.hypot(dx, dz);
+    const travel = Math.hypot(dx, dz),solidActors=this.solidActors(me.clientId,now);
     const steps = Math.max(1, Math.ceil(travel / 0.28));
     const sx = dx / steps, sz = dz / steps;
     for (let i = 0; i < steps; i += 1) {
-      const tryX = clamp(x + sx, -ARENA_LIMIT, ARENA_LIMIT);
-      if (!worldBlocked(tryX, z, .38, me.y)) x = tryX; else corrected = true;
-      const tryZ = clamp(z + sz, -ARENA_LIMIT, ARENA_LIMIT);
-      if (!worldBlocked(x, tryZ, .38, me.y)) z = tryZ; else corrected = true;
+      const fromX=x,fromZ=z,tryX = clamp(x + sx, -ARENA_LIMIT, ARENA_LIMIT);
+      if (!worldBlocked(tryX, z, PLAYER_RADIUS, me.y)&&!this.actorBlocksAt(tryX,z,me.y,fromX,fromZ,solidActors)) x = tryX; else corrected = true;
+      const beforeZx=x,beforeZz=z,tryZ = clamp(z + sz, -ARENA_LIMIT, ARENA_LIMIT);
+      if (!worldBlocked(x, tryZ, PLAYER_RADIUS, me.y)&&!this.actorBlocksAt(x,tryZ,me.y,beforeZx,beforeZz,solidActors)) z = tryZ; else corrected = true;
     }
 
-    const requestedY = finiteNumber(payload.y, me.y);
+    const rawRequestedY = finiteNumber(payload.y, me.y),ceiling=resolveCeilingCollision(me.y,rawRequestedY,x,z),requestedY=ceiling.y;
     const ground = worldSupportHeight(x,z,Math.max(me.y,requestedY));
     const maxAirHeight = ground + settings.movement.jumpHeight + 0.45;
     const y = clamp(requestedY, ground, maxAirHeight);
-    const verticalCorrected = Math.abs(y - requestedY) > 0.02;
+    const verticalCorrected = ceiling.hit||Math.abs(y - rawRequestedY) > 0.02;
     if (verticalCorrected || Math.hypot(x - desiredX, z - desiredZ) > 0.08) corrected = true;
     const actualTravel = Math.hypot(x - me.x, z - me.z);
 
@@ -1145,6 +1157,7 @@ export class GameRoom {
         equipment: freshEquipment(),
         reloadAt: 0,
         reloadWeapon: "",
+        combatRev: Math.max(0, finiteNumber(player.combatRev, 0)) + 1,
         ads: false,
         lastStateAt: now,
         moveCredit: settings.movement.runSpeed * 0.04,
@@ -1226,11 +1239,11 @@ export class GameRoom {
         const speed = d > 16 ? settings.movement.runSpeed * profile.moveRun : settings.movement.walkSpeed * profile.moveWalk;
         const step = Math.min(d - 7.5, speed * dt);
         const ux = nearest.dx / d, uz = nearest.dz / d;
-        const attempts = [[ux, uz], [-uz, ux], [uz, -ux]];
+        const attempts = [[ux, uz], [-uz, ux], [uz, -ux]],solidActors=this.solidActors(bot.id,now);
         for (const [ax, az] of attempts) {
-          const nx = bot.x + ax * step, nz = bot.z + az * step;
-          if (!worldBlocked(nx, bot.z, 0.34) && !worldBlocked(nx, nz, 0.34)) { bot.x = nx; bot.z = nz; break; }
-          if (!worldBlocked(bot.x, nz, 0.34)) { bot.z = nz; break; }
+          const fromX=bot.x,fromZ=bot.z,nx = bot.x + ax * step, nz = bot.z + az * step;
+          if (!worldBlocked(nx, bot.z, 0.34)&&!this.actorBlocksAt(nx,bot.z,bot.y,fromX,fromZ,solidActors) && !worldBlocked(nx, nz, 0.34)&&!this.actorBlocksAt(nx,nz,bot.y,fromX,fromZ,solidActors)) { bot.x = nx; bot.z = nz; break; }
+          if (!worldBlocked(bot.x, nz, 0.34)&&!this.actorBlocksAt(bot.x,nz,bot.y,fromX,fromZ,solidActors)) { bot.z = nz; break; }
         }
         bot.y = worldSupportHeight(bot.x,bot.z,bot.y);
       }
