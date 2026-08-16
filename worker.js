@@ -1,5 +1,5 @@
-const PROTOCOL_VERSION = 13;
-const GAME_VERSION = "1.15.7";
+const PROTOCOL_VERSION = 14;
+const GAME_VERSION = "1.15.9";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -9,6 +9,8 @@ const ROOM_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
 const EMPTY_ROOM_GRACE_MS = 10 * 60 * 1000;
 const RECONNECT_GRACE_MS = 45 * 1000;
 const HEALTH_REGEN_TICK_MS = 500;
+const HEADSHOT_MULTIPLIER = 2;
+const MULTI_KILL_WINDOW_MS = 4500;
 const WEAPONS = {
   pistol: { mag: 12, lifetimeMs: 3200 },
   assault: { mag: 12, lifetimeMs: 3400 },
@@ -207,6 +209,19 @@ function terrainHeight(x, z) {
   const centerKnoll = 4.4 * Math.exp(-((x - 8) ** 2 + (z - 4) ** 2) / 900);
   const valley = 4.0 * Math.exp(-((x + 12) ** 2 + (z - 34) ** 2) / 1050);
   return clamp(rolling + westRidge + northHill + southHill + eastRise + centerKnoll - valley, -2.4, 13.8);
+}
+
+function projectileHitZone(target, bullet) {
+  const tx = finiteNumber(target?.x, 0);
+  const ty = finiteNumber(target?.y, terrainHeight(tx, finiteNumber(target?.z, 0)));
+  const tz = finiteNumber(target?.z, 0);
+  const dx = tx - bullet.x;
+  const dz = tz - bullet.z;
+  const headDy = ty + 1.66 - bullet.y;
+  if (dx * dx + headDy * headDy + dz * dz <= 0.31 * 0.31) return "head";
+  const bodyDy = ty + 0.95 - bullet.y;
+  if (dx * dx + bodyDy * bodyDy + dz * dz <= 0.62 * 0.62) return "body";
+  return "";
 }
 
 function worldBlocked(x, z, radius = 0.38) {
@@ -875,6 +890,7 @@ export class GameRoom {
       id, ownerId, ownerTeam: safeTeam(ownerTeam), damage, weapon: safe,
       penetrationPower: safe === "sniper" ? Math.max(1, damage) : 0,
       hitTargets: new Set(),
+      traveledDistance: 0,
       lifetimeMs: lifetimeMs || WEAPONS[safe].lifetimeMs, x, y, z, vx, vy, vz, born: now, lastAt: now,
     };
     this.bullets.set(id, bullet);
@@ -1070,6 +1086,7 @@ export class GameRoom {
         bullet.x += bullet.vx * step;
         bullet.y += bullet.vy * step;
         bullet.z += bullet.vz * step;
+        bullet.traveledDistance += speed * step;
 
         if (Math.abs(bullet.x) > ARENA_LIMIT + 2 || Math.abs(bullet.z) > ARENA_LIMIT + 2 || bullet.y <= terrainHeight(bullet.x, bullet.z) + 0.06 || pointHitsObstacle(bullet.x, bullet.y, bullet.z)) {
           this.endBullet(id, "world");
@@ -1080,19 +1097,19 @@ export class GameRoom {
         for (const h of humans) {
           const target = h.player;
           if (!target.clientId || target.replaced || target.clientId === bullet.ownerId || target.hp <= 0 || now < (target.wastedUntil || 0) || safeTeam(target.team) === bullet.ownerTeam || bullet.hitTargets.has(target.clientId)) continue;
-          const dx = target.x - bullet.x;
-          const dy = target.y + 1.0 - bullet.y;
-          const dz = target.z - bullet.z;
-          if (dx * dx + dy * dy + dz * dz <= 0.36) {
+          const hitZone = projectileHitZone(target, bullet);
+          if (hitZone) {
             bullet.hitTargets.add(target.clientId);
             const horizontal = Math.hypot(bullet.vx, bullet.vz) || 1;
             const targetHpBefore = Math.max(1, finiteNumber(target.hp, 100));
-            const hitDamage = bullet.weapon === "sniper" ? Math.max(1, bullet.penetrationPower) : bullet.damage;
+            const baseDamage = bullet.weapon === "sniper" ? Math.max(1, bullet.penetrationPower) : bullet.damage;
+            const headshot = hitZone === "head";
+            const hitDamage = headshot ? baseDamage * HEADSHOT_MULTIPLIER : baseDamage;
             const applied = this.damageHuman(h.socket, target, bullet.ownerId, hitDamage, bullet.weapon, {
               x: bullet.vx / horizontal * 2.4,
               z: bullet.vz / horizontal * 2.4,
-              y: 1.1,
-            }, now, bullet.id, settings);
+              y: headshot ? 1.45 : 1.1,
+            }, now, bullet.id, settings, { headshot, distance: bullet.traveledDistance });
             if (!applied || bullet.weapon !== "sniper") {
               this.endBullet(id, applied ? "hit" : "blocked");
               ended = true;
@@ -1110,19 +1127,19 @@ export class GameRoom {
 
         for (const bot of this.bots) {
           if (bot.id === bullet.ownerId || bot.hp <= 0 || now < bot.wastedUntil || safeTeam(bot.team) === bullet.ownerTeam || bullet.hitTargets.has(bot.id)) continue;
-          const dx = bot.x - bullet.x;
-          const dy = bot.y + 1.0 - bullet.y;
-          const dz = bot.z - bullet.z;
-          if (dx * dx + dy * dy + dz * dz <= 0.36) {
+          const hitZone = projectileHitZone(bot, bullet);
+          if (hitZone) {
             bullet.hitTargets.add(bot.id);
             const horizontal = Math.hypot(bullet.vx, bullet.vz) || 1;
             const targetHpBefore = Math.max(1, finiteNumber(bot.hp, 100));
-            const hitDamage = bullet.weapon === "sniper" ? Math.max(1, bullet.penetrationPower) : bullet.damage;
+            const baseDamage = bullet.weapon === "sniper" ? Math.max(1, bullet.penetrationPower) : bullet.damage;
+            const headshot = hitZone === "head";
+            const hitDamage = headshot ? baseDamage * HEADSHOT_MULTIPLIER : baseDamage;
             this.damageBot(bot, bullet.ownerId, hitDamage, bullet.weapon, {
               x: bullet.vx / horizontal * 2.4,
               z: bullet.vz / horizontal * 2.4,
-              y: 1.1,
-            }, now, bullet.id, settings);
+              y: headshot ? 1.45 : 1.1,
+            }, now, bullet.id, settings, { headshot, distance: bullet.traveledDistance });
             if (bullet.weapon !== "sniper") {
               this.endBullet(id, "hit");
               ended = true;
@@ -1140,20 +1157,31 @@ export class GameRoom {
     }
   }
 
-  awardKill(attackerId, victimId) {
-    if (!attackerId || attackerId === victimId) return;
+  awardKill(attackerId, victimId, now) {
+    if (!attackerId || attackerId === victimId) return 0;
+    const updateChain = (p) => {
+      const last = finiteNumber(p.lastKillAt, 0);
+      p.multiKillCount = last > 0 && now - last <= MULTI_KILL_WINDOW_MS ? Math.max(1, Math.floor(finiteNumber(p.multiKillCount, 1))) + 1 : 1;
+      p.lastKillAt = now;
+      return p.multiKillCount;
+    };
     for (const socket of this.ctx.getWebSockets()) {
       const p = socket.deserializeAttachment() || {};
       if (p.clientId !== attackerId || p.replaced) continue;
       p.kills = Math.max(0, Math.floor(finiteNumber(p.kills, 0))) + 1;
+      const multiKill = updateChain(p);
       socket.serializeAttachment(p);
-      return;
+      return multiKill;
     }
     const bot = this.bots.find((b) => b.id === attackerId);
-    if (bot) bot.kills = Math.max(0, Math.floor(finiteNumber(bot.kills, 0))) + 1;
+    if (bot) {
+      bot.kills = Math.max(0, Math.floor(finiteNumber(bot.kills, 0))) + 1;
+      return updateChain(bot);
+    }
+    return 0;
   }
 
-  damageHuman(socket, target, attackerId, damage, weapon, knockback, now, bulletId = "", settings = normalizeWorldSettings()) {
+  damageHuman(socket, target, attackerId, damage, weapon, knockback, now, bulletId = "", settings = normalizeWorldSettings(), hitMeta = {}) {
     if (target.godMode) {
       this.broadcast({ t: "blocked", attacker: attackerId, target: target.clientId, weapon, bulletId, godMode: true });
       return false;
@@ -1163,36 +1191,46 @@ export class GameRoom {
     target.lastHitAt = now;
     target.regenAt = now + settings.combat.regenDelayMs;
     const wasted = target.hp <= 0;
+    let multiKill = 0;
     if (wasted) {
       target.wastedUntil = now + settings.combat.respawnMs;
       target.deaths = Math.max(0, Math.floor(finiteNumber(target.deaths, 0))) + 1;
-      this.awardKill(attackerId, target.clientId);
+      target.multiKillCount = 0;
+      target.lastKillAt = 0;
+      multiKill = this.awardKill(attackerId, target.clientId, now);
     }
+    const headshot = !!hitMeta.headshot;
+    const distance = Math.max(0, finiteNumber(hitMeta.distance, 0));
     socket.serializeAttachment(target);
     this.broadcast({
-      t: "hit", attacker: attackerId, target: target.clientId, hp: target.hp, damage, weapon, bulletId,
+      t: "hit", attacker: attackerId, target: target.clientId, hp: target.hp, damage, weapon, bulletId, headshot, distance,
       wasted, respawnAt: target.wastedUntil || 0,
       knockback: wasted ? { x: knockback.x * 1.35, z: knockback.z * 1.35, y: Math.max(3.8, knockback.y) } : knockback,
     });
-    if (wasted) this.broadcast(this.killEvent(attackerId, target.clientId, weapon, now));
+    if (wasted) this.broadcast(this.killEvent(attackerId, target.clientId, weapon, now, { headshot, distance, multiKill }));
     return true;
   }
 
-  damageBot(bot, attackerId, damage, weapon, knockback, now, bulletId = "", settings = normalizeWorldSettings()) {
+  damageBot(bot, attackerId, damage, weapon, knockback, now, bulletId = "", settings = normalizeWorldSettings(), hitMeta = {}) {
     bot.hp = Math.max(0, bot.hp - damage);
     bot.lastHitAt = now;
     bot.regenAt = now + settings.combat.regenDelayMs;
     const wasted = bot.hp <= 0;
+    let multiKill = 0;
     if (wasted) {
       bot.wastedUntil = now + settings.combat.respawnMs;
       bot.deaths = Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))) + 1;
-      this.awardKill(attackerId, bot.id);
+      bot.multiKillCount = 0;
+      bot.lastKillAt = 0;
+      multiKill = this.awardKill(attackerId, bot.id, now);
     }
+    const headshot = !!hitMeta.headshot;
+    const distance = Math.max(0, finiteNumber(hitMeta.distance, 0));
     this.broadcast({
-      t: "hit", attacker: attackerId, target: bot.id, hp: bot.hp, damage, weapon, bulletId,
+      t: "hit", attacker: attackerId, target: bot.id, hp: bot.hp, damage, weapon, bulletId, headshot, distance,
       wasted, respawnAt: bot.wastedUntil || 0, knockback,
     });
-    if (wasted) this.broadcast(this.killEvent(attackerId, bot.id, weapon, now));
+    if (wasted) this.broadcast(this.killEvent(attackerId, bot.id, weapon, now, { headshot, distance, multiKill }));
   }
 
   findCombatant(id) {
@@ -1213,10 +1251,14 @@ export class GameRoom {
     return { id, name: "Player", team: "blue", bot: false, kills: 0, deaths: 0 };
   }
 
-  killEvent(attackerId, victimId, weapon, now) {
+  killEvent(attackerId, victimId, weapon, now, meta = {}) {
     const attacker = this.findCombatant(attackerId);
     const victim = this.findCombatant(victimId);
-    return { t: "kill", at: now, weapon: safeWeapon(weapon), attacker, victim };
+    return {
+      t: "kill", at: now, weapon: safeWeapon(weapon), attacker, victim,
+      headshot: !!meta.headshot, distance: Math.max(0, finiteNumber(meta.distance, 0)),
+      multiKill: Math.max(0, Math.floor(finiteNumber(meta.multiKill, 0))),
+    };
   }
 
   endBullet(id, reason) {
