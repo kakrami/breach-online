@@ -3,8 +3,8 @@ import {
   terrainHeight, naturalGroundBase, worldSupportHeight, resolveCeilingCollision, MAX_STEP_HEIGHT, BUILDING_PARTS
 } from './world-geometry.js';
 
-const PROTOCOL_VERSION = 25;
-const GAME_VERSION = "1.15.22";
+const PROTOCOL_VERSION = 26;
+const GAME_VERSION = "1.15.23";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -819,7 +819,7 @@ export class GameRoom {
       if(unlimited)refreshUnlimitedResources(me);
       if(me.hp<=0||now<me.wastedUntil){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'dead'});return;}
       if(!unlimited&&me.reloadAt){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'reloading'});return;}
-      if(now-me.lastShot<spec.cooldownMs){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'cooldown'});return;}
+      if(now-me.lastShot<spec.cooldownMs){const retryAfterMs=Math.max(1,Math.ceil(spec.cooldownMs-(now-me.lastShot)));socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'cooldown',retryAfterMs});return;}
       if(!unlimited&&me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
       me.lastShot=now;if(!unlimited)me.ammo[weapon]-=1;const autoReloadStarted=!unlimited&&me.ammo[weapon]===0;if(autoReloadStarted){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;}me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);
       const cp=Math.cos(me.pitch),sp=Math.sin(me.pitch),fx=-Math.sin(me.yaw)*cp,fy=sp,fz=-Math.cos(me.yaw)*cp,pellets=weapon==='shotgun'?8:1;
@@ -827,7 +827,7 @@ export class GameRoom {
       sendLoadout(socket,me,{action:'fire',seq,accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
     }
 
-    if(payload.t==='throw'){const kind=safeEquipmentKind(payload.kind),unlimited=!!me.godMode;me.equipment=normalizeEquipment(me.equipment);if(unlimited)refreshUnlimitedResources(me);if(me.hp<=0||now<me.wastedUntil||now-finiteNumber(me.lastThrow,0)<500||(!unlimited&&me.equipment[kind]<=0))return;me.lastThrow=now;if(!unlimited)me.equipment[kind]-=1;socket.serializeAttachment(me);try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment,unlimited}));}catch{}const cp=Math.cos(me.pitch),fx=-Math.sin(me.yaw)*cp,fy=Math.sin(me.pitch),fz=-Math.cos(me.yaw)*cp;const id=crypto.randomUUID().replace(/-/g,'').slice(0,12),g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+fx*.75,y:me.y+PLAYER_HEIGHT-.25,z:me.z+fz*.75,vx:fx*14,vy:fy*14+5.2,vz:fz*14,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:1350),stuck:false,lastBroadcast:0};this.throwables.set(id,g);this.broadcast({t:'throwable',...g});await this.stepSimulation(now,meta);return;}
+    if(payload.t==='throw'){const kind=safeEquipmentKind(payload.kind),unlimited=!!me.godMode;me.equipment=normalizeEquipment(me.equipment);if(unlimited)refreshUnlimitedResources(me);if(me.hp<=0||now<me.wastedUntil||now-finiteNumber(me.lastThrow,0)<420||(!unlimited&&me.equipment[kind]<=0))return;me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4);me.lastThrow=now;if(!unlimited)me.equipment[kind]-=1;socket.serializeAttachment(me);try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment,unlimited}));}catch{}const cp=Math.cos(me.pitch),fx=-Math.sin(me.yaw)*cp,fy=Math.sin(me.pitch),fz=-Math.cos(me.yaw)*cp;const id=crypto.randomUUID().replace(/-/g,'').slice(0,12),g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+fx*.75,y:me.y+PLAYER_HEIGHT-.25,z:me.z+fz*.75,vx:fx*15.5,vy:fy*15.5+5.4,vz:fz*15.5,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1700:1450),stuck:false,lastBroadcast:0};this.throwables.set(id,g);this.broadcast({t:'throwable',...g});await this.stepSimulation(now,meta);return;}
 
     if (payload.t === "reload") {
       const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
@@ -1118,7 +1118,7 @@ export class GameRoom {
       if (bot.hp <= 0) {
         if (now >= bot.wastedUntil) {
           const spawn = spawnForTeam(bot.team, i + Math.floor(Math.random() * TEAM_SPAWNS[safeTeam(bot.team)].length));
-          Object.assign(bot, spawn, { hp: 100, wastedUntil: 0, regenAt: 0, weapon: "assault", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "", lastHitAt: 0 });
+          Object.assign(bot, spawn, { hp: 100, wastedUntil: 0, regenAt: 0, weapon: "assault", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "", lastHitAt: 0, flashUntil: 0, flashSpin: 0 });
           this.broadcast({ t: "respawn", player: publicBot(bot) });
         }
         continue;
@@ -1128,6 +1128,12 @@ export class GameRoom {
         bot.reloadWeapon = "";
         bot.ammo = normalizeAmmo(bot.ammo);
         bot.ammo.assault = WEAPONS.assault.mag;
+      }
+      if(now<finiteNumber(bot.flashUntil,0)){
+        bot.yaw+=dt*(bot.flashSpin||2.2);
+        const step=settings.movement.walkSpeed*.22*dt,dx=Math.sin(bot.yaw)*step,dz=Math.cos(bot.yaw)*step;
+        if(!worldBlocked(bot.x+dx,bot.z+dz,.34)){bot.x+=dx;bot.z+=dz;bot.y=worldSupportHeight(bot.x,bot.z,bot.y);}
+        continue;
       }
 
       const targetCandidates = [];
@@ -1202,10 +1208,30 @@ export class GameRoom {
     }
   }
 
-  stepThrowables(now,dt,settings){for(const [id,g] of this.throwables){if(g.stuckTo){const a=this.findActorState(g.stuckTo);if(a){g.x=a.x;g.y=a.y+1.0;g.z=a.z;}else g.stuckTo='';}if(!g.stuck){const elapsed=Math.min(.12,Math.max(0,(now-g.lastAt)/1000));g.lastAt=now;const steps=Math.max(1,Math.ceil(elapsed/.018));for(let i=0;i<steps&&!g.stuck;i++){const st=elapsed/steps;g.vy-=18*st;const px=g.x,py=g.y,pz=g.z;g.x+=g.vx*st;g.y+=g.vy*st;g.z+=g.vz*st;const actor=this.findStickyTarget(g);if(g.kind==='sticky'&&actor){g.stuck=true;g.stuckTo=actor;break;}const hitGround=g.y<=terrainHeight(g.x,g.z)+.08,hitObj=segmentHitsObstacle(px,py,pz,g.x,g.y,g.z);if(hitGround||hitObj){if(g.kind==='sticky'){g.x=px;g.y=Math.max(py,terrainHeight(px,pz)+.10);g.z=pz;g.vx=g.vy=g.vz=0;g.stuck=true;}else{g.x=px;g.y=Math.max(py,terrainHeight(px,pz)+.12);g.z=pz;g.vy=Math.abs(g.vy)*.42;g.vx*=-.42;g.vz*=-.42;if(Math.hypot(g.vx,g.vy,g.vz)<2)g.stuck=true;}}}}if(now-g.lastBroadcast>90){g.lastBroadcast=now;this.broadcast({t:'throwableState',id:g.id,x:g.x,y:g.y,z:g.z,vx:g.vx,vy:g.vy,vz:g.vz,stuck:g.stuck});}if(now>=g.fuseAt){if(g.kind==='flash')this.broadcast({t:'flashDetonate',id:g.id,x:g.x,y:g.y,z:g.z});else this.explodeSticky(g,now,settings);this.throwables.delete(id);this.broadcast({t:'throwableEnd',id:g.id});}}}
+  stepThrowables(now,dt,settings){for(const [id,g] of this.throwables){if(g.stuckTo){const a=this.findActorState(g.stuckTo);if(a){g.x=a.x;g.y=a.y+1.0;g.z=a.z;}else g.stuckTo='';}if(!g.stuck){const elapsed=Math.min(.12,Math.max(0,(now-g.lastAt)/1000));g.lastAt=now;const steps=Math.max(1,Math.ceil(elapsed/.018));for(let i=0;i<steps&&!g.stuck;i++){const st=elapsed/steps;g.vy-=18*st;const px=g.x,py=g.y,pz=g.z;g.x+=g.vx*st;g.y+=g.vy*st;g.z+=g.vz*st;const actor=this.findStickyTarget(g);if(g.kind==='sticky'&&actor){g.stuck=true;g.stuckTo=actor;break;}const hitGround=g.y<=terrainHeight(g.x,g.z)+.08,hitObj=segmentHitsObstacle(px,py,pz,g.x,g.y,g.z);if(hitGround||hitObj){this.broadcast({t:'throwableImpact',id:g.id,kind:g.kind,x:px,y:py,z:pz});if(g.kind==='sticky'){g.x=px;g.y=Math.max(py,terrainHeight(px,pz)+.10);g.z=pz;g.vx=g.vy=g.vz=0;g.stuck=true;}else{g.x=px;g.y=Math.max(py,terrainHeight(px,pz)+.12);g.z=pz;g.vy=Math.abs(g.vy)*.42;g.vx*=-.42;g.vz*=-.42;if(Math.hypot(g.vx,g.vy,g.vz)<2)g.stuck=true;}}}}if(now-g.lastBroadcast>75){g.lastBroadcast=now;this.broadcast({t:'throwableState',id:g.id,x:g.x,y:g.y,z:g.z,vx:g.vx,vy:g.vy,vz:g.vz,stuck:g.stuck});}if(now>=g.fuseAt){if(g.kind==='flash')this.detonateFlash(g,now);else this.explodeSticky(g,now,settings);this.throwables.delete(id);this.broadcast({t:'throwableEnd',id:g.id});}}}
   findActorState(id){for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(p.clientId===id&&!p.replaced)return p;}return this.bots.find(b=>b.id===id)||null;}
-  findStickyTarget(g){for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.clientId===g.ownerId||p.hp<=0||safeTeam(p.team)===g.ownerTeam)continue;if(Math.hypot(p.x-g.x,p.y+1-g.y,p.z-g.z)<.52)return p.clientId;}for(const b of this.bots){if(b.id===g.ownerId||b.hp<=0||safeTeam(b.team)===g.ownerTeam)continue;if(Math.hypot(b.x-g.x,b.y+1-g.y,b.z-g.z)<.52)return b.id;}return '';}
-  explodeSticky(g,now,settings){const radius=7.5;for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0||p.clientId===g.ownerId||safeTeam(p.team)===g.ownerTeam)continue;const dx=p.x-g.x,dz=p.z-g.z,d=Math.hypot(dx,p.y+1-g.y,dz);if(d>radius)continue;const damage=Math.max(18,Math.round(138*(1-d/radius))),n=Math.hypot(dx,dz)||1;this.damageHuman(socket,p,g.ownerId,damage,'sticky',{x:dx/n*4.5,z:dz/n*4.5,y:3.1},now,g.id,settings,{distance:d});}for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||safeTeam(b.team)===g.ownerTeam)continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius)continue;const damage=Math.max(18,Math.round(138*(1-d/radius))),n=Math.hypot(dx,dz)||1;this.damageBot(b,g.ownerId,damage,'sticky',{x:dx/n*4.5,z:dz/n*4.5,y:3.1},now,g.id,settings,{distance:d});}this.broadcast({t:'explosion',id:g.id,x:g.x,y:g.y,z:g.z,kind:'sticky'});}
+  findStickyTarget(g){for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.clientId===g.ownerId||p.hp<=0||safeTeam(p.team)===g.ownerTeam)continue;if(Math.hypot(p.x-g.x,p.y+1-g.y,p.z-g.z)<.62)return p.clientId;}for(const b of this.bots){if(b.id===g.ownerId||b.hp<=0||safeTeam(b.team)===g.ownerTeam)continue;if(Math.hypot(b.x-g.x,b.y+1-g.y,b.z-g.z)<.62)return b.id;}return '';}
+  detonateFlash(g,now){
+    const radius=22;this.broadcast({t:'flashDetonate',id:g.id,x:g.x,y:g.y,z:g.z,radius});
+    for(const socket of this.ctx.getWebSockets()){
+      const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;
+      const ex=p.x,ey=p.y+PLAYER_HEIGHT*.75,ez=p.z,dx=g.x-ex,dy=g.y-ey,dz=g.z-ez,dist=Math.hypot(dx,dy,dz);if(dist>radius)continue;
+      if(segmentHitsObstacle(g.x,g.y,g.z,ex,ey,ez))continue;
+      const cp=Math.cos(p.pitch||0),fx=-Math.sin(p.yaw||0)*cp,fy=Math.sin(p.pitch||0),fz=-Math.cos(p.yaw||0)*cp,n=dist||1,dot=(fx*dx+fy*dy+fz*dz)/n,front=.12+.88*Math.max(0,(dot+1)/2),power=clamp((1-dist/radius)*front,0,1);if(power<.035)continue;
+      try{socket.send(JSON.stringify({t:'flashEffect',power,durationMs:Math.round(650+power*2850)}));}catch{}
+    }
+    for(const b of this.bots){if(b.hp<=0)continue;const dx=b.x-g.x,dy=b.y+1.05-g.y,dz=b.z-g.z,dist=Math.hypot(dx,dy,dz);if(dist>radius||segmentHitsObstacle(g.x,g.y,g.z,b.x,b.y+1.05,b.z))continue;const power=clamp(1-dist/radius,0,1);if(power<.05)continue;b.flashUntil=Math.max(finiteNumber(b.flashUntil,0),now+550+power*2600);b.flashSpin=(Math.random()<.5?-1:1)*(1.5+Math.random()*2.5);}
+  }
+  explodeSticky(g,now,settings){
+    const radius=8.5,maxDamage=150;
+    for(const socket of this.ctx.getWebSockets()){
+      const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;const self=p.clientId===g.ownerId;if(!self&&safeTeam(p.team)===g.ownerTeam)continue;
+      const dx=p.x-g.x,dz=p.z-g.z,d=Math.hypot(dx,p.y+1-g.y,dz);if(d>radius||segmentHitsObstacle(g.x,g.y,g.z,p.x,p.y+1,p.z))continue;
+      let damage=Math.max(12,Math.round(maxDamage*(1-d/radius)));if(self)damage=Math.round(damage*.72);const n=Math.hypot(dx,dz)||1;this.damageHuman(socket,p,g.ownerId,damage,'sticky',{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});
+    }
+    for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||safeTeam(b.team)===g.ownerTeam)continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius||segmentHitsObstacle(g.x,g.y,g.z,b.x,b.y+1,b.z))continue;const damage=Math.max(12,Math.round(maxDamage*(1-d/radius))),n=Math.hypot(dx,dz)||1;this.damageBot(b,g.ownerId,damage,'sticky',{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});}
+    this.broadcast({t:'explosion',id:g.id,x:g.x,y:g.y,z:g.z,kind:'sticky',radius});
+  }
 
   stepBullets(now, settings) {
     const humans = this.ctx.getWebSockets().map((socket) => ({ socket, player: socket.deserializeAttachment() || {} }));
