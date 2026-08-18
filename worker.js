@@ -3,8 +3,8 @@ import {
   terrainHeight, naturalGroundBase, worldSupportHeight, resolveCeilingCollision, MAX_STEP_HEIGHT, BUILDING_PARTS
 } from './world-geometry.js';
 
-const PROTOCOL_VERSION = 28;
-const GAME_VERSION = "1.15.27";
+const PROTOCOL_VERSION = 29;
+const GAME_VERSION = "1.16.0";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -454,10 +454,10 @@ export default {
     if (url.pathname === "/health") {
       return json(request, env, {
         ok: true,
-        service: "punch-world-online",
+        service: "breachline-online",
         protocol: PROTOCOL_VERSION,
         game: GAME_VERSION,
-        mode: "durable-object-team-sandbox-bots-difficulty-directional-damage",
+        mode: "durable-object-tactical-team-fps",
       });
     }
 
@@ -673,7 +673,7 @@ export class GameRoom {
 
     let meta = await this.getMeta();
     if (!meta) return json(request, this.env, { error: "World not found." }, 404);
-    if (Math.floor(finiteNumber(meta.protocol, 0)) !== PROTOCOL_VERSION) return json(request, this.env, { error: "World protocol mismatch. Create a new world.", protocol: PROTOCOL_VERSION }, 409);
+    if (Math.floor(finiteNumber(meta.protocol, 0)) !== PROTOCOL_VERSION) return json(request, this.env, { error: "Match protocol mismatch. Create a new match.", protocol: PROTOCOL_VERSION }, 409);
     const fetchNow = Date.now();
     if (fetchNow >= finiteNumber(meta.expiresAt, 0)) return json(request, this.env, { error: "World expired." }, 410);
     if (finiteNumber(meta.expiresAt, 0) <= fetchNow + 60_000) {

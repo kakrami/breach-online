@@ -1,6 +1,6 @@
 {
-  "name": "punch-world-online",
-  "version": "1.15.27",
+  "name": "breachline-online",
+  "version": "1.16.0",
   "private": true,
   "type": "module",
   "scripts": {
