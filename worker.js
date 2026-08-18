@@ -3,8 +3,8 @@ import {
   terrainHeight, naturalGroundBase, worldSupportHeight, resolveCeilingCollision, MAX_STEP_HEIGHT, BUILDING_PARTS
 } from './world-geometry.js';
 
-const PROTOCOL_VERSION = 26;
-const GAME_VERSION = "1.15.23";
+const PROTOCOL_VERSION = 27;
+const GAME_VERSION = "1.15.24";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -136,6 +136,21 @@ function finiteNumber(value, fallback = 0) {
 
 function safeTeam(value) {
   return String(value || "blue").toLowerCase() === "red" ? "red" : "blue";
+}
+
+function normalizeAdminIds(meta) {
+  const owner = safeClientId(meta?.ownerClientId);
+  const raw = Array.isArray(meta?.adminClientIds) ? meta.adminClientIds : [];
+  const out = [];
+  for (const id of [owner, ...raw]) {
+    const safe = safeClientId(id);
+    if (safe && !out.includes(safe)) out.push(safe);
+  }
+  return out;
+}
+function isRoomAdmin(meta, clientId) {
+  const id = safeClientId(clientId);
+  return !!id && normalizeAdminIds(meta).includes(id);
 }
 
 function safeWeapon(value) {
@@ -327,6 +342,7 @@ function publicPlayer(attachment) {
     kills: Math.max(0, Math.floor(finiteNumber(attachment.kills, 0))),
     deaths: Math.max(0, Math.floor(finiteNumber(attachment.deaths, 0))),
     godMode: !!attachment.godMode,
+    admin: !!attachment.admin,
   };
 }
 
@@ -578,11 +594,15 @@ export class GameRoom {
   async getMeta() {
     if (this.metaCache) return this.metaCache;
     const meta = await this.ctx.storage.get("meta");
-    if (meta) this.metaCache = meta;
+    if (meta) {
+      meta.adminClientIds = normalizeAdminIds(meta);
+      this.metaCache = meta;
+    }
     return meta || null;
   }
 
   async putMeta(meta) {
+    meta.adminClientIds = normalizeAdminIds(meta);
     this.metaCache = meta;
     await this.ctx.storage.put("meta", meta);
   }
@@ -647,7 +667,7 @@ export class GameRoom {
       const botDifficulty = safeBotDifficulty(url.searchParams.get("botDifficulty"));
       if (botCount > MAX_BOTS) return json(request, this.env, { error: `Maximum ${MAX_BOTS} bots per world.` }, 400);
       const now = Date.now();
-      const meta = { code, protocol: PROTOCOL_VERSION, ownerClientId, botCount, blueBots, redBots, botDifficulty, settings: normalizeWorldSettings(), createdAt: now, expiresAt: now + ROOM_MAX_LIFETIME_MS };
+      const meta = { code, protocol: PROTOCOL_VERSION, ownerClientId, adminClientIds: [ownerClientId], botCount, blueBots, redBots, botDifficulty, settings: normalizeWorldSettings(), createdAt: now, expiresAt: now + ROOM_MAX_LIFETIME_MS };
       await this.putMeta(meta);
       this.bots = makeBots(blueBots, redBots);
       await this.ctx.storage.put("bots", this.bots);
@@ -731,6 +751,7 @@ export class GameRoom {
       kills: Math.max(0, Math.floor(finiteNumber(spawn.kills, 0))),
       deaths: Math.max(0, Math.floor(finiteNumber(spawn.deaths, 0))),
       godMode: requestedGodMode,
+      admin: isRoomAdmin(meta, clientId),
       ads: false,
       lastStateAt: Date.now(),
       moveCredit: normalizeWorldSettings(meta.settings).movement.runSpeed * 0.04,
@@ -752,7 +773,8 @@ export class GameRoom {
       maxPlayers: MAX_PLAYERS,
       botCount: meta.botCount,
       botConfig: { blueBots: meta.blueBots || 0, redBots: meta.redBots || 0, difficulty: safeBotDifficulty(meta.botDifficulty) },
-      isAdmin: clientId === meta.ownerClientId,
+      isAdmin: isRoomAdmin(meta, clientId),
+      ownerClientId: meta.ownerClientId,
       settings: normalizeWorldSettings(meta.settings),
       serverTime: Date.now(),
       protocol: PROTOCOL_VERSION,
@@ -827,7 +849,16 @@ export class GameRoom {
       sendLoadout(socket,me,{action:'fire',seq,accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
     }
 
-    if(payload.t==='throw'){const kind=safeEquipmentKind(payload.kind),unlimited=!!me.godMode;me.equipment=normalizeEquipment(me.equipment);if(unlimited)refreshUnlimitedResources(me);if(me.hp<=0||now<me.wastedUntil||now-finiteNumber(me.lastThrow,0)<420||(!unlimited&&me.equipment[kind]<=0))return;me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4);me.lastThrow=now;if(!unlimited)me.equipment[kind]-=1;socket.serializeAttachment(me);try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment,unlimited}));}catch{}const cp=Math.cos(me.pitch),fx=-Math.sin(me.yaw)*cp,fy=Math.sin(me.pitch),fz=-Math.cos(me.yaw)*cp;const id=crypto.randomUUID().replace(/-/g,'').slice(0,12),g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+fx*.75,y:me.y+PLAYER_HEIGHT-.25,z:me.z+fz*.75,vx:fx*15.5,vy:fy*15.5+5.4,vz:fz*15.5,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1700:1450),stuck:false,lastBroadcast:0};this.throwables.set(id,g);this.broadcast({t:'throwable',...g});await this.stepSimulation(now,meta);return;}
+    if(payload.t==='throw'){
+      const kind=safeEquipmentKind(payload.kind),unlimited=!!me.godMode;me.equipment=normalizeEquipment(me.equipment);if(unlimited)refreshUnlimitedResources(me);
+      if(me.hp<=0||now<me.wastedUntil||now-finiteNumber(me.lastThrow,0)<360||(!unlimited&&me.equipment[kind]<=0))return;
+      me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.25,1.15);
+      const charge=clamp(finiteNumber(payload.charge,1),0,1),throwSpeed=19+charge*10.5,loft=5.0+charge*2.2;
+      me.lastThrow=now;if(!unlimited)me.equipment[kind]-=1;socket.serializeAttachment(me);try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment,unlimited}));}catch{}
+      const cp=Math.cos(me.pitch),fx=-Math.sin(me.yaw)*cp,fy=Math.sin(me.pitch),fz=-Math.cos(me.yaw)*cp;
+      const id=crypto.randomUUID().replace(/-/g,'').slice(0,12),g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+fx*.82,y:me.y+PLAYER_HEIGHT-.22,z:me.z+fz*.82,vx:fx*throwSpeed,vy:fy*throwSpeed+loft,vz:fz*throwSpeed,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:1650),stuck:false,lastBroadcast:0};
+      this.throwables.set(id,g);this.broadcast({t:'throwable',...g});await this.stepSimulation(now,meta);return;
+    }
 
     if (payload.t === "reload") {
       const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
@@ -857,8 +888,75 @@ export class GameRoom {
       return;
     }
 
+    if (payload.t === "team") {
+      const nextTeam = safeTeam(payload.team);
+      if (nextTeam === safeTeam(me.team)) return;
+      const spawn = spawnForTeam(nextTeam, Math.floor(Math.random() * TEAM_SPAWNS[nextTeam].length));
+      me = {
+        ...me, ...spawn, team: nextTeam, hp: 100, wastedUntil: 0, lastHitAt: 0, regenAt: 0,
+        weapon: "pistol", ammo: freshAmmo(), equipment: freshEquipment(), reloadAt: 0, reloadWeapon: "",
+        lastShot: 0, lastThrow: 0, ads: false, combatRev: Math.max(0, finiteNumber(me.combatRev, 0)) + 1,
+        moveCredit: settings.movement.runSpeed * 0.04,
+      };
+      if (me.godMode) refreshUnlimitedResources(me);
+      socket.serializeAttachment(me);
+      this.broadcast({ t: "teamChange", player: publicPlayer(me) });
+      sendLoadout(socket, me, { action: "team", accepted: true, unlimited: !!me.godMode });
+      try { socket.send(JSON.stringify({ t: "equipment", equipment: me.equipment, unlimited: !!me.godMode })); } catch {}
+      const players = this.liveSockets().length;
+      await this.updateDirectory(players, meta);
+      return;
+    }
+
+    if (payload.t === "adminPlayer") {
+      if (!isRoomAdmin(meta, me.clientId)) {
+        try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "Admin access required." })); } catch {}
+        return;
+      }
+      const targetId = safeClientId(payload.targetId);
+      const targetSocket = this.ctx.getWebSockets().find((s) => {
+        const p = s.deserializeAttachment() || {};
+        return p.clientId === targetId && !p.replaced;
+      });
+      if (!targetSocket) {
+        try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "Player is no longer connected." })); } catch {}
+        return;
+      }
+      let target = targetSocket.deserializeAttachment() || {};
+      const action = String(payload.action || "");
+      if (action === "god") {
+        target.godMode = !!payload.enabled;
+        if (target.godMode) refreshUnlimitedResources(target);
+        target.combatRev = Math.max(0, finiteNumber(target.combatRev, 0)) + 1;
+        targetSocket.serializeAttachment(target);
+        this.broadcast({ t: "god", id: target.clientId, enabled: target.godMode });
+        if (target.godMode) {
+          try { targetSocket.send(JSON.stringify({ t: "equipment", equipment: target.equipment, unlimited: true })); } catch {}
+        }
+        sendLoadout(targetSocket, target, { action: "god", accepted: true, unlimited: !!target.godMode });
+        return;
+      }
+      if (action === "admin") {
+        const enabled = !!payload.enabled;
+        if (targetId === meta.ownerClientId && !enabled) {
+          try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "The world owner cannot be demoted." })); } catch {}
+          return;
+        }
+        const admins = new Set(normalizeAdminIds(meta));
+        if (enabled) admins.add(targetId); else admins.delete(targetId);
+        admins.add(meta.ownerClientId);
+        meta.adminClientIds = [...admins];
+        await this.putMeta(meta);
+        target.admin = isRoomAdmin(meta, targetId);
+        targetSocket.serializeAttachment(target);
+        this.broadcast({ t: "adminRole", id: targetId, enabled: target.admin, owner: targetId === meta.ownerClientId });
+        return;
+      }
+      return;
+    }
+
     if (payload.t === "adminSettings") {
-      if (me.clientId !== meta.ownerClientId) {
+      if (!isRoomAdmin(meta, me.clientId)) {
         try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "Admin access required." })); } catch {}
         return;
       }
@@ -871,7 +969,7 @@ export class GameRoom {
 
 
     if (payload.t === "adminBots") {
-      if (me.clientId !== meta.ownerClientId) {
+      if (!isRoomAdmin(meta, me.clientId)) {
         try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "Admin access required." })); } catch {}
         return;
       }
