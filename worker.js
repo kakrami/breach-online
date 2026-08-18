@@ -3,8 +3,8 @@ import {
   terrainHeight, naturalGroundBase, worldSupportHeight, resolveCeilingCollision, MAX_STEP_HEIGHT, BUILDING_PARTS
 } from './world-geometry.js';
 
-const PROTOCOL_VERSION = 30;
-const GAME_VERSION = "1.16.1";
+const PROTOCOL_VERSION = 31;
+const GAME_VERSION = "1.16.2";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -17,6 +17,9 @@ const DIRECTORY_LEASE_MS = 15 * 1000;
 const DIRECTORY_HEARTBEAT_MS = 5 * 1000;
 const SIM_MIN_STEP_MS = 16;
 const THROWABLE_BROADCAST_MS = 33;
+const TACTICAL_THROW_SPEED = 23.5;
+const TACTICAL_THROW_LOFT = 6.4;
+const TACTICAL_GRAVITY = 18;
 const COLLISION_CELL_SIZE = 8;
 const COLLISION_CELL_HEIGHT = 3;
 const RECONNECT_GRACE_MS = 45 * 1000;
@@ -851,7 +854,7 @@ export class GameRoom {
       const requestedId=safeClientId(payload.id).slice(0,24),id=requestedId&&!this.throwables.has(requestedId)?requestedId:crypto.randomUUID().replace(/-/g,'').slice(0,16);
       if(me.hp<=0||now<me.wastedUntil||now-finiteNumber(me.lastThrow,0)<360||(!unlimited&&me.equipment[kind]<=0)){try{socket.send(JSON.stringify({t:'throwAck',id:requestedId||id,accepted:false}));}catch{}return;}
       me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.25,1.15);
-      const throwSpeed=29.5,loft=7.2;
+      const throwSpeed=TACTICAL_THROW_SPEED,loft=TACTICAL_THROW_LOFT;
       me.lastThrow=now;if(!unlimited)me.equipment[kind]-=1;socket.serializeAttachment(me);try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment,unlimited}));socket.send(JSON.stringify({t:'throwAck',id,accepted:true}));}catch{}
       const cp=Math.cos(me.pitch),fx=-Math.sin(me.yaw)*cp,fy=Math.sin(me.pitch),fz=-Math.cos(me.yaw)*cp;
       const g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+fx*.82,y:me.y+PLAYER_HEIGHT-.22,z:me.z+fz*.82,vx:fx*throwSpeed,vy:fy*throwSpeed+loft,vz:fz*throwSpeed,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:1650),stuck:false,lastBroadcast:now};
@@ -1064,7 +1067,8 @@ export class GameRoom {
     // Grounded stair movement changes Y because the support surface rises, not
     // because the player jumped. Accept the swept tread height before applying
     // ceiling logic so a delayed packet cannot be mistaken for a jump through a stair.
-    const followsWalkSurface=startedGrounded&&Math.abs(rawRequestedY-walkY)<=.34;
+    const clientGrounded=payload.grounded===true;
+    const followsWalkSurface=startedGrounded&&clientGrounded&&Math.abs(rawRequestedY-walkY)<=.10;
     const ceiling=followsWalkSurface?{y:walkY,hit:false}:resolveCeilingCollision(me.y,rawRequestedY,x,z);
     const requestedY=ceiling.y;
     const ground = worldSupportHeight(x,z,Math.max(walkY,requestedY));
@@ -1306,7 +1310,7 @@ export class GameRoom {
         // time whenever the room was only receiving idle client updates.
         const elapsed=Math.min(.35,Math.max(0,(now-g.lastAt)/1000));g.lastAt=now;const steps=Math.max(1,Math.ceil(elapsed/.012));
         for(let i=0;i<steps&&!g.stuck;i++){
-          const st=elapsed/steps;g.vy-=18*st;const px=g.x,py=g.y,pz=g.z;g.x+=g.vx*st;g.y+=g.vy*st;g.z+=g.vz*st;
+          const st=elapsed/steps;g.vy-=TACTICAL_GRAVITY*st;const px=g.x,py=g.y,pz=g.z;g.x+=g.vx*st;g.y+=g.vy*st;g.z+=g.vz*st;
           const actor=this.findStickyTarget(g);if(g.kind==='sticky'&&actor){g.stuck=true;g.stuckTo=actor;g.vx=g.vy=g.vz=0;break;}
           const hitGround=g.y<=terrainHeight(g.x,g.z)+.08,hitObj=segmentHitsObstacle(px,py,pz,g.x,g.y,g.z);
           if(hitGround||hitObj){
