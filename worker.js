@@ -3,8 +3,8 @@ import {
   terrainHeight, naturalGroundBase, worldSupportHeight, resolveCeilingCollision, MAX_STEP_HEIGHT, BUILDING_PARTS
 } from './world-geometry.js';
 
-const PROTOCOL_VERSION = 27;
-const GAME_VERSION = "1.15.25";
+const PROTOCOL_VERSION = 28;
+const GAME_VERSION = "1.15.27";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
@@ -43,7 +43,6 @@ const PLAYER_COLORS = [
   "#4cc9f0", "#f72585", "#80ed99", "#ffd166",
   "#b388ff", "#ff8c42", "#90e0ef", "#f28482",
 ];
-const BOT_COLORS = ["#78baff", "#ff8290"];
 const BOT_DIFFICULTIES = Object.freeze({
   easy: Object.freeze({ moveRun: .44, moveWalk: .58, strafe: .08, preferredRange: 9.5, range: 19, fireScale: 1.48, reactionBase: 480, reactionJitter: 430, spreadBase: .098, spreadDistance: .0028 }),
   normal: Object.freeze({ moveRun: .72, moveWalk: .86, strafe: .38, preferredRange: 8.0, range: 30, fireScale: .82, reactionBase: 105, reactionJitter: 160, spreadBase: .022, spreadDistance: .00105 }),
@@ -381,7 +380,6 @@ function spawnForTeam(team,index){
   team=safeTeam(team);const points=TEAM_SPAWNS[team],p=points[Math.abs(index)%points.length];
   return {x:p[0],y:terrainHeight(p[0],p[1]),z:p[1]};
 }
-function spawnFor(index){const team=index%2===0?'blue':'red';return spawnForTeam(team,Math.floor(index/2));}
 function makeBot(index, team, teamIndex) {
   team = safeTeam(team);
   const spawn = spawnForTeam(team, teamIndex);
@@ -458,7 +456,6 @@ export default {
         ok: true,
         service: "punch-world-online",
         protocol: PROTOCOL_VERSION,
-        version: PROTOCOL_VERSION,
         game: GAME_VERSION,
         mode: "durable-object-team-sandbox-bots-difficulty-directional-damage",
       });
@@ -492,7 +489,7 @@ export default {
           { method: "POST" },
         );
         if (created.status === 201) {
-          return json(request, env, { code, maxPlayers: MAX_PLAYERS, bots: botCount, blueBots, redBots, botDifficulty }, 201);
+          return json(request, env, { code }, 201);
         }
       }
       return json(request, env, { error: "Could not create a world. Try again." }, 503);
@@ -548,7 +545,6 @@ export class WorldDirectory {
         code,
         protocol: PROTOCOL_VERSION,
         players: clamp(Math.floor(finiteNumber(body.players, 0)), 0, MAX_PLAYERS),
-        bots: clamp(Math.floor(finiteNumber(body.bots, 0)), 0, MAX_BOTS),
         blueBots: clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS),
         redBots: clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS),
         botDifficulty: safeBotDifficulty(body.botDifficulty),
@@ -633,8 +629,7 @@ export class GameRoom {
   async cleanupRoom(meta) {
     this.metaCache = null;
     if (meta?.code) await this.removeDirectory(meta.code);
-    // Explicitly clear the alarm before storage. deleteAll() also clears alarms
-    // with our compatibility date, but doing both makes cleanup unambiguous.
+    // Clear the scheduled wake-up before deleting the room state.
     try { await this.ctx.storage.deleteAlarm(); } catch {}
     await this.ctx.storage.deleteAll();
   }
@@ -667,7 +662,7 @@ export class GameRoom {
       const botDifficulty = safeBotDifficulty(url.searchParams.get("botDifficulty"));
       if (botCount > MAX_BOTS) return json(request, this.env, { error: `Maximum ${MAX_BOTS} bots per world.` }, 400);
       const now = Date.now();
-      const meta = { code, protocol: PROTOCOL_VERSION, ownerClientId, adminClientIds: [ownerClientId], botCount, blueBots, redBots, botDifficulty, settings: normalizeWorldSettings(), createdAt: now, expiresAt: now + ROOM_MAX_LIFETIME_MS };
+      const meta = { code, protocol: PROTOCOL_VERSION, ownerClientId, adminClientIds: [ownerClientId], blueBots, redBots, botDifficulty, settings: normalizeWorldSettings(), createdAt: now, expiresAt: now + ROOM_MAX_LIFETIME_MS };
       await this.putMeta(meta);
       this.bots = makeBots(blueBots, redBots);
       await this.ctx.storage.put("bots", this.bots);
@@ -678,7 +673,7 @@ export class GameRoom {
 
     let meta = await this.getMeta();
     if (!meta) return json(request, this.env, { error: "World not found." }, 404);
-    if (Math.floor(finiteNumber(meta.protocol, 0)) !== PROTOCOL_VERSION) return json(request, this.env, { error: "This world was created by an older game version. Create a new world.", protocol: PROTOCOL_VERSION }, 409);
+    if (Math.floor(finiteNumber(meta.protocol, 0)) !== PROTOCOL_VERSION) return json(request, this.env, { error: "World protocol mismatch. Create a new world.", protocol: PROTOCOL_VERSION }, 409);
     const fetchNow = Date.now();
     if (fetchNow >= finiteNumber(meta.expiresAt, 0)) return json(request, this.env, { error: "World expired." }, 410);
     if (finiteNumber(meta.expiresAt, 0) <= fetchNow + 60_000) {
@@ -771,7 +766,6 @@ export class GameRoom {
       bots: this.bots.map(publicBot),
       code: meta.code,
       maxPlayers: MAX_PLAYERS,
-      botCount: meta.botCount,
       botConfig: { blueBots: meta.blueBots || 0, redBots: meta.redBots || 0, difficulty: safeBotDifficulty(meta.botDifficulty) },
       isAdmin: isRoomAdmin(meta, clientId),
       ownerClientId: meta.ownerClientId,
@@ -853,7 +847,7 @@ export class GameRoom {
       const kind=safeEquipmentKind(payload.kind),unlimited=!!me.godMode;me.equipment=normalizeEquipment(me.equipment);if(unlimited)refreshUnlimitedResources(me);
       if(me.hp<=0||now<me.wastedUntil||now-finiteNumber(me.lastThrow,0)<360||(!unlimited&&me.equipment[kind]<=0))return;
       me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.25,1.15);
-      const charge=clamp(finiteNumber(payload.charge,1),0,1),throwSpeed=19+charge*10.5,loft=5.0+charge*2.2;
+      const throwSpeed=29.5,loft=7.2;
       me.lastThrow=now;if(!unlimited)me.equipment[kind]-=1;socket.serializeAttachment(me);try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment,unlimited}));}catch{}
       const cp=Math.cos(me.pitch),fx=-Math.sin(me.yaw)*cp,fy=Math.sin(me.pitch),fz=-Math.cos(me.yaw)*cp;
       const id=crypto.randomUUID().replace(/-/g,'').slice(0,12),g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+fx*.82,y:me.y+PLAYER_HEIGHT-.22,z:me.z+fz*.82,vx:fx*throwSpeed,vy:fy*throwSpeed+loft,vz:fz*throwSpeed,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:1650),stuck:false,lastBroadcast:0};
@@ -981,7 +975,6 @@ export class GameRoom {
       }
       meta.blueBots = blueBots;
       meta.redBots = redBots;
-      meta.botCount = blueBots + redBots;
       meta.botDifficulty = safeBotDifficulty(payload.difficulty);
       await this.putMeta(meta);
       this.bots = reconcileBots(this.bots, blueBots, redBots);
@@ -994,12 +987,6 @@ export class GameRoom {
       this.broadcast({ t: "bots", config, bots: this.bots.map(publicBot) });
       const players = this.ctx.getWebSockets().filter((s) => { const p = s.deserializeAttachment() || {}; return p.clientId && !p.replaced; }).length;
       await this.updateDirectory(players, meta);
-      return;
-    }
-
-    if (payload.t === "respawn") {
-      // v1.9.0 clients may still send this. The server owns the transition now.
-      this.respawnExpiredHumans(now, settings);
       return;
     }
 
@@ -1659,7 +1646,6 @@ export class GameRoom {
           code: meta.code,
           protocol: PROTOCOL_VERSION,
           players,
-          bots: (this.bots || []).length,
           blueBots: (this.bots || []).filter((bot) => safeTeam(bot.team) === "blue").length,
           redBots: (this.bots || []).filter((bot) => safeTeam(bot.team) === "red").length,
           botDifficulty: safeBotDifficulty(meta.botDifficulty),
