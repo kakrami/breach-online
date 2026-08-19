@@ -4,7 +4,7 @@ import {
 } from './world-geometry.js';
 
 const PROTOCOL_VERSION = 31;
-const GAME_VERSION = "1.16.8";
+const GAME_VERSION = "1.16.9";
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 4;
 const MAX_PLAYERS = 8;
