@@ -71,10 +71,13 @@ export function terrainMinAround(x,z,r){
   return min;
 }
 
+const naturalGroundBaseCache=new Map();
 export function naturalGroundBase(type,x,z,r){
+  const key=`${type}|${x}|${z}|${r}`;
+  const cached=naturalGroundBaseCache.get(key);if(cached!==undefined)return cached;
   const footprint=type==='tree'?r:type==='bush'?r*.95:r*.9;
   const burial=type==='tree'?.16:type==='bush'?.14:.24;
-  return terrainMinAround(x,z,footprint)-burial;
+  const base=terrainMinAround(x,z,footprint)-burial;naturalGroundBaseCache.set(key,base);return base;
 }
 
 export function buildingWallOpenings(b,level,side){
@@ -105,18 +108,19 @@ export function splitWall(length,height,openings){
     if(right-left<=.02||top-bottom<=.02)continue;
     const midU=(left+right)/2,midY=(bottom+top)/2;
     if(safe.some(o=>midU>o.left&&midU<o.right&&midY>o.bottom&&midY<o.top))continue;
-    rects.push({left,right,bottom,top});
+    const crouchPassable=safe.some(o=>o.kind==='window'&&midU>o.left&&midU<o.right&&top<=o.bottom+.001);
+    rects.push({left,right,bottom,top,crouchPassable});
   }
   const eq=(a,b)=>Math.abs(a-b)<.001;let changed=true;
   while(changed){
     changed=false;
     outer:for(let i=0;i<rects.length;i++)for(let j=i+1;j<rects.length;j++){
       const a=rects[i],b=rects[j];
-      if(eq(a.bottom,b.bottom)&&eq(a.top,b.top)&&(eq(a.right,b.left)||eq(b.right,a.left))){rects[i]={left:Math.min(a.left,b.left),right:Math.max(a.right,b.right),bottom:a.bottom,top:a.top};rects.splice(j,1);changed=true;break outer;}
-      if(eq(a.left,b.left)&&eq(a.right,b.right)&&(eq(a.top,b.bottom)||eq(b.top,a.bottom))){rects[i]={left:a.left,right:a.right,bottom:Math.min(a.bottom,b.bottom),top:Math.max(a.top,b.top)};rects.splice(j,1);changed=true;break outer;}
+      if(a.crouchPassable===b.crouchPassable&&eq(a.bottom,b.bottom)&&eq(a.top,b.top)&&(eq(a.right,b.left)||eq(b.right,a.left))){rects[i]={left:Math.min(a.left,b.left),right:Math.max(a.right,b.right),bottom:a.bottom,top:a.top,crouchPassable:a.crouchPassable};rects.splice(j,1);changed=true;break outer;}
+      if(a.crouchPassable===b.crouchPassable&&eq(a.left,b.left)&&eq(a.right,b.right)&&(eq(a.top,b.bottom)||eq(b.top,a.bottom))){rects[i]={left:a.left,right:a.right,bottom:Math.min(a.bottom,b.bottom),top:Math.max(a.top,b.top),crouchPassable:a.crouchPassable};rects.splice(j,1);changed=true;break outer;}
     }
   }
-  return rects.map(r=>({u:(r.left+r.right)/2,y:r.bottom,w:r.right-r.left,h:r.top-r.bottom}));
+  return rects.map(r=>({u:(r.left+r.right)/2,y:r.bottom,w:r.right-r.left,h:r.top-r.bottom,crouchPassable:!!r.crouchPassable}));
 }
 
 function panelsAroundHole(b,hole){
@@ -150,7 +154,7 @@ export function buildingPlan(b){
 
 function addBox(parts,role,x,z,w,d,bottomY,topY,flags={}){
   if(w<=0||d<=0||topY-bottomY<=0)return;
-  parts.push({role,x,z,w,d,bottomY,topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,decorative:!!flags.decorative});
+  parts.push({role,x,z,w,d,bottomY,topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchPassable:!!flags.crouchPassable,decorative:!!flags.decorative});
 }
 
 function addFrameX(parts,b,z,base,level,opening){
@@ -174,12 +178,12 @@ export function makeBuildingGeometry(b){
   const t=plan.wallT;
   const addWallX=(z,level,side)=>{
     const openings=buildingWallOpenings(b,level,side);
-    for(const cell of splitWall(b.w,b.floorH,openings))addBox(parts,'wall',b.x+cell.u,z,cell.w+.015,t,base+level*b.floorH+cell.y,base+level*b.floorH+cell.y+cell.h+.015);
+    for(const cell of splitWall(b.w,b.floorH,openings))addBox(parts,'wall',b.x+cell.u,z,cell.w+.015,t,base+level*b.floorH+cell.y,base+level*b.floorH+cell.y+cell.h+.015,{crouchPassable:cell.crouchPassable});
     for(const opening of openings)addFrameX(parts,b,z+(side==='front'?-.012:.012),base,level,opening);
   };
   const addWallZ=(x,level,side)=>{
     const openings=buildingWallOpenings(b,level,side);
-    for(const cell of splitWall(b.d,b.floorH,openings))addBox(parts,'wall',x,b.z+cell.u,t,cell.w+.015,base+level*b.floorH+cell.y,base+level*b.floorH+cell.y+cell.h+.015);
+    for(const cell of splitWall(b.d,b.floorH,openings))addBox(parts,'wall',x,b.z+cell.u,t,cell.w+.015,base+level*b.floorH+cell.y,base+level*b.floorH+cell.y+cell.h+.015,{crouchPassable:cell.crouchPassable});
     for(const opening of openings)addFrameZ(parts,b,x+(side==='left'?-.012:.012),base,level,opening);
   };
   for(let level=0;level<levels;level++){
@@ -274,12 +278,12 @@ export function worldSupportHeight(x,z,currentY=terrainHeight(x,z)){
   return best;
 }
 
-export function resolveCeilingCollision(previousY,nextY,x,z){
+export function resolveCeilingCollision(previousY,nextY,x,z,playerHeight=PLAYER_HEIGHT){
   if(nextY<=previousY)return{y:nextY,hit:false};
-  const oldHead=previousY+PLAYER_HEIGHT,newHead=nextY+PLAYER_HEIGHT;let resolved=nextY,hit=false;
+  const oldHead=previousY+playerHeight,newHead=nextY+playerHeight;let resolved=nextY,hit=false;
   for(const s of BUILDING_HORIZONTAL_SOLIDS){
     if(Math.abs(x-s.x)>s.w/2+PLAYER_RADIUS*.35||Math.abs(z-s.z)>s.d/2+PLAYER_RADIUS*.35)continue;
-    if(oldHead<=s.bottomY+.025&&newHead>=s.bottomY-.025){resolved=Math.min(resolved,s.bottomY-PLAYER_HEIGHT-.012);hit=true;}
+    if(oldHead<=s.bottomY+.025&&newHead>=s.bottomY-.025){resolved=Math.min(resolved,s.bottomY-playerHeight-.012);hit=true;}
   }
   return{y:resolved,hit};
 }

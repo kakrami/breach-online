@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.16.16';
-export const PROTOCOL_VERSION = 33;
+export const APP_VERSION = '1.16.19';
+export const PROTOCOL_VERSION = 34;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -12,6 +12,16 @@ export const WEAPON_SPECS = Object.freeze({
   shotgun: Object.freeze({ name:'SHOTGUN', short:'SG', mag:6, damage:18, reloadMs:980, cooldownMs:760, bulletSpeed:68, lifetimeMs:1800, adsFov:52 }),
   sniper: Object.freeze({ name:'SNIPER', short:'SNP', mag:12, damage:120, reloadMs:1100, cooldownMs:950, bulletSpeed:180, lifetimeMs:3600, adsFov:18 }),
 });
+
+export const WEAPON_ACCURACY = Object.freeze({
+  pistol: Object.freeze({ hipDeg:1.45, adsDeg:0.48, moveDeg:0.70 }),
+  assault: Object.freeze({ hipDeg:2.25, adsDeg:0.62, moveDeg:1.00 }),
+  shotgun: Object.freeze({ hipDeg:5.20, adsDeg:3.05, moveDeg:1.10 }),
+  sniper: Object.freeze({ hipDeg:4.25, adsDeg:0.10, moveDeg:1.35 }),
+});
+
+export const CROUCH_HEIGHT = 1.08;
+export const CROUCH_SPEED_MULTIPLIER = 0.62;
 
 export const EQUIPMENT_CAPS = Object.freeze({ flash: 2, sticky: 2 });
 

@@ -4,7 +4,7 @@ import {
 } from './world-geometry.js';
 import {
   APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS,
-  WEAPON_ORDER, WEAPON_SPECS, EQUIPMENT_CAPS, DEFAULT_WORLD_SETTINGS,
+  WEAPON_ORDER, WEAPON_SPECS, WEAPON_ACCURACY, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, DEFAULT_WORLD_SETTINGS,
   TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, GROUND_FOLLOW_DROP
 } from './game-config.js';
 
@@ -55,7 +55,7 @@ const WORLD_OBSTACLES = [
   ...NATURAL_OBSTACLES.map(o=>({...o,playerSolid:true,projectileSolid:true})),
   ...BUILDING_PARTS.filter(p=>p.playerSolid||p.projectileSolid).map(p=>({
     type:'box',x:p.x,z:p.z,w:p.w,d:p.d,minY:p.bottomY,maxY:p.topY,
-    playerSolid:p.playerSolid,projectileSolid:p.projectileSolid,supportTop:p.supportTop,role:p.role
+    playerSolid:p.playerSolid,projectileSolid:p.projectileSolid,supportTop:p.supportTop,crouchPassable:!!p.crouchPassable,role:p.role
   })),
 ];
 
@@ -266,17 +266,51 @@ function obstacleBaseY(o){
   return terrainHeight(o.x,o.z);
 }
 
-function projectileHitZone(target, bullet) {
-  const tx = finiteNumber(target?.x, 0);
-  const ty = finiteNumber(target?.y, terrainHeight(tx, finiteNumber(target?.z, 0)));
-  const tz = finiteNumber(target?.z, 0);
-  const dx = tx - bullet.x;
-  const dz = tz - bullet.z;
-  const headDy = ty + 1.66 - bullet.y;
-  if (dx * dx + headDy * headDy + dz * dz <= 0.31 * 0.31) return "head";
-  const bodyDy = ty + 0.95 - bullet.y;
-  if (dx * dx + bodyDy * bodyDy + dz * dz <= 0.62 * 0.62) return "body";
-  return "";
+function segmentEllipsoidFirstT(x1,y1,z1,x2,y2,z2,cx,cy,cz,rx,ry,rz) {
+  rx=Math.max(.001,rx);ry=Math.max(.001,ry);rz=Math.max(.001,rz);
+  const ox=(x1-cx)/rx,oy=(y1-cy)/ry,oz=(z1-cz)/rz;
+  const dx=(x2-x1)/rx,dy=(y2-y1)/ry,dz=(z2-z1)/rz;
+  const c=ox*ox+oy*oy+oz*oz-1;
+  if(c<=0)return 0;
+  const a=dx*dx+dy*dy+dz*dz;if(a<=1e-12)return null;
+  const b=2*(ox*dx+oy*dy+oz*dz),disc=b*b-4*a*c;if(disc<0)return null;
+  const root=Math.sqrt(disc),t1=(-b-root)/(2*a),t2=(-b+root)/(2*a);
+  if(t1>=0&&t1<=1)return t1;if(t2>=0&&t2<=1)return t2;return null;
+}
+
+function projectileSegmentHitZone(target,x1,y1,z1,x2,y2,z2) {
+  const tx=finiteNumber(target?.x,0),ty=finiteNumber(target?.y,terrainHeight(tx,finiteNumber(target?.z,0))),tz=finiteNumber(target?.z,0);
+  const scaleY=target?.crouched?CROUCH_HEIGHT/PLAYER_HEIGHT:1;
+  const headT=segmentEllipsoidFirstT(x1,y1,z1,x2,y2,z2,tx,ty+1.66*scaleY,tz,.30,.30*scaleY,.30);
+  const torsoT=segmentEllipsoidFirstT(x1,y1,z1,x2,y2,z2,tx,ty+.99*scaleY,tz,.50,.57*scaleY,.40);
+  const lowerT=segmentEllipsoidFirstT(x1,y1,z1,x2,y2,z2,tx,ty+.39*scaleY,tz,.39,.40*scaleY,.34);
+  let bodyT=null;
+  if(torsoT!=null)bodyT=torsoT;
+  if(lowerT!=null&&(bodyT==null||lowerT<bodyT))bodyT=lowerT;
+  if(headT!=null&&(bodyT==null||headT<=bodyT+.012))return{zone:'head',t:headT};
+  if(bodyT!=null)return{zone:'body',t:bodyT};
+  if(headT!=null)return{zone:'head',t:headT};
+  return null;
+}
+
+function weaponSpreadRadians(player, weapon, settings) {
+  const accuracy = WEAPON_ACCURACY[weapon] || WEAPON_ACCURACY.pistol;
+  const moveRatio = clamp(finiteNumber(player?.moveSpeed, 0) / Math.max(0.1, settings.movement.runSpeed), 0, 1);
+  let degrees = (player?.ads ? accuracy.adsDeg : accuracy.hipDeg) + accuracy.moveDeg * moveRatio * (player?.ads ? 0.35 : 1);
+  if (player?.crouched) degrees *= 0.82;
+  return degrees * Math.PI / 180;
+}
+
+function spreadShotAngles(yaw, pitch, radius) {
+  if (!(radius > 0)) return { yaw, pitch };
+  const distance = Math.sqrt(Math.random()) * radius;
+  const angle = Math.random() * Math.PI * 2;
+  const pitchOffset = Math.sin(angle) * distance;
+  const yawScale = Math.max(0.32, Math.cos(pitch));
+  return {
+    yaw: yaw + Math.cos(angle) * distance / yawScale,
+    pitch: clamp(pitch + pitchOffset, -1.4, 1.4),
+  };
 }
 
 function collisionCellKey(cx,cy,cz) { return `${cx},${cy},${cz}`; }
@@ -327,11 +361,12 @@ function collisionCandidates(minX,maxX,minY,maxY,minZ,maxZ) {
   return out;
 }
 
-function worldBlocked(x,z,radius=.38,y=terrainHeight(x,z)){
+function worldBlocked(x,z,radius=.38,y=terrainHeight(x,z),playerHeight=PLAYER_HEIGHT,crouched=false){
   if(Math.abs(x)>ARENA_LIMIT||Math.abs(z)>ARENA_LIMIT)return true;
-  for(const entry of collisionCandidates(x-radius,x+radius,y,y+PLAYER_HEIGHT*.92,z-radius,z+radius)){
+  for(const entry of collisionCandidates(x-radius,x+radius,y,y+playerHeight*.92,z-radius,z+radius)){
     const o=entry.o;if(o.playerSolid===false||o.type==='pyramid')continue;
-    if(y+PLAYER_HEIGHT*.92<=entry.baseY||y>=entry.maxY-.04)continue;
+    if(crouched&&o.crouchPassable)continue;
+    if(y+playerHeight*.92<=entry.baseY||y>=entry.maxY-.04)continue;
     if(o.supportTop&&entry.maxY<=y+MAX_STEP_HEIGHT)continue;
     if(o.type==='box'){
       if(x>entry.minX-radius&&x<entry.maxX+radius&&z>entry.minZ-radius&&z<entry.maxZ+radius)return true;
@@ -339,27 +374,69 @@ function worldBlocked(x,z,radius=.38,y=terrainHeight(x,z)){
   }
   return false;
 }
-function pointHitsObstacle(x,y,z){
-  for(const entry of collisionCandidates(x,x,y,y,z,z)){
-    const o=entry.o;if(o.projectileSolid===false||y<entry.baseY||y>entry.maxY)continue;
-    if(o.type==='box'){
-      if(x>=entry.minX&&x<=entry.maxX&&z>=entry.minZ&&z<=entry.maxZ)return true;
-    }else if(o.type==='pyramid'){
-      const t=clamp((y-entry.baseY)/o.h,0,1),half=o.base/2*(1-t);
-      if(Math.abs(x-o.x)<=half&&Math.abs(z-o.z)<=half)return true;
-    }else if(Math.hypot(x-o.x,z-o.z)<=o.r)return true;
+function pointHitsEntry(entry,x,y,z){
+  const o=entry.o;if(o.projectileSolid===false||y<entry.baseY||y>entry.maxY)return false;
+  if(o.type==='box')return x>=entry.minX&&x<=entry.maxX&&z>=entry.minZ&&z<=entry.maxZ;
+  if(o.type==='pyramid'){
+    const t=clamp((y-entry.baseY)/o.h,0,1),half=o.base/2*(1-t);
+    return Math.abs(x-o.x)<=half&&Math.abs(z-o.z)<=half;
   }
-  return false;
+  return Math.hypot(x-o.x,z-o.z)<=o.r;
 }
-function segmentHitsObstacle(x1, y1, z1, x2, y2, z2) {
-  const distance = Math.hypot(x2 - x1, y2 - y1, z2 - z1);
-  const steps = Math.max(1, Math.ceil(distance / .10));
-  for (let i = 0; i <= steps; i += 1) {
-    const t = i / steps;
-    if (pointHitsObstacle(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, z1 + (z2 - z1) * t)) return true;
+function segmentAabbFirstT(x1,y1,z1,x2,y2,z2,minX,maxX,minY,maxY,minZ,maxZ){
+  let lo=0,hi=1;const axes=[[x1,x2-x1,minX,maxX],[y1,y2-y1,minY,maxY],[z1,z2-z1,minZ,maxZ]];
+  for(const [p,d,mn,mx] of axes){
+    if(Math.abs(d)<1e-10){if(p<mn||p>mx)return null;continue;}
+    let a=(mn-p)/d,b=(mx-p)/d;if(a>b)[a,b]=[b,a];lo=Math.max(lo,a);hi=Math.min(hi,b);if(lo>hi)return null;
   }
-  return false;
+  return lo>=0&&lo<=1?lo:null;
 }
+function segmentCylinderFirstT(x1,y1,z1,x2,y2,z2,cx,cz,r,minY,maxY){
+  const ox=x1-cx,oz=z1-cz,dx=x2-x1,dz=z2-z1,dy=y2-y1;
+  let radialLo=0,radialHi=1;const a=dx*dx+dz*dz,b=2*(ox*dx+oz*dz),c=ox*ox+oz*oz-r*r;
+  if(a<=1e-12){if(c>0)return null;}
+  else{
+    const disc=b*b-4*a*c;if(disc<0)return null;const root=Math.sqrt(disc);let t1=(-b-root)/(2*a),t2=(-b+root)/(2*a);if(t1>t2)[t1,t2]=[t2,t1];
+    radialLo=Math.max(0,t1);radialHi=Math.min(1,t2);if(radialLo>radialHi)return null;
+  }
+  let yLo=0,yHi=1;
+  if(Math.abs(dy)<1e-12){if(y1<minY||y1>maxY)return null;}
+  else{let t1=(minY-y1)/dy,t2=(maxY-y1)/dy;if(t1>t2)[t1,t2]=[t2,t1];yLo=Math.max(0,t1);yHi=Math.min(1,t2);if(yLo>yHi)return null;}
+  const lo=Math.max(radialLo,yLo),hi=Math.min(radialHi,yHi);return lo<=hi?lo:null;
+}
+function segmentPyramidFirstT(entry,x1,y1,z1,x2,y2,z2){
+  const distance=Math.hypot(x2-x1,y2-y1,z2-z1),steps=Math.max(2,Math.ceil(distance/.025));let previousT=0,previousHit=pointHitsEntry(entry,x1,y1,z1);
+  if(previousHit)return 0;
+  for(let i=1;i<=steps;i++){
+    const t=i/steps,x=x1+(x2-x1)*t,y=y1+(y2-y1)*t,z=z1+(z2-z1)*t,hit=pointHitsEntry(entry,x,y,z);
+    if(hit){let lo=previousT,hi=t;for(let n=0;n<7;n++){const mid=(lo+hi)/2,mx=x1+(x2-x1)*mid,my=y1+(y2-y1)*mid,mz=z1+(z2-z1)*mid;if(pointHitsEntry(entry,mx,my,mz))hi=mid;else lo=mid;}return hi;}
+    previousT=t;previousHit=hit;
+  }
+  return null;
+}
+function segmentFirstObstacleT(x1,y1,z1,x2,y2,z2){
+  const minX=Math.min(x1,x2),maxX=Math.max(x1,x2),minY=Math.min(y1,y2),maxY=Math.max(y1,y2),minZ=Math.min(z1,z2),maxZ=Math.max(z1,z2);let best=null;
+  for(const entry of collisionCandidates(minX,maxX,minY,maxY,minZ,maxZ)){
+    const o=entry.o;if(o.projectileSolid===false)continue;let t=null;
+    if(o.type==='box')t=segmentAabbFirstT(x1,y1,z1,x2,y2,z2,entry.minX,entry.maxX,entry.baseY,entry.maxY,entry.minZ,entry.maxZ);
+    else if(o.type==='pyramid')t=segmentPyramidFirstT(entry,x1,y1,z1,x2,y2,z2);
+    else t=segmentCylinderFirstT(x1,y1,z1,x2,y2,z2,o.x,o.z,o.r,entry.baseY,entry.maxY);
+    if(t!=null&&(best==null||t<best))best=t;
+  }
+  return best;
+}
+function segmentTerrainFirstT(x1,y1,z1,x2,y2,z2){
+  const distance=Math.hypot(x2-x1,y2-y1,z2-z1),steps=Math.max(2,Math.ceil(distance/.04));
+  const below=t=>{const x=x1+(x2-x1)*t,y=y1+(y2-y1)*t,z=z1+(z2-z1)*t;return y<=terrainHeight(x,z)+.06;};
+  if(below(0))return 0;let previous=0;
+  for(let i=1;i<=steps;i++){const t=i/steps;if(!below(t)){previous=t;continue;}let lo=previous,hi=t;for(let n=0;n<7;n++){const mid=(lo+hi)/2;if(below(mid))hi=mid;else lo=mid;}return hi;}
+  return null;
+}
+function segmentFirstWorldHitT(x1,y1,z1,x2,y2,z2){
+  const obstacle=segmentFirstObstacleT(x1,y1,z1,x2,y2,z2),terrain=segmentTerrainFirstT(x1,y1,z1,x2,y2,z2);
+  if(obstacle==null)return terrain;if(terrain==null)return obstacle;return Math.min(obstacle,terrain);
+}
+function segmentHitsObstacle(x1,y1,z1,x2,y2,z2){return segmentFirstObstacleT(x1,y1,z1,x2,y2,z2)!=null;}
 function actorHasLineOfSight(from, to) {
   const fx = finiteNumber(from?.x, 0), fz = finiteNumber(from?.z, 0);
   const tx = finiteNumber(to?.x, 0), tz = finiteNumber(to?.z, 0);
@@ -383,6 +460,7 @@ function publicPlayer(attachment) {
     yaw: attachment.yaw,
     pitch: attachment.pitch,
     ads: !!attachment.ads,
+    crouched: !!attachment.crouched,
     weapon: safeWeapon(attachment.weapon),
     ammo: normalizeAmmo(attachment.ammo),
     equipment: normalizeEquipment(attachment.equipment),
@@ -989,6 +1067,8 @@ export class GameRoom {
       godMode: !!preserved?.godMode,
       admin: isRoomAdmin(meta, clientId),
       ads: false,
+      crouched: !!preserved?.crouched,
+      moveSpeed: 0,
       flashUntil: Math.max(0, finiteNumber(preserved?.flashUntil, 0)),
       flashPower: clamp(finiteNumber(preserved?.flashPower, 0), 0, 1),
       flashDurationMs: Math.max(0, finiteNumber(preserved?.flashDurationMs, 0)),
@@ -1062,12 +1142,12 @@ export class GameRoom {
         const next = this.validateHumanState(me, payload, now, settings);
         me = next.player;
         socket.serializeAttachment(me);
-        const state = { t: "state", id: me.clientId, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads };
+        const state = { t: "state", id: me.clientId, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched };
         this.broadcast(state, socket);
         if (next.corrected) {
           try { socket.send(JSON.stringify({
             t: "correction", x: me.x, y: me.y, z: me.z, vertical: next.verticalCorrected,
-            verticalVelocity: finiteNumber(me.verticalVelocity, 0), grounded: me.serverGrounded !== false,
+            verticalVelocity: finiteNumber(me.verticalVelocity, 0), grounded: me.serverGrounded !== false, crouched: !!me.crouched,
           })); } catch {}
         }
       }
@@ -1094,8 +1174,8 @@ export class GameRoom {
       if(now-me.lastShot<spec.cooldownMs){const retryAfterMs=Math.max(1,Math.ceil(spec.cooldownMs-(now-me.lastShot)));socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'cooldown',retryAfterMs});return;}
       if(!unlimited&&me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
       me.lastShot=now;if(!unlimited)me.ammo[weapon]-=1;const autoReloadStarted=!unlimited&&me.ammo[weapon]===0;if(autoReloadStarted){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;}me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);
-      const cp=Math.cos(shotPitch),sp=Math.sin(shotPitch),fx=-Math.sin(shotYaw)*cp,fy=sp,fz=-Math.cos(shotYaw)*cp,pellets=weapon==='shotgun'?8:1;
-      for(let i=0;i<pellets;i++){let sx=fx,sy=fy,sz=fz;if(weapon==='shotgun'){const spread=.075;sx+=(Math.random()-.5)*spread;sy+=(Math.random()-.5)*spread*.75;sz+=(Math.random()-.5)*spread;const n=Math.hypot(sx,sy,sz)||1;sx/=n;sy/=n;sz/=n;}this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage,weapon,lifetimeMs:WEAPONS[weapon].lifetimeMs,x:me.x+sx*.62,y:me.y+PLAYER_HEIGHT-.18+sy*.25,z:me.z+sz*.62,vx:sx*spec.speed,vy:sy*spec.speed,vz:sz*spec.speed,now,consumeAmmo:i===0&&!unlimited});}
+      const spreadRadius=weaponSpreadRadians(me,weapon,settings),pellets=weapon==='shotgun'?8:1,eyeHeight=(me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.08;
+      for(let i=0;i<pellets;i++){const a=spreadShotAngles(shotYaw,shotPitch,spreadRadius),cp=Math.cos(a.pitch),sp=Math.sin(a.pitch),sx=-Math.sin(a.yaw)*cp,sy=sp,sz=-Math.cos(a.yaw)*cp;this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage,weapon,lifetimeMs:WEAPONS[weapon].lifetimeMs,x:me.x+sx*.20,y:me.y+eyeHeight+sy*.05,z:me.z+sz*.20,vx:sx*spec.speed,vy:sy*spec.speed,vz:sz*spec.speed,now,consumeAmmo:i===0&&!unlimited});}
       sendLoadout(socket,me,{action:'fire',seq,accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
     }
 
@@ -1109,7 +1189,7 @@ export class GameRoom {
       const throwSpeed=TACTICAL_THROW_SPEED,loft=TACTICAL_THROW_LOFT;
       me.lastThrow=now;if(!unlimited)me.equipment[kind]-=1;socket.serializeAttachment(me);try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment,unlimited}));socket.send(JSON.stringify({t:'throwAck',id,accepted:true}));}catch{}
       const cp=Math.cos(throwPitch),fx=-Math.sin(throwYaw)*cp,fy=Math.sin(throwPitch),fz=-Math.cos(throwYaw)*cp;
-      const g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+fx*.82,y:me.y+PLAYER_HEIGHT-.22,z:me.z+fz*.82,vx:fx*throwSpeed,vy:fy*throwSpeed+loft,vz:fz*throwSpeed,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:1650),stuck:false,lastBroadcast:now};
+      const g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+fx*.82,y:me.y+(me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.22,z:me.z+fz*.82,vx:fx*throwSpeed,vy:fy*throwSpeed+loft,vz:fz*throwSpeed,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:1650),stuck:false,lastBroadcast:now};
       this.throwables.set(id,g);this.broadcast({t:'throwable',...g,at:now});await this.stepSimulation(now,meta);return;
     }
 
@@ -1154,7 +1234,7 @@ export class GameRoom {
       me = {
         ...me, ...spawn, team: nextTeam, hp: 100, wastedUntil: 0, lastHitAt: 0, regenAt: 0,
         weapon: "pistol", ammo: freshAmmo(), equipment: freshEquipment(), reloadAt: 0, reloadWeapon: "", weaponReadyAt: 0,
-        lastShot: 0, lastThrow: 0, ads: false, combatRev: Math.max(0, finiteNumber(me.combatRev, 0)) + 1,
+        lastShot: 0, lastThrow: 0, ads: false, crouched: false, moveSpeed: 0, combatRev: Math.max(0, finiteNumber(me.combatRev, 0)) + 1,
         verticalVelocity: 0, serverGrounded: true, lastVerticalAt: now,
         flashUntil: 0, flashPower: 0, flashDurationMs: 0,
         moveCredit: settings.movement.runSpeed * 0.04,
@@ -1283,10 +1363,10 @@ export class GameRoom {
     return out;
   }
 
-  actorBlocksAt(x,z,y,fromX,fromZ,actors) {
+  actorBlocksAt(x,z,y,fromX,fromZ,actors,playerHeight=PLAYER_HEIGHT) {
     for(const actor of actors||[]){
-      const ax=finiteNumber(actor.x,0),ay=finiteNumber(actor.y,terrainHeight(ax,finiteNumber(actor.z,0))),az=finiteNumber(actor.z,0);
-      if(y+PLAYER_HEIGHT-.08<=ay||y>=ay+PLAYER_HEIGHT-.08)continue;
+      const ax=finiteNumber(actor.x,0),ay=finiteNumber(actor.y,terrainHeight(ax,finiteNumber(actor.z,0))),az=finiteNumber(actor.z,0),actorHeight=actor.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT;
+      if(y+playerHeight-.08<=ay||y>=ay+actorHeight-.08)continue;
       const minDist=PLAYER_RADIUS*2+.02,newDist=Math.hypot(x-ax,z-az),oldDist=Math.hypot(fromX-ax,fromZ-az);
       if(newDist<minDist&&(oldDist>=minDist||newDist<oldDist-.002))return true;
     }
@@ -1305,7 +1385,11 @@ export class GameRoom {
     const elapsed = Math.max(serverElapsed, clientElapsed);
     const flashPower = activeFlashPower(me, now);
     const ads = flashPower > 0.12 ? false : !!payload.ads;
-    const allowedSpeed = ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
+    let crouched = !!payload.crouched;
+    if (!crouched && me.crouched && worldBlocked(me.x, me.z, PLAYER_RADIUS, me.y, PLAYER_HEIGHT, false)) crouched = true;
+    const playerHeight = crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
+    const baseSpeed = ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
+    const allowedSpeed = baseSpeed * (crouched ? CROUCH_SPEED_MULTIPLIER : 1);
     const creditCap = allowedSpeed * 0.25 + 0.12;
     const priorCredit = clamp(finiteNumber(me.moveCredit, allowedSpeed * 0.04), 0, creditCap);
     const availableCredit = Math.min(creditCap, priorCredit + allowedSpeed * elapsed);
@@ -1343,14 +1427,14 @@ export class GameRoom {
       const fromX = x;
       const fromZ = z;
       const tryX = clamp(x + sx, -ARENA_LIMIT, ARENA_LIMIT);
-      if (!worldBlocked(tryX, z, PLAYER_RADIUS, walkY) && !this.actorBlocksAt(tryX, z, walkY, fromX, fromZ, solidActors)) x = tryX;
+      if (!worldBlocked(tryX, z, PLAYER_RADIUS, walkY, playerHeight, crouched) && !this.actorBlocksAt(tryX, z, walkY, fromX, fromZ, solidActors, playerHeight)) x = tryX;
       else corrected = true;
       followSupport();
 
       const beforeZx = x;
       const beforeZz = z;
       const tryZ = clamp(z + sz, -ARENA_LIMIT, ARENA_LIMIT);
-      if (!worldBlocked(x, tryZ, PLAYER_RADIUS, walkY) && !this.actorBlocksAt(x, tryZ, walkY, beforeZx, beforeZz, solidActors)) z = tryZ;
+      if (!worldBlocked(x, tryZ, PLAYER_RADIUS, walkY, playerHeight, crouched) && !this.actorBlocksAt(x, tryZ, walkY, beforeZx, beforeZz, solidActors, playerHeight)) z = tryZ;
       else corrected = true;
       followSupport();
     }
@@ -1380,7 +1464,7 @@ export class GameRoom {
       if (verticalElapsed > 0) {
         const nextY = y + verticalVelocity * verticalElapsed - 0.5 * gravity * verticalElapsed * verticalElapsed;
         let nextVelocity = verticalVelocity - gravity * verticalElapsed;
-        const ceiling = resolveCeilingCollision(y, nextY, x, z);
+        const ceiling = resolveCeilingCollision(y, nextY, x, z, playerHeight);
         y = ceiling.y;
         ceilingHit = ceiling.hit;
         if (ceilingHit && nextVelocity > 0) nextVelocity = 0;
@@ -1410,6 +1494,8 @@ export class GameRoom {
         y,
         z,
         ads,
+        crouched,
+        moveSpeed: elapsed > 0 ? actualTravel / elapsed : 0,
         serverGrounded,
         verticalVelocity,
         lastVerticalAt: now,
@@ -1537,7 +1623,7 @@ export class GameRoom {
         reloadWeapon: "",
         weaponReadyAt: 0,
         combatRev: Math.max(0, finiteNumber(player.combatRev, 0)) + 1,
-        ads: false,
+        ads: false, crouched: false, moveSpeed: 0,
         verticalVelocity: 0, serverGrounded: true, lastVerticalAt: now,
         flashUntil: 0, flashPower: 0, flashDurationMs: 0,
         lastStateAt: now,
@@ -1741,76 +1827,73 @@ export class GameRoom {
         const step = Math.min(collisionStep, remaining);
         remaining -= step;
         const previousX = bullet.x, previousY = bullet.y, previousZ = bullet.z;
-        bullet.x += bullet.vx * step;
-        bullet.y += bullet.vy * step;
-        bullet.z += bullet.vz * step;
-        bullet.traveledDistance += speed * step;
+        const nextX = previousX + bullet.vx * step;
+        const nextY = previousY + bullet.vy * step;
+        const nextZ = previousZ + bullet.vz * step;
+        const segmentDistance = Math.hypot(nextX-previousX,nextY-previousY,nextZ-previousZ);
 
-        if (Math.abs(bullet.x) > ARENA_LIMIT + 2 || Math.abs(bullet.z) > ARENA_LIMIT + 2 || bullet.y <= terrainHeight(bullet.x, bullet.z) + 0.06 || segmentHitsObstacle(previousX, previousY, previousZ, bullet.x, bullet.y, bullet.z)) {
-          this.endBullet(id, "world");
-          ended = true;
-          break;
+        if (Math.abs(nextX) > ARENA_LIMIT + 2 || Math.abs(nextZ) > ARENA_LIMIT + 2) {
+          bullet.x=nextX;bullet.y=nextY;bullet.z=nextZ;bullet.traveledDistance+=segmentDistance;
+          this.endBullet(id, "world"); ended = true; break;
         }
 
+        const worldT = segmentFirstWorldHitT(previousX,previousY,previousZ,nextX,nextY,nextZ);
+        let nearest = null;
+        const consider = (kind, target, socket = null) => {
+          const hit = projectileSegmentHitZone(target,previousX,previousY,previousZ,nextX,nextY,nextZ);
+          if (!hit || bullet.hitTargets.has(target.clientId || target.id)) return;
+          if (!nearest || hit.t < nearest.hit.t) nearest = { kind, target, socket, hit };
+        };
         for (const h of humans) {
           const target = h.player;
           if (!target.clientId || target.replaced || target.clientId === bullet.ownerId || target.hp <= 0 || now < (target.wastedUntil || 0) || safeTeam(target.team) === bullet.ownerTeam || bullet.hitTargets.has(target.clientId)) continue;
-          const hitZone = projectileHitZone(target, bullet);
-          if (hitZone) {
-            bullet.hitTargets.add(target.clientId);
-            const horizontal = Math.hypot(bullet.vx, bullet.vz) || 1;
-            const targetHpBefore = Math.max(1, finiteNumber(target.hp, 100));
-            const baseDamage = bullet.weapon === "sniper" ? Math.max(1, bullet.penetrationPower) : bullet.damage;
-            const headshot = hitZone === "head";
-            const hitDamage = headshot ? (bullet.weapon === "assault" ? Math.max(100, baseDamage * HEADSHOT_MULTIPLIER) : bullet.weapon === "shotgun" ? baseDamage*1.25 : baseDamage * HEADSHOT_MULTIPLIER) : baseDamage;
-            const applied = this.damageHuman(h.socket, target, bullet.ownerId, hitDamage, bullet.weapon, {
-              x: bullet.vx / horizontal * 2.4,
-              z: bullet.vz / horizontal * 2.4,
-              y: headshot ? 1.45 : 1.1,
-            }, now, bullet.id, settings, { headshot, distance: bullet.traveledDistance });
-            if (!applied || bullet.weapon !== "sniper") {
-              this.endBullet(id, applied ? "hit" : "blocked");
-              ended = true;
-              break;
-            }
-            bullet.penetrationPower = Math.max(0, bullet.penetrationPower - targetHpBefore);
-            if (bullet.penetrationPower <= 0) {
-              this.endBullet(id, "spent");
-              ended = true;
-              break;
-            }
-          }
+          consider('human', target, h.socket);
         }
-        if (ended) break;
-
         for (const bot of this.bots) {
           if (bot.id === bullet.ownerId || bot.hp <= 0 || now < bot.wastedUntil || safeTeam(bot.team) === bullet.ownerTeam || bullet.hitTargets.has(bot.id)) continue;
-          const hitZone = projectileHitZone(bot, bullet);
-          if (hitZone) {
-            bullet.hitTargets.add(bot.id);
-            const horizontal = Math.hypot(bullet.vx, bullet.vz) || 1;
-            const targetHpBefore = Math.max(1, finiteNumber(bot.hp, 100));
-            const baseDamage = bullet.weapon === "sniper" ? Math.max(1, bullet.penetrationPower) : bullet.damage;
-            const headshot = hitZone === "head";
-            const hitDamage = headshot ? (bullet.weapon === "assault" ? Math.max(100, baseDamage * HEADSHOT_MULTIPLIER) : bullet.weapon === "shotgun" ? baseDamage*1.25 : baseDamage * HEADSHOT_MULTIPLIER) : baseDamage;
-            this.damageBot(bot, bullet.ownerId, hitDamage, bullet.weapon, {
-              x: bullet.vx / horizontal * 2.4,
-              z: bullet.vz / horizontal * 2.4,
-              y: headshot ? 1.45 : 1.1,
-            }, now, bullet.id, settings, { headshot, distance: bullet.traveledDistance });
-            if (bullet.weapon !== "sniper") {
-              this.endBullet(id, "hit");
-              ended = true;
-              break;
-            }
-            bullet.penetrationPower = Math.max(0, bullet.penetrationPower - targetHpBefore);
-            if (bullet.penetrationPower <= 0) {
-              this.endBullet(id, "spent");
-              ended = true;
-              break;
-            }
-          }
+          consider('bot', bot);
         }
+
+        const targetFirst = nearest && (worldT == null || nearest.hit.t < worldT - 1e-6);
+        if (!targetFirst) {
+          if (worldT != null) {
+            bullet.x=previousX+(nextX-previousX)*worldT;bullet.y=previousY+(nextY-previousY)*worldT;bullet.z=previousZ+(nextZ-previousZ)*worldT;
+            bullet.traveledDistance+=segmentDistance*worldT;
+            this.endBullet(id, "world"); ended = true; break;
+          }
+          bullet.x=nextX;bullet.y=nextY;bullet.z=nextZ;bullet.traveledDistance+=segmentDistance;
+          continue;
+        }
+
+        const impactT=nearest.hit.t;
+        bullet.x=previousX+(nextX-previousX)*impactT;bullet.y=previousY+(nextY-previousY)*impactT;bullet.z=previousZ+(nextZ-previousZ)*impactT;
+        bullet.traveledDistance+=segmentDistance*impactT;
+        const target=nearest.target,targetId=target.clientId||target.id;
+        bullet.hitTargets.add(targetId);
+        const horizontal = Math.hypot(bullet.vx, bullet.vz) || 1;
+        const targetHpBefore = Math.max(1, finiteNumber(target.hp, 100));
+        const baseDamage = bullet.weapon === "sniper" ? Math.max(1, bullet.penetrationPower) : bullet.damage;
+        const headshot = nearest.hit.zone === "head";
+        const hitDamage = headshot ? (bullet.weapon === "assault" ? Math.max(100, baseDamage * HEADSHOT_MULTIPLIER) : bullet.weapon === "shotgun" ? baseDamage*1.25 : baseDamage * HEADSHOT_MULTIPLIER) : baseDamage;
+        const knockback={x:bullet.vx/horizontal*2.4,z:bullet.vz/horizontal*2.4,y:headshot?1.45:1.1};
+        let applied=true;
+        if(nearest.kind==='human')applied=this.damageHuman(nearest.socket,target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,distance:bullet.traveledDistance});
+        else this.damageBot(target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,distance:bullet.traveledDistance});
+
+        if(!applied || bullet.weapon !== 'sniper'){
+          this.endBullet(id,applied?'hit':'blocked');ended=true;break;
+        }
+        bullet.penetrationPower=Math.max(0,bullet.penetrationPower-targetHpBefore);
+        if(bullet.penetrationPower<=0){this.endBullet(id,'spent');ended=true;break;}
+
+        // A penetrating sniper round can pass through the player, but not through
+        // solid cover that lies later in the same simulation segment.
+        if(worldT!=null&&worldT>impactT){
+          bullet.x=previousX+(nextX-previousX)*worldT;bullet.y=previousY+(nextY-previousY)*worldT;bullet.z=previousZ+(nextZ-previousZ)*worldT;
+          bullet.traveledDistance+=segmentDistance*(worldT-impactT);
+          this.endBullet(id,'world');ended=true;break;
+        }
+        bullet.x=nextX;bullet.y=nextY;bullet.z=nextZ;bullet.traveledDistance+=segmentDistance*(1-impactT);
       }
     }
   }
@@ -2094,4 +2177,9 @@ export const __test = Object.freeze({
   makeJoinTicket,
   WEAPON_SWITCH_LOCK_MS,
   JOIN_TICKET_TTL_MS,
+  worldBlocked,
+  weaponSpreadRadians,
+  projectileSegmentHitZone,
+  segmentFirstObstacleT,
+  segmentFirstWorldHitT,
 });
