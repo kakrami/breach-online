@@ -27,6 +27,9 @@ const MULTI_KILL_WINDOW_MS = 4500;
 const CREATE_RATE_WINDOW_MS = 60 * 1000;
 const CREATE_RATE_MAX_PER_CLIENT = 5;
 const CREATE_RATE_MAX_GLOBAL = 60;
+const WEAPON_SWITCH_LOCK_MS = 120;
+const JOIN_TICKET_TTL_MS = 30 * 1000;
+const JOIN_TICKET_MAX = 64;
 const WEAPONS = Object.freeze(Object.fromEntries(WEAPON_ORDER.map((name) => [name, Object.freeze({
   mag: WEAPON_SPECS[name].mag,
   lifetimeMs: WEAPON_SPECS[name].lifetimeMs,
@@ -129,6 +132,18 @@ function safeClientAuth(value) {
   return String(value || "")
     .replace(/[^A-Fa-f0-9]/g, "")
     .slice(0, 128);
+}
+
+function safeJoinTicket(value) {
+  return String(value || "")
+    .replace(/[^A-Fa-f0-9]/g, "")
+    .slice(0, 64);
+}
+
+function makeJoinTicket() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 async function sha256Hex(value) {
@@ -557,6 +572,22 @@ export default {
       return json(request, env, { error: "Could not create a world. Try again." }, 503);
     }
 
+    const ticketMatch = url.pathname.match(new RegExp(`^/rooms/([A-HJ-NP-Z2-9]{${ROOM_CODE_LENGTH}})/ticket$`, "i"));
+    if (ticketMatch && request.method === "POST") {
+      const code = normalizeRoomCode(ticketMatch[1]);
+      let body = {};
+      try { body = await request.json(); } catch {}
+      const room = env.ROOMS.get(env.ROOMS.idFromName(code));
+      const response = await room.fetch("https://room.internal/ticket", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      let data = {};
+      try { data = await response.json(); } catch { data = { error: "Could not issue join ticket." }; }
+      return json(request, env, data, response.status);
+    }
+
     const roomMatch = url.pathname.match(new RegExp(`^/rooms/([A-HJ-NP-Z2-9]{${ROOM_CODE_LENGTH}})/socket$`, "i"));
     if (roomMatch) {
       const code = normalizeRoomCode(roomMatch[1]);
@@ -773,6 +804,54 @@ export class GameRoom {
     this.lastSimAt = Date.now();
   }
 
+  async loadJoinTickets(now = Date.now()) {
+    const raw = (await this.ctx.storage.get("joinTickets")) || {};
+    const tickets = raw && typeof raw === "object" ? raw : {};
+    for (const [ticket, entry] of Object.entries(tickets)) {
+      if (!entry || finiteNumber(entry.expiresAt, 0) <= now) delete tickets[ticket];
+    }
+    const entries = Object.entries(tickets).sort((a, b) => finiteNumber(a[1]?.issuedAt, 0) - finiteNumber(b[1]?.issuedAt, 0));
+    while (entries.length >= JOIN_TICKET_MAX) {
+      const [ticket] = entries.shift();
+      delete tickets[ticket];
+    }
+    return tickets;
+  }
+
+  async issueJoinTicket(meta, body, now = Date.now()) {
+    const protocol = Math.floor(finiteNumber(body?.protocol, 0));
+    if (protocol !== PROTOCOL_VERSION) return { status: 409, data: { error: "Client update required.", protocol: PROTOCOL_VERSION } };
+    const clientId = safeClientId(body?.client);
+    const clientAuth = safeClientAuth(body?.auth);
+    const name = safeName(body?.name);
+    const team = safeTeam(body?.team);
+    if (!clientId) return { status: 400, data: { error: "Missing client ID." } };
+    if (clientAuth.length < 32) return { status: 401, data: { error: "Missing client credential." } };
+    const clientAuthHash = await sha256Hex(clientAuth);
+    const expected = normalizeClientAuthHashes(meta)[clientId] || "";
+    if (expected && expected !== clientAuthHash) return { status: 403, data: { error: "Client credential rejected." } };
+    const tickets = await this.loadJoinTickets(now);
+    const ticket = makeJoinTicket();
+    tickets[ticket] = { clientId, clientAuthHash, name, team, issuedAt: now, expiresAt: now + JOIN_TICKET_TTL_MS };
+    await this.ctx.storage.put("joinTickets", tickets);
+    return { status: 201, data: { ticket, expiresInMs: JOIN_TICKET_TTL_MS } };
+  }
+
+  async consumeJoinTicket(value, now = Date.now()) {
+    const ticket = safeJoinTicket(value);
+    if (!ticket) return null;
+    const raw = (await this.ctx.storage.get("joinTickets")) || {};
+    const tickets = raw && typeof raw === "object" ? raw : {};
+    const entry = tickets[ticket];
+    delete tickets[ticket];
+    for (const [key, candidate] of Object.entries(tickets)) {
+      if (!candidate || finiteNumber(candidate.expiresAt, 0) <= now) delete tickets[key];
+    }
+    await this.ctx.storage.put("joinTickets", tickets);
+    if (!entry || finiteNumber(entry.expiresAt, 0) <= now) return null;
+    return entry;
+  }
+
   async fetch(request) {
     const url = new URL(request.url);
 
@@ -813,6 +892,16 @@ export class GameRoom {
       return json(request, this.env, { ok: true }, 201);
     }
 
+    if (url.pathname === "/ticket" && request.method === "POST") {
+      const meta = await this.getMeta();
+      if (!meta) return json(request, this.env, { error: "World not found." }, 404);
+      if (Math.floor(finiteNumber(meta.protocol, 0)) !== PROTOCOL_VERSION) return json(request, this.env, { error: "Match protocol mismatch. Create a new match.", protocol: PROTOCOL_VERSION }, 409);
+      let body = {};
+      try { body = await request.json(); } catch {}
+      const result = await this.issueJoinTicket(meta, body);
+      return json(request, this.env, result.data, result.status);
+    }
+
     let meta = await this.getMeta();
     if (!meta) return json(request, this.env, { error: "World not found." }, 404);
     if (Math.floor(finiteNumber(meta.protocol, 0)) !== PROTOCOL_VERSION) return json(request, this.env, { error: "Match protocol mismatch. Create a new match.", protocol: PROTOCOL_VERSION }, 409);
@@ -831,13 +920,12 @@ export class GameRoom {
     const protocol = Math.floor(finiteNumber(url.searchParams.get("protocol"), 0));
     if (protocol !== PROTOCOL_VERSION) return json(request, this.env, { error: "Client update required.", protocol: PROTOCOL_VERSION }, 409);
 
-    const clientId = safeClientId(url.searchParams.get("client"));
-    const clientAuth = safeClientAuth(url.searchParams.get("auth"));
-    const name = safeName(url.searchParams.get("name"));
-    const requestedTeam = safeTeam(url.searchParams.get("team"));
-    if (!clientId) return json(request, this.env, { error: "Missing client ID." }, 400);
-    if (clientAuth.length < 32) return json(request, this.env, { error: "Missing client credential." }, 401);
-    const clientAuthHash = await sha256Hex(clientAuth);
+    const join = await this.consumeJoinTicket(url.searchParams.get("ticket"));
+    if (!join) return json(request, this.env, { error: "Join ticket is missing, expired, or already used." }, 401);
+    const clientId = safeClientId(join.clientId);
+    const clientAuthHash = String(join.clientAuthHash || "");
+    const name = safeName(join.name);
+    const requestedTeam = safeTeam(join.team);
     const authHashes = normalizeClientAuthHashes(meta);
     const expectedAuthHash = authHashes[clientId] || '';
     if (expectedAuthHash && expectedAuthHash !== clientAuthHash) return json(request, this.env, { error: "Client credential rejected." }, 403);
@@ -894,6 +982,7 @@ export class GameRoom {
       equipment: normalizeEquipment(spawn.equipment),
       reloadAt: finiteNumber(spawn.reloadAt, 0),
       reloadWeapon: safeWeapon(spawn.reloadWeapon || spawn.weapon),
+      weaponReadyAt: Math.max(0, finiteNumber(spawn.weaponReadyAt, 0)),
       combatRev: Math.max(0, Math.floor(finiteNumber(spawn.combatRev, 0))),
       kills: Math.max(0, Math.floor(finiteNumber(spawn.kills, 0))),
       deaths: Math.max(0, Math.floor(finiteNumber(spawn.deaths, 0))),
@@ -966,11 +1055,7 @@ export class GameRoom {
     const settings = normalizeWorldSettings(meta.settings);
 
     if(me.godMode)refreshUnlimitedResources(me);
-    if (me.reloadAt && now >= me.reloadAt) {
-      const weapon = safeWeapon(me.reloadWeapon || me.weapon);
-      me.reloadAt = 0; me.reloadWeapon = ""; me.ammo = normalizeAmmo(me.ammo); me.ammo[weapon] = WEAPONS[weapon].mag; me.combatRev = Math.max(0,finiteNumber(me.combatRev,0)) + 1;
-      socket.serializeAttachment(me); sendLoadout(socket, me, { action:'reloadComplete', accepted:true });
-    }
+    me = this.advanceReloadForSocket(socket, me, now, settings);
 
     if (payload.t === "state") {
       if (me.hp > 0 || now >= me.wastedUntil) {
@@ -997,7 +1082,8 @@ export class GameRoom {
 
     if (payload.t === "fire") {
       const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
-      if(requestedWeapon!==me.weapon){me.weapon=requestedWeapon;me.reloadAt=0;me.reloadWeapon="";me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;this.broadcast({t:'weapon',id:me.clientId,weapon:requestedWeapon},socket);}
+      if(requestedWeapon!==me.weapon){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'weapon_mismatch'});return;}
+      if(now<finiteNumber(me.weaponReadyAt,0)){const retryAfterMs=Math.max(1,Math.ceil(finiteNumber(me.weaponReadyAt,0)-now));socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'weapon_switch',retryAfterMs});return;}
       me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4);
       const flashPower=activeFlashPower(me,now);let shotYaw=me.yaw,shotPitch=me.pitch;
       if(flashPower>.02){const flashSpread=.035+flashPower*.22;shotYaw+=(Math.random()-.5)*2*flashSpread;shotPitch=clamp(shotPitch+(Math.random()-.5)*1.5*flashSpread,-1.4,1.4);me.ads=false;}
@@ -1029,7 +1115,7 @@ export class GameRoom {
 
     if (payload.t === "reload") {
       const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
-      if(requestedWeapon!==me.weapon){me.weapon=requestedWeapon;me.reloadAt=0;me.reloadWeapon="";me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;this.broadcast({t:'weapon',id:me.clientId,weapon:requestedWeapon},socket);}
+      if(requestedWeapon!==me.weapon){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:false,reason:'weapon_mismatch'});return;}
       const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon];me.ammo=normalizeAmmo(me.ammo);
       if(me.hp<=0||now<me.wastedUntil){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:false,reason:'dead'});return;}
       if(me.godMode){refreshUnlimitedResources(me);socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:true,reason:'unlimited',unlimited:true});return;}
@@ -1041,8 +1127,8 @@ export class GameRoom {
     if (payload.t === "weapon") {
       if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'weapon',seq:Math.max(0,Math.floor(finiteNumber(payload.seq,0))),accepted:false,reason:'dead'});return;}
       const weapon=safeWeapon(payload.weapon),seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));
-      if(weapon!==me.weapon){me.weapon=weapon;me.reloadAt=0;me.reloadWeapon="";me.ammo=normalizeAmmo(me.ammo);me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);this.broadcast({t:'weapon',id:me.clientId,weapon},socket);}
-      sendLoadout(socket,me,{action:'weapon',seq,accepted:true});return;
+      if(weapon!==me.weapon){me.weapon=weapon;me.reloadAt=0;me.reloadWeapon="";me.weaponReadyAt=now+WEAPON_SWITCH_LOCK_MS;me.ammo=normalizeAmmo(me.ammo);me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);this.broadcast({t:'weapon',id:me.clientId,weapon},socket);}
+      sendLoadout(socket,me,{action:'weapon',seq,accepted:true,retryAfterMs:Math.max(0,Math.ceil(finiteNumber(me.weaponReadyAt,0)-now))});return;
     }
 
     if (payload.t === "god") {
@@ -1067,7 +1153,7 @@ export class GameRoom {
       const spawn = spawnForTeam(nextTeam, Math.floor(Math.random() * TEAM_SPAWNS[nextTeam].length));
       me = {
         ...me, ...spawn, team: nextTeam, hp: 100, wastedUntil: 0, lastHitAt: 0, regenAt: 0,
-        weapon: "pistol", ammo: freshAmmo(), equipment: freshEquipment(), reloadAt: 0, reloadWeapon: "",
+        weapon: "pistol", ammo: freshAmmo(), equipment: freshEquipment(), reloadAt: 0, reloadWeapon: "", weaponReadyAt: 0,
         lastShot: 0, lastThrow: 0, ads: false, combatRev: Math.max(0, finiteNumber(me.combatRev, 0)) + 1,
         verticalVelocity: 0, serverGrounded: true, lastVerticalAt: now,
         flashUntil: 0, flashPower: 0, flashDurationMs: 0,
@@ -1337,6 +1423,42 @@ export class GameRoom {
     };
   }
 
+  advanceReloadState(me, now, settings) {
+    if (!me?.reloadAt || now < me.reloadAt) return { player: me, completed: false, shellLoaded: false, continues: false };
+    const weapon = safeWeapon(me.reloadWeapon || me.weapon);
+    me.ammo = normalizeAmmo(me.ammo);
+    if (weapon === "shotgun") {
+      me.ammo.shotgun = Math.min(WEAPONS.shotgun.mag, me.ammo.shotgun + 1);
+      const continues = me.ammo.shotgun < WEAPONS.shotgun.mag;
+      me.reloadAt = continues ? now + settings.weapons.shotgun.reloadMs : 0;
+      me.reloadWeapon = continues ? "shotgun" : "";
+      me.combatRev = Math.max(0, finiteNumber(me.combatRev, 0)) + 1;
+      return { player: me, completed: !continues, shellLoaded: true, continues };
+    }
+    me.ammo[weapon] = WEAPONS[weapon].mag;
+    me.reloadAt = 0;
+    me.reloadWeapon = "";
+    me.combatRev = Math.max(0, finiteNumber(me.combatRev, 0)) + 1;
+    return { player: me, completed: true, shellLoaded: false, continues: false };
+  }
+
+  advanceReloadForSocket(socket, me, now, settings) {
+    const result = this.advanceReloadState(me, now, settings);
+    if (!result.completed && !result.shellLoaded) return me;
+    socket.serializeAttachment(me);
+    sendLoadout(socket, me, { action: result.shellLoaded ? 'reloadShell' : 'reloadComplete', accepted: true });
+    if (result.shellLoaded && result.continues) this.broadcast({ t:'reload', id:me.clientId, weapon:'shotgun', reloadAt:me.reloadAt }, socket);
+    return me;
+  }
+
+  advanceHumanReloads(now, settings) {
+    for (const socket of this.ctx.getWebSockets()) {
+      let player = socket.deserializeAttachment() || {};
+      if (!player.clientId || player.replaced || player.godMode) continue;
+      this.advanceReloadForSocket(socket, player, now, settings);
+    }
+  }
+
   spawnBullet({ ownerId, ownerTeam, damage, weapon, lifetimeMs, x, y, z, vx, vy, vz, now, consumeAmmo=true }) {
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
     const safe = safeWeapon(weapon);
@@ -1365,6 +1487,7 @@ export class GameRoom {
     this.lastSimAt = now;
     if (elapsed <= 0) return;
 
+    this.advanceHumanReloads(now, settings);
     this.stepBots(now, elapsed, settings, meta);
     this.stepThrowables(now,elapsed,settings);
     this.stepBullets(now, settings);
@@ -1412,6 +1535,7 @@ export class GameRoom {
         equipment: freshEquipment(),
         reloadAt: 0,
         reloadWeapon: "",
+        weaponReadyAt: 0,
         combatRev: Math.max(0, finiteNumber(player.combatRev, 0)) + 1,
         ads: false,
         verticalVelocity: 0, serverGrounded: true, lastVerticalAt: now,
@@ -1966,4 +2090,8 @@ export const __test = Object.freeze({
   normalizeWorldSettings,
   activeFlashPower,
   configuredOrigins,
+  safeJoinTicket,
+  makeJoinTicket,
+  WEAPON_SWITCH_LOCK_MS,
+  JOIN_TICKET_TTL_MS,
 });
