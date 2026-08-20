@@ -2,6 +2,7 @@ export const PLAYER_HEIGHT = 1.7;
 export const PLAYER_RADIUS = 0.38;
 export const ARENA_LIMIT = 120;
 export const MAX_STEP_HEIGHT = 0.62;
+export const CROUCH_WINDOW_STEP_HEIGHT = 0.86;
 
 export const STATIC_BOXES = [
   {x:0,z:0,w:8,d:8,h:3.2},{x:-24,z:-14,w:12,d:5,h:3.0},{x:28,z:19,w:11,d:6,h:3.8},{x:-42,z:34,w:7,d:13,h:4.2},
@@ -108,19 +109,19 @@ export function splitWall(length,height,openings){
     if(right-left<=.02||top-bottom<=.02)continue;
     const midU=(left+right)/2,midY=(bottom+top)/2;
     if(safe.some(o=>midU>o.left&&midU<o.right&&midY>o.bottom&&midY<o.top))continue;
-    const crouchPassable=safe.some(o=>o.kind==='window'&&midU>o.left&&midU<o.right&&top<=o.bottom+.001);
-    rects.push({left,right,bottom,top,crouchPassable});
+    const crouchStep=safe.some(o=>o.kind==='window'&&midU>o.left&&midU<o.right&&top<=o.bottom+.001);
+    rects.push({left,right,bottom,top,crouchStep});
   }
   const eq=(a,b)=>Math.abs(a-b)<.001;let changed=true;
   while(changed){
     changed=false;
     outer:for(let i=0;i<rects.length;i++)for(let j=i+1;j<rects.length;j++){
       const a=rects[i],b=rects[j];
-      if(a.crouchPassable===b.crouchPassable&&eq(a.bottom,b.bottom)&&eq(a.top,b.top)&&(eq(a.right,b.left)||eq(b.right,a.left))){rects[i]={left:Math.min(a.left,b.left),right:Math.max(a.right,b.right),bottom:a.bottom,top:a.top,crouchPassable:a.crouchPassable};rects.splice(j,1);changed=true;break outer;}
-      if(a.crouchPassable===b.crouchPassable&&eq(a.left,b.left)&&eq(a.right,b.right)&&(eq(a.top,b.bottom)||eq(b.top,a.bottom))){rects[i]={left:a.left,right:a.right,bottom:Math.min(a.bottom,b.bottom),top:Math.max(a.top,b.top),crouchPassable:a.crouchPassable};rects.splice(j,1);changed=true;break outer;}
+      if(a.crouchStep===b.crouchStep&&eq(a.bottom,b.bottom)&&eq(a.top,b.top)&&(eq(a.right,b.left)||eq(b.right,a.left))){rects[i]={left:Math.min(a.left,b.left),right:Math.max(a.right,b.right),bottom:a.bottom,top:a.top,crouchStep:a.crouchStep};rects.splice(j,1);changed=true;break outer;}
+      if(a.crouchStep===b.crouchStep&&eq(a.left,b.left)&&eq(a.right,b.right)&&(eq(a.top,b.bottom)||eq(b.top,a.bottom))){rects[i]={left:a.left,right:a.right,bottom:Math.min(a.bottom,b.bottom),top:Math.max(a.top,b.top),crouchStep:a.crouchStep};rects.splice(j,1);changed=true;break outer;}
     }
   }
-  return rects.map(r=>({u:(r.left+r.right)/2,y:r.bottom,w:r.right-r.left,h:r.top-r.bottom,crouchPassable:!!r.crouchPassable}));
+  return rects.map(r=>({u:(r.left+r.right)/2,y:r.bottom,w:r.right-r.left,h:r.top-r.bottom,crouchStep:!!r.crouchStep}));
 }
 
 function panelsAroundHole(b,hole){
@@ -154,7 +155,7 @@ export function buildingPlan(b){
 
 function addBox(parts,role,x,z,w,d,bottomY,topY,flags={}){
   if(w<=0||d<=0||topY-bottomY<=0)return;
-  parts.push({role,x,z,w,d,bottomY,topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchPassable:!!flags.crouchPassable,decorative:!!flags.decorative});
+  parts.push({role,x,z,w,d,bottomY,topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:!!flags.crouchStep,decorative:!!flags.decorative});
 }
 
 function addFrameX(parts,b,z,base,level,opening){
@@ -178,12 +179,20 @@ export function makeBuildingGeometry(b){
   const t=plan.wallT;
   const addWallX=(z,level,side)=>{
     const openings=buildingWallOpenings(b,level,side);
-    for(const cell of splitWall(b.w,b.floorH,openings))addBox(parts,'wall',b.x+cell.u,z,cell.w+.015,t,base+level*b.floorH+cell.y,base+level*b.floorH+cell.y+cell.h+.015,{crouchPassable:cell.crouchPassable});
+    for(const cell of splitWall(b.w,b.floorH,openings)){
+      const x=b.x+cell.u,bottomY=base+level*b.floorH+cell.y,topY=bottomY+cell.h+.015;
+      addBox(parts,'wall',x,z,cell.w+.015,t,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep});
+      if(cell.crouchStep)supports.push({type:'rect',x,z,w:cell.w+.015+PLAYER_RADIUS*2,d:t+PLAYER_RADIUS*2,y:topY,role:'windowSill',crouchStep:true});
+    }
     for(const opening of openings)addFrameX(parts,b,z+(side==='front'?-.012:.012),base,level,opening);
   };
   const addWallZ=(x,level,side)=>{
     const openings=buildingWallOpenings(b,level,side);
-    for(const cell of splitWall(b.d,b.floorH,openings))addBox(parts,'wall',x,b.z+cell.u,t,cell.w+.015,base+level*b.floorH+cell.y,base+level*b.floorH+cell.y+cell.h+.015,{crouchPassable:cell.crouchPassable});
+    for(const cell of splitWall(b.d,b.floorH,openings)){
+      const z=b.z+cell.u,bottomY=base+level*b.floorH+cell.y,topY=bottomY+cell.h+.015;
+      addBox(parts,'wall',x,z,t,cell.w+.015,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep});
+      if(cell.crouchStep)supports.push({type:'rect',x,z,w:t+PLAYER_RADIUS*2,d:cell.w+.015+PLAYER_RADIUS*2,y:topY,role:'windowSill',crouchStep:true});
+    }
     for(const opening of openings)addFrameZ(parts,b,x+(side==='left'?-.012:.012),base,level,opening);
   };
   for(let level=0;level<levels;level++){
@@ -267,14 +276,18 @@ function surfaceHeightAt(surface,x,z){
   return null;
 }
 
-export function worldSupportHeight(x,z,currentY=terrainHeight(x,z)){
+export function worldSupportHeight(x,z,currentY=terrainHeight(x,z),allowCrouchStep=false){
   let best=terrainHeight(x,z),limit=currentY+MAX_STEP_HEIGHT;
   for(const p of PYRAMIDS){
     const dx=Math.abs(x-p.x),dz=Math.abs(z-p.z),half=p.base/2;
     if(dx<=half&&dz<=half){const y=terrainHeight(p.x,p.z)+p.h*(1-Math.max(dx,dz)/half);if(y<=limit&&y>best)best=y;}
   }
   for(const surface of STATIC_SUPPORTS){const y=surfaceHeightAt(surface,x,z);if(y!=null&&y<=limit&&y>best)best=y;}
-  for(const surface of BUILDING_SUPPORTS){const y=surfaceHeightAt(surface,x,z);if(y!=null&&y<=limit&&y>best)best=y;}
+  for(const surface of BUILDING_SUPPORTS){
+    const y=surfaceHeightAt(surface,x,z);if(y==null)continue;
+    const surfaceLimit=currentY+(surface.crouchStep&&allowCrouchStep?CROUCH_WINDOW_STEP_HEIGHT:MAX_STEP_HEIGHT);
+    if(y<=surfaceLimit&&y>best)best=y;
+  }
   return best;
 }
 

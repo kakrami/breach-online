@@ -55,7 +55,7 @@ const WORLD_OBSTACLES = [
   ...NATURAL_OBSTACLES.map(o=>({...o,playerSolid:true,projectileSolid:true})),
   ...BUILDING_PARTS.filter(p=>p.playerSolid||p.projectileSolid).map(p=>({
     type:'box',x:p.x,z:p.z,w:p.w,d:p.d,minY:p.bottomY,maxY:p.topY,
-    playerSolid:p.playerSolid,projectileSolid:p.projectileSolid,supportTop:p.supportTop,crouchPassable:!!p.crouchPassable,role:p.role
+    playerSolid:p.playerSolid,projectileSolid:p.projectileSolid,supportTop:p.supportTop,crouchStep:!!p.crouchStep,role:p.role
   })),
 ];
 
@@ -332,7 +332,7 @@ function ensureCollisionIndex() {
       minX = o.x - o.r; maxX = o.x + o.r;
       minZ = o.z - o.r; maxZ = o.z + o.r;
     }
-    const entry = { o, baseY, maxY: Number.isFinite(o.maxY)?o.maxY:baseY + o.h + .15, minX, maxX, minZ, maxZ };
+    const entry = { o, baseY, maxY: Number.isFinite(o.maxY)?o.maxY:baseY + o.h + ((o.type==='tree'||o.type==='bush'||o.type==='rock')?.18:0), minX, maxX, minZ, maxZ };
     entries.push(entry);
     const minCX = Math.floor(minX / COLLISION_CELL_SIZE), maxCX = Math.floor(maxX / COLLISION_CELL_SIZE);
     const minCY = Math.floor(baseY / COLLISION_CELL_HEIGHT), maxCY = Math.floor(entry.maxY / COLLISION_CELL_HEIGHT);
@@ -361,13 +361,11 @@ function collisionCandidates(minX,maxX,minY,maxY,minZ,maxZ) {
   return out;
 }
 
-function worldBlocked(x,z,radius=.38,y=terrainHeight(x,z),playerHeight=PLAYER_HEIGHT,crouched=false){
+function worldBlocked(x,z,radius=.38,y=terrainHeight(x,z),playerHeight=PLAYER_HEIGHT){
   if(Math.abs(x)>ARENA_LIMIT||Math.abs(z)>ARENA_LIMIT)return true;
   for(const entry of collisionCandidates(x-radius,x+radius,y,y+playerHeight*.92,z-radius,z+radius)){
     const o=entry.o;if(o.playerSolid===false||o.type==='pyramid')continue;
-    if(crouched&&o.crouchPassable)continue;
     if(y+playerHeight*.92<=entry.baseY||y>=entry.maxY-.04)continue;
-    if(o.supportTop&&entry.maxY<=y+MAX_STEP_HEIGHT)continue;
     if(o.type==='box'){
       if(x>entry.minX-radius&&x<entry.maxX+radius&&z>entry.minZ-radius&&z<entry.maxZ+radius)return true;
     }else if(Math.hypot(x-o.x,z-o.z)<o.r+radius)return true;
@@ -1386,7 +1384,7 @@ export class GameRoom {
     const flashPower = activeFlashPower(me, now);
     const ads = flashPower > 0.12 ? false : !!payload.ads;
     let crouched = !!payload.crouched;
-    if (!crouched && me.crouched && worldBlocked(me.x, me.z, PLAYER_RADIUS, me.y, PLAYER_HEIGHT, false)) crouched = true;
+    if (!crouched && me.crouched && worldBlocked(me.x, me.z, PLAYER_RADIUS, me.y, PLAYER_HEIGHT)) crouched = true;
     const playerHeight = crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
     const baseSpeed = ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
     const allowedSpeed = baseSpeed * (crouched ? CROUCH_SPEED_MULTIPLIER : 1);
@@ -1419,22 +1417,29 @@ export class GameRoom {
     const sz = dz / steps;
     const followSupport = () => {
       if (!followsSupport) return;
-      const support = worldSupportHeight(x, z, walkY);
+      const support = worldSupportHeight(x, z, walkY, crouched);
       if (support >= walkY - GROUND_FOLLOW_DROP) walkY = support;
       else followsSupport = false;
+    };
+    const stepUpY = (nextX, nextZ) => {
+      if (!followsSupport) return walkY;
+      const support = worldSupportHeight(nextX, nextZ, walkY, crouched);
+      return support > walkY ? support : walkY;
     };
     for (let i = 0; i < steps; i += 1) {
       const fromX = x;
       const fromZ = z;
       const tryX = clamp(x + sx, -ARENA_LIMIT, ARENA_LIMIT);
-      if (!worldBlocked(tryX, z, PLAYER_RADIUS, walkY, playerHeight, crouched) && !this.actorBlocksAt(tryX, z, walkY, fromX, fromZ, solidActors, playerHeight)) x = tryX;
+      const tryXY = stepUpY(tryX, z);
+      if (!worldBlocked(tryX, z, PLAYER_RADIUS, tryXY, playerHeight) && !this.actorBlocksAt(tryX, z, tryXY, fromX, fromZ, solidActors, playerHeight)) { x = tryX; walkY = tryXY; }
       else corrected = true;
       followSupport();
 
       const beforeZx = x;
       const beforeZz = z;
       const tryZ = clamp(z + sz, -ARENA_LIMIT, ARENA_LIMIT);
-      if (!worldBlocked(x, tryZ, PLAYER_RADIUS, walkY, playerHeight, crouched) && !this.actorBlocksAt(x, tryZ, walkY, beforeZx, beforeZz, solidActors, playerHeight)) z = tryZ;
+      const tryZY = stepUpY(x, tryZ);
+      if (!worldBlocked(x, tryZ, PLAYER_RADIUS, tryZY, playerHeight) && !this.actorBlocksAt(x, tryZ, tryZY, beforeZx, beforeZz, solidActors, playerHeight)) { z = tryZ; walkY = tryZY; }
       else corrected = true;
       followSupport();
     }
