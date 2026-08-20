@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "breach",
+  "name": "breach-online",
   "main": "worker.js",
   "compatibility_date": "2026-08-14",
   "vars": {
