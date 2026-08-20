@@ -1,11 +1,12 @@
 {
   "name": "breachline-online",
-  "version": "1.16.13",
+  "version": "1.16.14",
   "private": true,
   "type": "module",
   "scripts": {
     "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
+    "dev": "wrangler dev",
+    "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"

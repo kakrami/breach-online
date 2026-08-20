@@ -2,47 +2,35 @@ import {
   PLAYER_HEIGHT, PLAYER_RADIUS, ARENA_LIMIT, STATIC_BOXES, BUILDINGS, PYRAMIDS, NATURAL_OBSTACLES,
   terrainHeight, naturalGroundBase, worldSupportHeight, resolveCeilingCollision, MAX_STEP_HEIGHT, BUILDING_PARTS
 } from './world-geometry.js';
+import {
+  APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS,
+  WEAPON_ORDER, WEAPON_SPECS, EQUIPMENT_CAPS, DEFAULT_WORLD_SETTINGS,
+  TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, GROUND_FOLLOW_DROP
+} from './game-config.js';
 
-const PROTOCOL_VERSION = 31;
-const GAME_VERSION = "1.16.13";
+const GAME_VERSION = APP_VERSION;
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const ROOM_CODE_LENGTH = 4;
-const MAX_PLAYERS = 8;
-const MAX_BOTS = 8;
 const MAX_MESSAGE_BYTES = 24 * 1024;
 const ROOM_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
 const EMPTY_ROOM_GRACE_MS = 10 * 60 * 1000;
 const ALARM_MIN_FUTURE_MS = 5 * 1000;
-const DIRECTORY_LEASE_MS = 15 * 1000;
-const DIRECTORY_HEARTBEAT_MS = 5 * 1000;
+const DIRECTORY_LEASE_MS = 30 * 1000;
+const DIRECTORY_HEARTBEAT_MS = 10 * 1000;
 const SIM_MIN_STEP_MS = 16;
 const THROWABLE_BROADCAST_MS = 33;
-const TACTICAL_THROW_SPEED = 23.5;
-const TACTICAL_THROW_LOFT = 6.4;
-const TACTICAL_GRAVITY = 18;
 const COLLISION_CELL_SIZE = 8;
 const COLLISION_CELL_HEIGHT = 3;
 const RECONNECT_GRACE_MS = 45 * 1000;
 const HEALTH_REGEN_TICK_MS = 500;
 const HEADSHOT_MULTIPLIER = 2;
 const MULTI_KILL_WINDOW_MS = 4500;
-const WEAPONS = {
-  pistol: { mag: 12, lifetimeMs: 3200 },
-  assault: { mag: 12, lifetimeMs: 3400 },
-  shotgun: { mag: 6, lifetimeMs: 1800 },
-  sniper: { mag: 12, lifetimeMs: 3600 },
-};
-const DEFAULT_WORLD_SETTINGS = Object.freeze({
-  movement: Object.freeze({ runSpeed: 8.4, walkSpeed: 4.6, jumpHeight: 1.6, gravity: 23 }),
-  combat: Object.freeze({ regenDelayMs: 5000, regenPerSecond: 8, respawnMs: 2800 }),
-  weapons: Object.freeze({
-    pistol: Object.freeze({ damage: 34, speed: 42, reloadMs: 475, cooldownMs: 190 }),
-    assault: Object.freeze({ damage: 26, speed: 82, reloadMs: 650, cooldownMs: 105 }),
-    shotgun: Object.freeze({ damage: 18, speed: 68, reloadMs: 980, cooldownMs: 760 }),
-    sniper: Object.freeze({ damage: 120, speed: 180, reloadMs: 1100, cooldownMs: 950 }),
-  }),
-});
-const TEAM_COLORS = { blue: "#46a7ff", red: "#ff5c6c" };
+const CREATE_RATE_WINDOW_MS = 60 * 1000;
+const CREATE_RATE_MAX_PER_CLIENT = 5;
+const CREATE_RATE_MAX_GLOBAL = 60;
+const WEAPONS = Object.freeze(Object.fromEntries(WEAPON_ORDER.map((name) => [name, Object.freeze({
+  mag: WEAPON_SPECS[name].mag,
+  lifetimeMs: WEAPON_SPECS[name].lifetimeMs,
+})])));
 const PLAYER_COLORS = [
   "#4cc9f0", "#f72585", "#80ed99", "#ffd166",
   "#b388ff", "#ff8c42", "#90e0ef", "#f28482",
@@ -68,21 +56,35 @@ const WORLD_OBSTACLES = [
   })),
 ];
 
-function safeOrigin(request, env) {
-  const configured = String(env.GAME_ORIGIN || "*").trim();
+function configuredOrigins(env) {
+  const raw = String(env.GAME_ORIGINS || env.GAME_ORIGIN || "*");
+  return raw.split(',').map((value) => value.trim()).filter(Boolean);
+}
+
+function isOriginAllowed(request, env) {
   const origin = request.headers.get("Origin") || "";
-  if (configured === "*") return "*";
-  return origin === configured ? origin : configured;
+  if (!origin) return true;
+  const allowed = configuredOrigins(env);
+  return allowed.includes('*') || allowed.includes(origin);
+}
+
+function responseOrigin(request, env) {
+  const origin = request.headers.get("Origin") || "";
+  const allowed = configuredOrigins(env);
+  if (allowed.includes('*')) return '*';
+  return origin && allowed.includes(origin) ? origin : '';
 }
 
 function corsHeaders(request, env) {
-  return {
-    "access-control-allow-origin": safeOrigin(request, env),
+  const headers = {
     "access-control-allow-methods": "GET, POST, OPTIONS",
     "access-control-allow-headers": "Content-Type",
     "cache-control": "no-store",
     vary: "Origin",
   };
+  const origin = responseOrigin(request, env);
+  if (origin) headers["access-control-allow-origin"] = origin;
+  return headers;
 }
 
 function json(request, env, data, status = 200) {
@@ -123,6 +125,29 @@ function safeClientId(value) {
     .slice(0, 80);
 }
 
+function safeClientAuth(value) {
+  return String(value || "")
+    .replace(/[^A-Fa-f0-9]/g, "")
+    .slice(0, 128);
+}
+
+async function sha256Hex(value) {
+  const bytes = new TextEncoder().encode(String(value || ""));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function normalizeClientAuthHashes(meta) {
+  const raw = meta?.clientAuthHashes && typeof meta.clientAuthHashes === 'object' ? meta.clientAuthHashes : {};
+  const out = {};
+  for (const [id, hash] of Object.entries(raw)) {
+    const safeId = safeClientId(id);
+    const safeHash = String(hash || '').toLowerCase().replace(/[^a-f0-9]/g, '').slice(0, 64);
+    if (safeId && safeHash.length === 64) out[safeId] = safeHash;
+  }
+  return out;
+}
+
 function safeName(value) {
   const cleaned = String(value || "Player")
     .replace(/[<>\u0000-\u001f]/g, "")
@@ -160,7 +185,6 @@ function safeWeapon(value) {
   return Object.prototype.hasOwnProperty.call(WEAPONS, value) ? value : "pistol";
 }
 
-const EQUIPMENT_CAPS = Object.freeze({ flash: 2, sticky: 2 });
 function safeEquipmentKind(value){return Object.prototype.hasOwnProperty.call(EQUIPMENT_CAPS,value)?value:'flash';}
 function freshAmmo(){return Object.fromEntries(Object.entries(WEAPONS).map(([name,spec])=>[name,spec.mag]));}
 function normalizeAmmo(value){
@@ -176,6 +200,14 @@ function refreshUnlimitedResources(me){
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function activeFlashPower(player, now = Date.now()) {
+  const until = finiteNumber(player?.flashUntil, 0);
+  if (until <= now) return 0;
+  const duration = Math.max(1, finiteNumber(player?.flashDurationMs, until - now));
+  const remaining = clamp((until - now) / duration, 0, 1);
+  return clamp(finiteNumber(player?.flashPower, 0), 0, 1) * remaining;
 }
 
 function normalizeWorldSettings(value) {
@@ -346,6 +378,9 @@ function publicPlayer(attachment) {
     deaths: Math.max(0, Math.floor(finiteNumber(attachment.deaths, 0))),
     godMode: !!attachment.godMode,
     admin: !!attachment.admin,
+    grounded: attachment.serverGrounded !== false,
+    verticalVelocity: finiteNumber(attachment.verticalVelocity, 0),
+    jumpSeq: Math.max(0, Math.floor(finiteNumber(attachment.lastJumpSeq, 0))),
   };
 }
 
@@ -452,7 +487,12 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
+      if (!isOriginAllowed(request, env)) return new Response(null, { status: 403, headers: corsHeaders(request, env) });
       return new Response(null, { status: 204, headers: corsHeaders(request, env) });
+    }
+
+    if (url.pathname !== "/health" && !isOriginAllowed(request, env)) {
+      return json(request, env, { error: "Origin not allowed." }, 403);
     }
 
     if (url.pathname === "/health") {
@@ -475,6 +515,7 @@ export default {
       let body = {};
       try { body = await request.json(); } catch {}
       const clientId = safeClientId(body.client);
+      const clientAuth = safeClientAuth(body.auth);
       const protocol = Math.floor(finiteNumber(body.protocol, 0));
       if (protocol !== PROTOCOL_VERSION) return json(request, env, { error: `Client protocol ${protocol || "missing"} is incompatible. Update the game client.`, protocol: PROTOCOL_VERSION }, 409);
       const name = safeName(body.name);
@@ -483,15 +524,32 @@ export default {
       const botCount = blueBots + redBots;
       const botDifficulty = safeBotDifficulty(body.botDifficulty);
       if (!clientId) return json(request, env, { error: "Missing client ID." }, 400);
+      if (clientAuth.length < 32) return json(request, env, { error: "Missing client credential." }, 400);
       if (botCount > MAX_BOTS) return json(request, env, { error: `Maximum ${MAX_BOTS} bots per world.` }, 400);
 
+      const directory = await directoryStub(env);
+      const networkId = request.headers.get('CF-Connecting-IP') || request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+      try {
+        const limiter = await directory.fetch('https://directory.internal/allow-create', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ key: await sha256Hex(networkId) }),
+        });
+        if (limiter.status === 429) return json(request, env, { error: "Too many matches created from this connection. Try again shortly." }, 429);
+        if (!limiter.ok) return json(request, env, { error: "Match creation protection is temporarily unavailable." }, 503);
+      } catch {
+        return json(request, env, { error: "Match creation protection is temporarily unavailable." }, 503);
+      }
+
+      const ownerAuthHash = await sha256Hex(clientAuth);
       for (let attempt = 0; attempt < 20; attempt += 1) {
         const code = makeRoomCode();
         const room = env.ROOMS.get(env.ROOMS.idFromName(code));
-        const created = await room.fetch(
-          `https://room.internal/create?code=${code}&owner=${encodeURIComponent(clientId)}&name=${encodeURIComponent(name)}&blueBots=${blueBots}&redBots=${redBots}&botDifficulty=${encodeURIComponent(botDifficulty)}`,
-          { method: "POST" },
-        );
+        const created = await room.fetch('https://room.internal/create', {
+          method: "POST",
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ code, ownerClientId: clientId, ownerAuthHash, blueBots, redBots, botDifficulty }),
+        });
         if (created.status === 201) {
           return json(request, env, { code }, 201);
         }
@@ -519,6 +577,33 @@ export class WorldDirectory {
     const url = new URL(request.url);
     const rooms = (await this.ctx.storage.get("rooms")) || {};
     const now = Date.now();
+
+    if (url.pathname === "/allow-create" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch {}
+      const key = String(body.key || '').toLowerCase().replace(/[^a-f0-9]/g, '').slice(0, 64);
+      if (key.length !== 64) return new Response('bad key', { status: 400 });
+      const rates = (await this.ctx.storage.get("createLimits")) || {};
+      const cutoff = now - CREATE_RATE_WINDOW_MS;
+      for (const [rateKey, entry] of Object.entries(rates)) {
+        if (!entry || finiteNumber(entry.windowStart, 0) < cutoff) delete rates[rateKey];
+      }
+      const currentRate = (rateKey) => rates[rateKey] && finiteNumber(rates[rateKey].windowStart, 0) >= cutoff
+        ? rates[rateKey]
+        : { windowStart: now, count: 0 };
+      const clientRate = currentRate(`client:${key}`);
+      const globalRate = currentRate('global');
+      if (Math.floor(finiteNumber(clientRate.count, 0)) >= CREATE_RATE_MAX_PER_CLIENT || Math.floor(finiteNumber(globalRate.count, 0)) >= CREATE_RATE_MAX_GLOBAL) {
+        await this.ctx.storage.put("createLimits", rates);
+        return new Response('rate limited', { status: 429 });
+      }
+      clientRate.count = Math.floor(finiteNumber(clientRate.count, 0)) + 1;
+      globalRate.count = Math.floor(finiteNumber(globalRate.count, 0)) + 1;
+      rates[`client:${key}`] = clientRate;
+      rates.global = globalRate;
+      await this.ctx.storage.put("createLimits", rates);
+      return new Response('ok');
+    }
 
     if (url.pathname === "/list") {
       let changed = false;
@@ -589,6 +674,7 @@ export class GameRoom {
     this.lastPersistAt = 0;
     this.lastDirectoryHeartbeatAt = 0;
     this.metaCache = null;
+    this.socketRate = new WeakMap();
   }
 
   async getMeta() {
@@ -596,6 +682,7 @@ export class GameRoom {
     const meta = await this.ctx.storage.get("meta");
     if (meta) {
       meta.adminClientIds = normalizeAdminIds(meta);
+      meta.clientAuthHashes = normalizeClientAuthHashes(meta);
       this.metaCache = meta;
     }
     return meta || null;
@@ -603,6 +690,7 @@ export class GameRoom {
 
   async putMeta(meta) {
     meta.adminClientIds = normalizeAdminIds(meta);
+    meta.clientAuthHashes = normalizeClientAuthHashes(meta);
     this.metaCache = meta;
     await this.ctx.storage.put("meta", meta);
   }
@@ -613,6 +701,41 @@ export class GameRoom {
       const attachment = socket.deserializeAttachment() || {};
       return !!attachment.clientId && !attachment.replaced;
     });
+  }
+
+  allowSocketMessage(socket, type, now = Date.now()) {
+    const config = type === '__all__' ? { rate: 100, burst: 160 }
+      : type === 'state' ? { rate: 55, burst: 80 }
+      : type === 'simTick' ? { rate: 40, burst: 60 }
+      : type === 'fire' ? { rate: 24, burst: 30 }
+      : ['throw','reload','weapon','team','god','adminPlayer','adminSettings','adminBots'].includes(type) ? { rate: 14, burst: 22 }
+      : ['ping','combatSync'].includes(type) ? { rate: 8, burst: 12 }
+      : { rate: 30, burst: 45 };
+    let state = this.socketRate.get(socket);
+    if (!state) {
+      state = { buckets: new Map(), violations: 0, violationWindowAt: now };
+      this.socketRate.set(socket, state);
+    }
+    let bucket = state.buckets.get(type);
+    if (!bucket) bucket = { tokens: config.burst, at: now };
+    const elapsed = Math.max(0, (now - bucket.at) / 1000);
+    bucket.tokens = Math.min(config.burst, bucket.tokens + elapsed * config.rate);
+    bucket.at = now;
+    if (bucket.tokens >= 1) {
+      bucket.tokens -= 1;
+      state.buckets.set(type, bucket);
+      return true;
+    }
+    state.buckets.set(type, bucket);
+    if (now - state.violationWindowAt > 10_000) {
+      state.violationWindowAt = now;
+      state.violations = 0;
+    }
+    state.violations += 1;
+    if (state.violations >= 24) {
+      try { socket.close(1008, 'Message rate exceeded'); } catch {}
+    }
+    return false;
   }
 
   async scheduleRoomAlarm(targetAt) {
@@ -657,16 +780,31 @@ export class GameRoom {
       const existing = await this.getMeta();
       if (existing) return json(request, this.env, { error: "World already exists." }, 409);
 
-      const code = normalizeRoomCode(url.searchParams.get("code"));
-      const ownerClientId = safeClientId(url.searchParams.get("owner"));
-      if (!ownerClientId) return json(request, this.env, { error: "Missing world owner." }, 400);
-      const blueBots = clamp(Math.floor(finiteNumber(url.searchParams.get("blueBots"), 0)), 0, MAX_BOTS);
-      const redBots = clamp(Math.floor(finiteNumber(url.searchParams.get("redBots"), 0)), 0, MAX_BOTS);
+      let body = {};
+      try { body = await request.json(); } catch {}
+      const code = normalizeRoomCode(body.code);
+      const ownerClientId = safeClientId(body.ownerClientId);
+      const ownerAuthHash = String(body.ownerAuthHash || '').toLowerCase().replace(/[^a-f0-9]/g, '').slice(0, 64);
+      if (!code || !ownerClientId || ownerAuthHash.length !== 64) return json(request, this.env, { error: "Invalid world owner credentials." }, 400);
+      const blueBots = clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS);
+      const redBots = clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS);
       const botCount = blueBots + redBots;
-      const botDifficulty = safeBotDifficulty(url.searchParams.get("botDifficulty"));
+      const botDifficulty = safeBotDifficulty(body.botDifficulty);
       if (botCount > MAX_BOTS) return json(request, this.env, { error: `Maximum ${MAX_BOTS} bots per world.` }, 400);
       const now = Date.now();
-      const meta = { code, protocol: PROTOCOL_VERSION, ownerClientId, adminClientIds: [ownerClientId], blueBots, redBots, botDifficulty, settings: normalizeWorldSettings(), createdAt: now, expiresAt: now + ROOM_MAX_LIFETIME_MS };
+      const meta = {
+        code,
+        protocol: PROTOCOL_VERSION,
+        ownerClientId,
+        adminClientIds: [ownerClientId],
+        clientAuthHashes: { [ownerClientId]: ownerAuthHash },
+        blueBots,
+        redBots,
+        botDifficulty,
+        settings: normalizeWorldSettings(),
+        createdAt: now,
+        expiresAt: now + ROOM_MAX_LIFETIME_MS,
+      };
       await this.putMeta(meta);
       this.bots = makeBots(blueBots, redBots);
       await this.ctx.storage.put("bots", this.bots);
@@ -694,10 +832,15 @@ export class GameRoom {
     if (protocol !== PROTOCOL_VERSION) return json(request, this.env, { error: "Client update required.", protocol: PROTOCOL_VERSION }, 409);
 
     const clientId = safeClientId(url.searchParams.get("client"));
+    const clientAuth = safeClientAuth(url.searchParams.get("auth"));
     const name = safeName(url.searchParams.get("name"));
     const requestedTeam = safeTeam(url.searchParams.get("team"));
-    const requestedGodMode = String(url.searchParams.get("god") || "") === "1";
     if (!clientId) return json(request, this.env, { error: "Missing client ID." }, 400);
+    if (clientAuth.length < 32) return json(request, this.env, { error: "Missing client credential." }, 401);
+    const clientAuthHash = await sha256Hex(clientAuth);
+    const authHashes = normalizeClientAuthHashes(meta);
+    const expectedAuthHash = authHashes[clientId] || '';
+    if (expectedAuthHash && expectedAuthHash !== clientAuthHash) return json(request, this.env, { error: "Client credential rejected." }, 403);
 
     const sockets = this.ctx.getWebSockets();
     const members = sockets.map((socket) => ({ socket, attachment: socket.deserializeAttachment() || {} }));
@@ -715,6 +858,11 @@ export class GameRoom {
     const liveMembers = members.filter(({ attachment }) => attachment.clientId !== clientId && !attachment.replaced);
     if (liveMembers.length >= MAX_PLAYERS) {
       return json(request, this.env, { error: "World is full." }, 409);
+    }
+    if (!expectedAuthHash) {
+      authHashes[clientId] = clientAuthHash;
+      meta.clientAuthHashes = authHashes;
+      await this.putMeta(meta);
     }
 
     const requestedTeamCount = liveMembers.filter(({attachment:a}) => safeTeam(a.team) === requestedTeam).length;
@@ -749,9 +897,16 @@ export class GameRoom {
       combatRev: Math.max(0, Math.floor(finiteNumber(spawn.combatRev, 0))),
       kills: Math.max(0, Math.floor(finiteNumber(spawn.kills, 0))),
       deaths: Math.max(0, Math.floor(finiteNumber(spawn.deaths, 0))),
-      godMode: requestedGodMode,
+      godMode: !!preserved?.godMode,
       admin: isRoomAdmin(meta, clientId),
       ads: false,
+      flashUntil: Math.max(0, finiteNumber(preserved?.flashUntil, 0)),
+      flashPower: clamp(finiteNumber(preserved?.flashPower, 0), 0, 1),
+      flashDurationMs: Math.max(0, finiteNumber(preserved?.flashDurationMs, 0)),
+      verticalVelocity: finiteNumber(preserved?.verticalVelocity, 0),
+      serverGrounded: preserved?.serverGrounded !== false,
+      lastJumpSeq: Math.max(0, Math.floor(finiteNumber(preserved?.lastJumpSeq, 0))),
+      lastVerticalAt: Date.now(),
       lastStateAt: Date.now(),
       moveCredit: normalizeWorldSettings(meta.settings).movement.runSpeed * 0.04,
     };
@@ -786,6 +941,8 @@ export class GameRoom {
   }
 
   async webSocketMessage(socket, message) {
+    const receivedAt = Date.now();
+    if (!this.allowSocketMessage(socket, '__all__', receivedAt)) return;
     if (typeof message !== "string") {
       socket.close(1003, "Text messages only");
       return;
@@ -797,13 +954,15 @@ export class GameRoom {
 
     const payload = parseJson(message);
     if (!payload) return;
+    const messageType = String(payload.t || '');
+    if (!this.allowSocketMessage(socket, messageType, receivedAt)) return;
     const meta = await this.getMeta();
     if (!meta) return;
     await this.ensureSimulation(meta);
 
     let me = socket.deserializeAttachment() || {};
     if (!me.clientId || me.replaced) return;
-    const now = Date.now();
+    const now = receivedAt;
     const settings = normalizeWorldSettings(meta.settings);
 
     if(me.godMode)refreshUnlimitedResources(me);
@@ -821,7 +980,10 @@ export class GameRoom {
         const state = { t: "state", id: me.clientId, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads };
         this.broadcast(state, socket);
         if (next.corrected) {
-          try { socket.send(JSON.stringify({ t: "correction", x: me.x, y: me.y, z: me.z, vertical: next.verticalCorrected })); } catch {}
+          try { socket.send(JSON.stringify({
+            t: "correction", x: me.x, y: me.y, z: me.z, vertical: next.verticalCorrected,
+            verticalVelocity: finiteNumber(me.verticalVelocity, 0), grounded: me.serverGrounded !== false,
+          })); } catch {}
         }
       }
       await this.stepSimulation(now, meta);
@@ -837,6 +999,8 @@ export class GameRoom {
       const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
       if(requestedWeapon!==me.weapon){me.weapon=requestedWeapon;me.reloadAt=0;me.reloadWeapon="";me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;this.broadcast({t:'weapon',id:me.clientId,weapon:requestedWeapon},socket);}
       me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4);
+      const flashPower=activeFlashPower(me,now);let shotYaw=me.yaw,shotPitch=me.pitch;
+      if(flashPower>.02){const flashSpread=.035+flashPower*.22;shotYaw+=(Math.random()-.5)*2*flashSpread;shotPitch=clamp(shotPitch+(Math.random()-.5)*1.5*flashSpread,-1.4,1.4);me.ads=false;}
       const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon],unlimited=!!me.godMode;me.ammo=normalizeAmmo(me.ammo);
       if(unlimited)refreshUnlimitedResources(me);
       if(me.hp<=0||now<me.wastedUntil){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'dead'});return;}
@@ -844,7 +1008,7 @@ export class GameRoom {
       if(now-me.lastShot<spec.cooldownMs){const retryAfterMs=Math.max(1,Math.ceil(spec.cooldownMs-(now-me.lastShot)));socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'cooldown',retryAfterMs});return;}
       if(!unlimited&&me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
       me.lastShot=now;if(!unlimited)me.ammo[weapon]-=1;const autoReloadStarted=!unlimited&&me.ammo[weapon]===0;if(autoReloadStarted){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;}me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);
-      const cp=Math.cos(me.pitch),sp=Math.sin(me.pitch),fx=-Math.sin(me.yaw)*cp,fy=sp,fz=-Math.cos(me.yaw)*cp,pellets=weapon==='shotgun'?8:1;
+      const cp=Math.cos(shotPitch),sp=Math.sin(shotPitch),fx=-Math.sin(shotYaw)*cp,fy=sp,fz=-Math.cos(shotYaw)*cp,pellets=weapon==='shotgun'?8:1;
       for(let i=0;i<pellets;i++){let sx=fx,sy=fy,sz=fz;if(weapon==='shotgun'){const spread=.075;sx+=(Math.random()-.5)*spread;sy+=(Math.random()-.5)*spread*.75;sz+=(Math.random()-.5)*spread;const n=Math.hypot(sx,sy,sz)||1;sx/=n;sy/=n;sz/=n;}this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage,weapon,lifetimeMs:WEAPONS[weapon].lifetimeMs,x:me.x+sx*.62,y:me.y+PLAYER_HEIGHT-.18+sy*.25,z:me.z+sz*.62,vx:sx*spec.speed,vy:sy*spec.speed,vz:sz*spec.speed,now,consumeAmmo:i===0&&!unlimited});}
       sendLoadout(socket,me,{action:'fire',seq,accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
     }
@@ -854,9 +1018,11 @@ export class GameRoom {
       const requestedId=safeClientId(payload.id).slice(0,24),id=requestedId&&!this.throwables.has(requestedId)?requestedId:crypto.randomUUID().replace(/-/g,'').slice(0,16);
       if(me.hp<=0||now<me.wastedUntil||now-finiteNumber(me.lastThrow,0)<360||(!unlimited&&me.equipment[kind]<=0)){try{socket.send(JSON.stringify({t:'throwAck',id:requestedId||id,accepted:false}));}catch{}return;}
       me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.25,1.15);
+      const flashPower=activeFlashPower(me,now);let throwYaw=me.yaw,throwPitch=me.pitch;
+      if(flashPower>.02){const flashSpread=.025+flashPower*.16;throwYaw+=(Math.random()-.5)*2*flashSpread;throwPitch=clamp(throwPitch+(Math.random()-.5)*1.4*flashSpread,-1.25,1.15);me.ads=false;}
       const throwSpeed=TACTICAL_THROW_SPEED,loft=TACTICAL_THROW_LOFT;
       me.lastThrow=now;if(!unlimited)me.equipment[kind]-=1;socket.serializeAttachment(me);try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment,unlimited}));socket.send(JSON.stringify({t:'throwAck',id,accepted:true}));}catch{}
-      const cp=Math.cos(me.pitch),fx=-Math.sin(me.yaw)*cp,fy=Math.sin(me.pitch),fz=-Math.cos(me.yaw)*cp;
+      const cp=Math.cos(throwPitch),fx=-Math.sin(throwYaw)*cp,fy=Math.sin(throwPitch),fz=-Math.cos(throwYaw)*cp;
       const g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+fx*.82,y:me.y+PLAYER_HEIGHT-.22,z:me.z+fz*.82,vx:fx*throwSpeed,vy:fy*throwSpeed+loft,vz:fz*throwSpeed,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:1650),stuck:false,lastBroadcast:now};
       this.throwables.set(id,g);this.broadcast({t:'throwable',...g,at:now});await this.stepSimulation(now,meta);return;
     }
@@ -880,12 +1046,18 @@ export class GameRoom {
     }
 
     if (payload.t === "god") {
+      if (!isRoomAdmin(meta, me.clientId)) {
+        try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "Admin access required for God Mode." })); } catch {}
+        try { socket.send(JSON.stringify({ t: "god", id: me.clientId, enabled: !!me.godMode })); } catch {}
+        return;
+      }
       me.godMode = !!payload.enabled;
       if(me.godMode)refreshUnlimitedResources(me);
       me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;
       socket.serializeAttachment(me);
       this.broadcast({ t: "god", id: me.clientId, enabled: me.godMode });
-      if(me.godMode){try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment,unlimited:true}));}catch{}sendLoadout(socket,me,{action:'god',accepted:true,unlimited:true});}
+      if(me.godMode){try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment,unlimited:true}));}catch{}}
+      sendLoadout(socket,me,{action:'god',accepted:true,unlimited:!!me.godMode});
       return;
     }
 
@@ -897,6 +1069,8 @@ export class GameRoom {
         ...me, ...spawn, team: nextTeam, hp: 100, wastedUntil: 0, lastHitAt: 0, regenAt: 0,
         weapon: "pistol", ammo: freshAmmo(), equipment: freshEquipment(), reloadAt: 0, reloadWeapon: "",
         lastShot: 0, lastThrow: 0, ads: false, combatRev: Math.max(0, finiteNumber(me.combatRev, 0)) + 1,
+        verticalVelocity: 0, serverGrounded: true, lastVerticalAt: now,
+        flashUntil: 0, flashPower: 0, flashDurationMs: 0,
         moveCredit: settings.movement.runSpeed * 0.04,
       };
       if (me.godMode) refreshUnlimitedResources(me);
@@ -949,6 +1123,12 @@ export class GameRoom {
         meta.adminClientIds = [...admins];
         await this.putMeta(meta);
         target.admin = isRoomAdmin(meta, targetId);
+        if (!target.admin && target.godMode) {
+          target.godMode = false;
+          target.combatRev = Math.max(0, finiteNumber(target.combatRev, 0)) + 1;
+          this.broadcast({ t: "god", id: targetId, enabled: false });
+          sendLoadout(targetSocket, target, { action: "god", accepted: true, unlimited: false });
+        }
         targetSocket.serializeAttachment(target);
         this.broadcast({ t: "adminRole", id: targetId, enabled: target.admin, owner: targetId === meta.ownerClientId });
         return;
@@ -1033,48 +1213,105 @@ export class GameRoom {
     const serverElapsed = clamp((now - finiteNumber(me.lastStateAt, now)) / 1000, 0.016, 0.75);
     const clientAt = finiteNumber(payload.clientAt, 0);
     const previousClientAt = finiteNumber(me.lastClientStateAt, 0);
-    const clientElapsed = clientAt > previousClientAt && previousClientAt > 0 ? clamp((clientAt - previousClientAt) / 1000, 0.016, 0.15) : 0;
+    const clientElapsed = clientAt > previousClientAt && previousClientAt > 0
+      ? clamp((clientAt - previousClientAt) / 1000, 0.016, 0.15)
+      : 0;
     const elapsed = Math.max(serverElapsed, clientElapsed);
-    const ads = !!payload.ads;
+    const flashPower = activeFlashPower(me, now);
+    const ads = flashPower > 0.12 ? false : !!payload.ads;
     const allowedSpeed = ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
     const creditCap = allowedSpeed * 0.25 + 0.12;
     const priorCredit = clamp(finiteNumber(me.moveCredit, allowedSpeed * 0.04), 0, creditCap);
     const availableCredit = Math.min(creditCap, priorCredit + allowedSpeed * elapsed);
     const maxDistance = availableCredit + 0.04;
-    let dx = desiredX - me.x, dz = desiredZ - me.z;
+    let dx = desiredX - me.x;
+    let dz = desiredZ - me.z;
     const requestedDistance = Math.hypot(dx, dz);
     let corrected = requestedDistance > maxDistance + 0.001;
     if (requestedDistance > maxDistance && requestedDistance > 0) {
       const scale = maxDistance / requestedDistance;
-      dx *= scale; dz *= scale;
+      dx *= scale;
+      dz *= scale;
     }
 
-    let x = me.x, z = me.z, walkY = me.y;
-    const startSupport=worldSupportHeight(me.x,me.z,me.y),startedGrounded=Math.abs(me.y-startSupport)<=.24;
-    const travel = Math.hypot(dx, dz),solidActors=this.solidActors(me.clientId,now);
+    const startSupport = worldSupportHeight(me.x, me.z, me.y);
+    const currentVerticalVelocity = finiteNumber(me.verticalVelocity, 0);
+    let serverGrounded = me.serverGrounded !== false && Math.abs(me.y - startSupport) <= 0.28;
+    if (!serverGrounded && currentVerticalVelocity <= 0 && Math.abs(me.y - startSupport) <= 0.08) serverGrounded = true;
+    let followsSupport = serverGrounded;
+    let x = me.x;
+    let z = me.z;
+    let walkY = me.y;
+    const travel = Math.hypot(dx, dz);
+    const solidActors = this.solidActors(me.clientId, now);
     const steps = Math.max(1, Math.ceil(travel / 0.16));
-    const sx = dx / steps, sz = dz / steps;
+    const sx = dx / steps;
+    const sz = dz / steps;
+    const followSupport = () => {
+      if (!followsSupport) return;
+      const support = worldSupportHeight(x, z, walkY);
+      if (support >= walkY - GROUND_FOLLOW_DROP) walkY = support;
+      else followsSupport = false;
+    };
     for (let i = 0; i < steps; i += 1) {
-      const fromX=x,fromZ=z,tryX = clamp(x + sx, -ARENA_LIMIT, ARENA_LIMIT);
-      if (!worldBlocked(tryX, z, PLAYER_RADIUS, walkY)&&!this.actorBlocksAt(tryX,z,walkY,fromX,fromZ,solidActors)) x = tryX; else corrected = true;
-      if(startedGrounded)walkY=worldSupportHeight(x,z,walkY);
-      const beforeZx=x,beforeZz=z,tryZ = clamp(z + sz, -ARENA_LIMIT, ARENA_LIMIT);
-      if (!worldBlocked(x, tryZ, PLAYER_RADIUS, walkY)&&!this.actorBlocksAt(x,tryZ,walkY,beforeZx,beforeZz,solidActors)) z = tryZ; else corrected = true;
-      if(startedGrounded)walkY=worldSupportHeight(x,z,walkY);
+      const fromX = x;
+      const fromZ = z;
+      const tryX = clamp(x + sx, -ARENA_LIMIT, ARENA_LIMIT);
+      if (!worldBlocked(tryX, z, PLAYER_RADIUS, walkY) && !this.actorBlocksAt(tryX, z, walkY, fromX, fromZ, solidActors)) x = tryX;
+      else corrected = true;
+      followSupport();
+
+      const beforeZx = x;
+      const beforeZz = z;
+      const tryZ = clamp(z + sz, -ARENA_LIMIT, ARENA_LIMIT);
+      if (!worldBlocked(x, tryZ, PLAYER_RADIUS, walkY) && !this.actorBlocksAt(x, tryZ, walkY, beforeZx, beforeZz, solidActors)) z = tryZ;
+      else corrected = true;
+      followSupport();
     }
 
     const rawRequestedY = finiteNumber(payload.y, me.y);
-    // Grounded stair movement changes Y because the support surface rises, not
-    // because the player jumped. Accept the swept tread height before applying
-    // ceiling logic so a delayed packet cannot be mistaken for a jump through a stair.
-    const clientGrounded=payload.grounded===true;
-    const followsWalkSurface=startedGrounded&&clientGrounded&&Math.abs(rawRequestedY-walkY)<=.10;
-    const ceiling=followsWalkSurface?{y:walkY,hit:false}:resolveCeilingCollision(me.y,rawRequestedY,x,z);
-    const requestedY=ceiling.y;
-    const ground = worldSupportHeight(x,z,Math.max(walkY,requestedY));
-    const maxAirHeight = ground + settings.movement.jumpHeight + 0.45;
-    const y = clamp(requestedY, ground, maxAirHeight);
-    const verticalCorrected = ceiling.hit||Math.abs(y - rawRequestedY) > 0.02;
+    const incomingJumpSeq = Math.max(0, Math.floor(finiteNumber(payload.jumpSeq, 0)));
+    const previousJumpSeq = Math.max(0, Math.floor(finiteNumber(me.lastJumpSeq, 0)));
+    const jumpRequested = incomingJumpSeq > previousJumpSeq && serverGrounded && followsSupport;
+    const gravity = settings.movement.gravity;
+    const jumpSpeed = Math.sqrt(2 * gravity * settings.movement.jumpHeight);
+    let y = followsSupport ? walkY : me.y;
+    let verticalVelocity = followsSupport ? 0 : currentVerticalVelocity;
+    let ceilingHit = false;
+
+    if (jumpRequested) {
+      y = walkY;
+      verticalVelocity = jumpSpeed;
+      serverGrounded = false;
+      followsSupport = false;
+    } else if (serverGrounded && followsSupport) {
+      y = walkY;
+      verticalVelocity = 0;
+      serverGrounded = true;
+    } else {
+      serverGrounded = false;
+      const verticalElapsed = clamp((now - finiteNumber(me.lastVerticalAt, now)) / 1000, 0, 0.15);
+      if (verticalElapsed > 0) {
+        const nextY = y + verticalVelocity * verticalElapsed - 0.5 * gravity * verticalElapsed * verticalElapsed;
+        let nextVelocity = verticalVelocity - gravity * verticalElapsed;
+        const ceiling = resolveCeilingCollision(y, nextY, x, z);
+        y = ceiling.y;
+        ceilingHit = ceiling.hit;
+        if (ceilingHit && nextVelocity > 0) nextVelocity = 0;
+        verticalVelocity = nextVelocity;
+      }
+      const ground = worldSupportHeight(x, z, y);
+      const clientGrounded = payload.grounded === true;
+      const closeEnoughToLand = clientGrounded && verticalVelocity <= 0 && rawRequestedY <= ground + 0.14 && y - ground <= GROUND_FOLLOW_DROP;
+      if ((y <= ground + 0.025 && verticalVelocity <= 0) || closeEnoughToLand) {
+        y = ground;
+        verticalVelocity = 0;
+        serverGrounded = true;
+      }
+    }
+
+    const verticalError = Math.abs(y - rawRequestedY);
+    const verticalCorrected = ceilingHit || verticalError > 0.28;
     if (verticalCorrected || Math.hypot(x - desiredX, z - desiredZ) > 0.08) corrected = true;
     const actualTravel = Math.hypot(x - me.x, z - me.z);
 
@@ -1082,14 +1319,23 @@ export class GameRoom {
       corrected,
       verticalCorrected,
       player: {
-        ...me, x, y, z, ads, lastStateAt: now, lastClientStateAt: clientAt > 0 ? clientAt : previousClientAt,
+        ...me,
+        x,
+        y,
+        z,
+        ads,
+        serverGrounded,
+        verticalVelocity,
+        lastVerticalAt: now,
+        lastJumpSeq: Math.max(previousJumpSeq, incomingJumpSeq),
+        lastStateAt: now,
+        lastClientStateAt: clientAt > 0 ? clientAt : previousClientAt,
         moveCredit: Math.max(0, availableCredit - actualTravel),
         yaw: finiteNumber(payload.yaw, me.yaw),
         pitch: clamp(finiteNumber(payload.pitch, me.pitch), -1.4, 1.4),
       },
     };
   }
-
 
   spawnBullet({ ownerId, ownerTeam, damage, weapon, lifetimeMs, x, y, z, vx, vy, vz, now, consumeAmmo=true }) {
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
@@ -1134,12 +1380,12 @@ export class GameRoom {
     }
     if (now - this.lastDirectoryHeartbeatAt >= DIRECTORY_HEARTBEAT_MS) {
       this.lastDirectoryHeartbeatAt = now;
-      await this.updateDirectory(this.ctx.getWebSockets().length, meta);
+      await this.updateDirectory(this.liveSockets().length, meta);
     }
     if (now >= meta.expiresAt - 60_000) {
       meta.expiresAt = now + ROOM_MAX_LIFETIME_MS;
       await this.putMeta(meta);
-      await this.updateDirectory(this.ctx.getWebSockets().length, meta);
+      await this.updateDirectory(this.liveSockets().length, meta);
     }
   }
 
@@ -1168,6 +1414,8 @@ export class GameRoom {
         reloadWeapon: "",
         combatRev: Math.max(0, finiteNumber(player.combatRev, 0)) + 1,
         ads: false,
+        verticalVelocity: 0, serverGrounded: true, lastVerticalAt: now,
+        flashUntil: 0, flashPower: 0, flashDurationMs: 0,
         lastStateAt: now,
         moveCredit: settings.movement.runSpeed * 0.04,
       };
@@ -1327,18 +1575,22 @@ export class GameRoom {
   findActorState(id){for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(p.clientId===id&&!p.replaced)return p;}return this.bots.find(b=>b.id===id)||null;}
   findStickyTarget(g){for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.clientId===g.ownerId||p.hp<=0||safeTeam(p.team)===g.ownerTeam)continue;if(Math.hypot(p.x-g.x,p.y+1-g.y,p.z-g.z)<.62)return p.clientId;}for(const b of this.bots){if(b.id===g.ownerId||b.hp<=0||safeTeam(b.team)===g.ownerTeam)continue;if(Math.hypot(b.x-g.x,b.y+1-g.y,b.z-g.z)<.62)return b.id;}return '';}
   detonateFlash(g,now){
-    const radius=22;this.broadcast({t:'flashDetonate',id:g.id,x:g.x,y:g.y,z:g.z,radius});
+    const radius=FLASH_RADIUS;this.broadcast({t:'flashDetonate',id:g.id,x:g.x,y:g.y,z:g.z,radius});
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;
       const ex=p.x,ey=p.y+PLAYER_HEIGHT*.75,ez=p.z,dx=g.x-ex,dy=g.y-ey,dz=g.z-ez,dist=Math.hypot(dx,dy,dz);if(dist>radius)continue;
       if(segmentHitsObstacle(g.x,g.y,g.z,ex,ey,ez))continue;
       const cp=Math.cos(p.pitch||0),fx=-Math.sin(p.yaw||0)*cp,fy=Math.sin(p.pitch||0),fz=-Math.cos(p.yaw||0)*cp,n=dist||1,dot=(fx*dx+fy*dy+fz*dz)/n,front=.12+.88*Math.max(0,(dot+1)/2),power=clamp((1-dist/radius)*front,0,1);if(power<.035)continue;
-      try{socket.send(JSON.stringify({t:'flashEffect',power,durationMs:Math.round(650+power*2850)}));}catch{}
+      const durationMs=Math.round(650+power*2850),existingPower=activeFlashPower(p,now);
+      if(power>=existingPower){p.flashPower=power;p.flashDurationMs=durationMs;p.flashUntil=now+durationMs;}
+      else p.flashUntil=Math.max(finiteNumber(p.flashUntil,0),now+durationMs);
+      p.ads=false;socket.serializeAttachment(p);
+      try{socket.send(JSON.stringify({t:'flashEffect',power,durationMs}));}catch{}
     }
     for(const b of this.bots){if(b.hp<=0)continue;const dx=b.x-g.x,dy=b.y+1.05-g.y,dz=b.z-g.z,dist=Math.hypot(dx,dy,dz);if(dist>radius||segmentHitsObstacle(g.x,g.y,g.z,b.x,b.y+1.05,b.z))continue;const power=clamp(1-dist/radius,0,1);if(power<.05)continue;b.flashUntil=Math.max(finiteNumber(b.flashUntil,0),now+550+power*2600);b.flashSpin=(Math.random()<.5?-1:1)*(1.5+Math.random()*2.5);}
   }
   explodeSticky(g,now,settings){
-    const radius=8.5,maxDamage=150;
+    const radius=STICKY_RADIUS,maxDamage=STICKY_MAX_DAMAGE;
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;const self=p.clientId===g.ownerId;if(!self&&safeTeam(p.team)===g.ownerTeam)continue;
       const dx=p.x-g.x,dz=p.z-g.z,d=Math.hypot(dx,p.y+1-g.y,dz);if(d>radius||segmentHitsObstacle(g.x,g.y,g.z,p.x,p.y+1,p.z))continue;
@@ -1470,6 +1722,11 @@ export class GameRoom {
     }
     target.hp = Math.max(0, target.hp - damage);
     target.moveCredit = Math.max(finiteNumber(target.moveCredit, 0), Math.hypot(knockback.x || 0, knockback.z || 0) * 0.75);
+    if (finiteNumber(knockback.y, 0) > 0) {
+      target.verticalVelocity = Math.max(finiteNumber(target.verticalVelocity, 0), finiteNumber(knockback.y, 0));
+      target.serverGrounded = false;
+      target.lastVerticalAt = now;
+    }
     target.lastHitAt = now;
     target.regenAt = now + settings.combat.regenDelayMs;
     const wasted = target.hp <= 0;
@@ -1518,6 +1775,7 @@ export class GameRoom {
   findCombatant(id) {
     for (const socket of this.ctx.getWebSockets()) {
       const p = socket.deserializeAttachment() || {};
+      if (!p.clientId || p.replaced) continue;
       if (p.clientId === id) return {
         id, name: p.name || "Player", team: safeTeam(p.team), bot: false,
         kills: Math.max(0, Math.floor(finiteNumber(p.kills, 0))),
@@ -1649,6 +1907,8 @@ export class GameRoom {
     const message = JSON.stringify(payload);
     for (const socket of this.ctx.getWebSockets()) {
       if (socket === exceptSocket) continue;
+      const attachment = socket.deserializeAttachment() || {};
+      if (!attachment.clientId || attachment.replaced) continue;
       try { socket.send(message); } catch {}
     }
   }
@@ -1699,3 +1959,11 @@ export class GameRoom {
     } catch {}
   }
 }
+
+export const __test = Object.freeze({
+  makeRoomCode,
+  normalizeRoomCode,
+  normalizeWorldSettings,
+  activeFlashPower,
+  configuredOrigins,
+});
