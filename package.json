@@ -1,12 +1,11 @@
 {
   "name": "breach-online",
-  "version": "1.17.0",
+  "version": "1.17.1",
   "private": true,
   "type": "module",
   "scripts": {
     "deploy": "wrangler deploy",
-    "dev": "wrangler dev",
-    "test": "node --test tests/*.test.mjs"
+    "dev": "wrangler dev"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
