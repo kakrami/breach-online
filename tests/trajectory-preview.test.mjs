@@ -19,7 +19,7 @@ test('trajectory projectile index contains the static projectile world',()=>{
 });
 
 test('trajectory index preserves open windows and solid sills',()=>{
-  const sill=BUILDING_PARTS.find(part=>part.role==='wall'&&part.crouchPassable&&part.projectileSolid!==false);
+  const sill=BUILDING_PARTS.find(part=>part.role==='wall'&&part.crouchStep&&part.projectileSolid!==false);
   assert.ok(sill,'expected a window sill');
   const horizontal=sill.w>sill.d;
   const clearY=sill.topY+.28,blockedY=Math.max(sill.bottomY+.04,sill.topY-.10);
