@@ -20,6 +20,9 @@ const DIRECTORY_HEARTBEAT_MS = 10 * 1000;
 const SIM_MIN_STEP_MS = 16;
 const SIM_FIXED_STEP_MS = 1000 / 30;
 const SIM_MAX_CATCHUP_MS = 400;
+const MOVE_BUDGET_INITIAL_SEC = 0.04;
+const MOVE_BUDGET_MAX_SEC = 0.18;
+const BOT_PERSIST_INTERVAL_MS = 10 * 1000;
 const BULLET_MAX_SEGMENT_DISTANCE = 6;
 const KNOCK_DAMPING_BASE = 0.08;
 const KNOCK_DAMPING_RATE = -Math.log(KNOCK_DAMPING_BASE);
@@ -950,7 +953,7 @@ export class GameRoom {
       if (!p.clientId || p.replaced) continue;
       const team = p.pendingTeam ? safeTeam(p.pendingTeam) : safeTeam(p.team);
       const spawn = spawnForTeam(team, index++);
-      const reset = { ...p, ...spawn, team, pendingTeam:'', hp:100, wastedUntil:0, lastHitAt:0, regenAt:0, kills:0, deaths:0, multiKillCount:0, lastKillAt:0, weapon:safePrimaryWeapon(p.primaryWeapon), ammo:freshAmmo(), equipment:freshEquipment(), reloadAt:0, reloadWeapon:'', weaponReadyAt:0, combatRev:Math.max(0,finiteNumber(p.combatRev,0))+1, ads:false, crouched:false, moveSpeed:0, verticalVelocity:0, serverGrounded:true, lastVerticalAt:now, lastStateAt:now, flashUntil:0, flashPower:0, flashDurationMs:0, knockVelocityX:0, knockVelocityZ:0 };
+      const reset = { ...p, ...spawn, team, pendingTeam:'', hp:100, wastedUntil:0, lastHitAt:0, regenAt:0, kills:0, deaths:0, multiKillCount:0, lastKillAt:0, weapon:safePrimaryWeapon(p.primaryWeapon), ammo:freshAmmo(), equipment:freshEquipment(), reloadAt:0, reloadWeapon:'', weaponReadyAt:0, combatRev:Math.max(0,finiteNumber(p.combatRev,0))+1, ads:false, crouched:false, moveSpeed:0, verticalVelocity:0, serverGrounded:true, lastVerticalAt:now, lastStateAt:now, moveBudgetSec:MOVE_BUDGET_INITIAL_SEC, flashUntil:0, flashPower:0, flashDurationMs:0, knockVelocityX:0, knockVelocityZ:0 };
       if (reset.godMode) refreshUnlimitedResources(reset);
       socket.serializeAttachment(reset); players.push(publicPlayer(reset));
     }
@@ -1208,6 +1211,7 @@ export class GameRoom {
       lastJumpSeq: Math.max(0, Math.floor(finiteNumber(preserved?.lastJumpSeq, 0))),
       lastVerticalAt: Date.now(),
       lastStateAt: Date.now(),
+      moveBudgetSec: MOVE_BUDGET_INITIAL_SEC,
       knockVelocityX: 0, knockVelocityZ: 0,
     };
 
@@ -1571,8 +1575,15 @@ export class GameRoom {
     const reportedUserDx = desiredX - me.x - knockDx;
     const reportedUserDz = desiredZ - me.z - knockDz;
     const reportedUserDistance = Math.hypot(reportedUserDx, reportedUserDz);
-    const maxUserDistance = allowedSpeed * inputMagnitude * elapsed;
+    // A bounded server-time token budget absorbs normal WebSocket arrival jitter
+    // without trusting client timestamps. Unused credit is capped, so long-term
+    // movement speed remains server-authoritative and idle time cannot accumulate
+    // an unlimited burst.
+    let moveBudgetSec = clamp(finiteNumber(me.moveBudgetSec, MOVE_BUDGET_INITIAL_SEC) + elapsed, 0, MOVE_BUDGET_MAX_SEC);
+    const movementRate = allowedSpeed * inputMagnitude;
+    const maxUserDistance = movementRate * moveBudgetSec;
     const userDistance = Math.min(maxUserDistance, reportedUserDistance);
+    if (movementRate > 1e-6) moveBudgetSec = Math.max(0, moveBudgetSec - userDistance / movementRate);
     const inputNorm = inputMagnitude > 1e-6 ? Math.hypot(worldInputX, worldInputZ) || 1 : 1;
     const moveDx = inputMagnitude > 1e-6 ? worldInputX / inputNorm * userDistance : 0;
     const moveDz = inputMagnitude > 1e-6 ? worldInputZ / inputNorm * userDistance : 0;
@@ -1680,6 +1691,7 @@ export class GameRoom {
         ads,
         crouched,
         moveSpeed: elapsed > 0 ? actualTravel / elapsed : 0,
+        moveBudgetSec,
         serverGrounded,
         verticalVelocity,
         knockVelocityX,
@@ -1779,25 +1791,25 @@ export class GameRoom {
     }
     if (this.matchDirty) {
       await this.putMeta(meta); this.matchDirty = false;
-      await this.updateDirectory(this.liveSockets().length, meta);
+      void this.updateDirectory(this.liveSockets().length, meta);
     }
 
     if (now - this.lastBotBroadcastAt >= 100) {
       this.lastBotBroadcastAt = now;
       if (this.bots.length) this.broadcast({ t: "botState", bots: this.bots.map(publicBot) });
     }
-    if (now - this.lastPersistAt >= 2000) {
+    if (now - this.lastPersistAt >= BOT_PERSIST_INTERVAL_MS) {
       this.lastPersistAt = now;
       try { await this.ctx.storage.put("bots", this.bots); } catch {}
     }
     if (now - this.lastDirectoryHeartbeatAt >= DIRECTORY_HEARTBEAT_MS) {
       this.lastDirectoryHeartbeatAt = now;
-      await this.updateDirectory(this.liveSockets().length, meta);
+      void this.updateDirectory(this.liveSockets().length, meta);
     }
     if (now >= meta.expiresAt - 60_000) {
       meta.expiresAt = now + ROOM_MAX_LIFETIME_MS;
       await this.putMeta(meta);
-      await this.updateDirectory(this.liveSockets().length, meta);
+      void this.updateDirectory(this.liveSockets().length, meta);
     }
   }
 
@@ -1830,6 +1842,7 @@ export class GameRoom {
         verticalVelocity: 0, serverGrounded: true, lastVerticalAt: now,
         flashUntil: 0, flashPower: 0, flashDurationMs: 0,
         lastStateAt: now,
+        moveBudgetSec: MOVE_BUDGET_INITIAL_SEC,
         knockVelocityX: 0, knockVelocityZ: 0,
       };
       socket.serializeAttachment(respawned);
