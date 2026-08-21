@@ -1,6 +1,5 @@
 import {
-  PLAYER_HEIGHT, PLAYER_RADIUS, ARENA_LIMIT, STATIC_BOXES, BUILDINGS, PYRAMIDS, NATURAL_OBSTACLES,
-  terrainHeight, naturalGroundBase, worldSupportHeight, resolveCeilingCollision, MAX_STEP_HEIGHT, BUILDING_PARTS
+  PLAYER_HEIGHT, PLAYER_RADIUS, ARENA_LIMIT, terrainHeight, worldSupportHeight, resolveCeilingCollision
 } from './world-geometry.js';
 import {
   APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS,
@@ -8,6 +7,8 @@ import {
   DEFAULT_MATCH_RULES, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, GROUND_FOLLOW_DROP
 } from './game-config.js';
 import { normalizeMatchRules, defaultMatchState, normalizeMatchState, publicMatchState, matchRulesAreDefault } from './match-model.js';
+import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback } from './movement-model.js';
+import { worldBlocked, projectileSegmentHitZone, segmentFirstWorldHitT, segmentFirstWorldOcclusionT, segmentHitsObstacle, actorHasLineOfSight } from './server-collision.js';
 
 const GAME_VERSION = APP_VERSION;
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -24,11 +25,7 @@ const MOVE_BUDGET_INITIAL_SEC = 0.04;
 const MOVE_BUDGET_MAX_SEC = 0.18;
 const BOT_PERSIST_INTERVAL_MS = 10 * 1000;
 const BULLET_MAX_SEGMENT_DISTANCE = 6;
-const KNOCK_DAMPING_BASE = 0.08;
-const KNOCK_DAMPING_RATE = -Math.log(KNOCK_DAMPING_BASE);
 const THROWABLE_BROADCAST_MS = 33;
-const COLLISION_CELL_SIZE = 8;
-const COLLISION_CELL_HEIGHT = 3;
 const RECONNECT_GRACE_MS = 45 * 1000;
 const HEALTH_REGEN_TICK_MS = 500;
 const HEADSHOT_MULTIPLIER = 2;
@@ -61,16 +58,6 @@ function safeBotDifficulty(value) {
   const key = String(value || "normal").toLowerCase();
   return Object.prototype.hasOwnProperty.call(BOT_DIFFICULTIES, key) ? key : "normal";
 }
-
-const WORLD_OBSTACLES = [
-  ...STATIC_BOXES.map(o=>({type:'box',...o,playerSolid:true,projectileSolid:true,supportTop:true})),
-  ...PYRAMIDS.map(o=>({type:'pyramid',...o,playerSolid:false,projectileSolid:true})),
-  ...NATURAL_OBSTACLES.map(o=>({...o,playerSolid:true,projectileSolid:true})),
-  ...BUILDING_PARTS.filter(p=>p.playerSolid||p.projectileSolid).map(p=>({
-    type:'box',x:p.x,z:p.z,w:p.w,d:p.d,minY:p.bottomY,maxY:p.topY,
-    playerSolid:p.playerSolid,projectileSolid:p.projectileSolid,supportTop:p.supportTop,crouchStep:!!p.crouchStep,role:p.role
-  })),
-];
 
 function configuredOrigins(env) {
   const raw = String(env.GAME_ORIGINS || env.GAME_ORIGIN || "*");
@@ -282,39 +269,6 @@ function normalizeWorldSettings(value) {
 }
 
 
-function obstacleBaseY(o){
-  if(Number.isFinite(o.minY))return o.minY;
-  if(o.type==='tree'||o.type==='bush'||o.type==='rock')return naturalGroundBase(o.type,o.x,o.z,o.r);
-  return terrainHeight(o.x,o.z);
-}
-
-function segmentEllipsoidFirstT(x1,y1,z1,x2,y2,z2,cx,cy,cz,rx,ry,rz) {
-  rx=Math.max(.001,rx);ry=Math.max(.001,ry);rz=Math.max(.001,rz);
-  const ox=(x1-cx)/rx,oy=(y1-cy)/ry,oz=(z1-cz)/rz;
-  const dx=(x2-x1)/rx,dy=(y2-y1)/ry,dz=(z2-z1)/rz;
-  const c=ox*ox+oy*oy+oz*oz-1;
-  if(c<=0)return 0;
-  const a=dx*dx+dy*dy+dz*dz;if(a<=1e-12)return null;
-  const b=2*(ox*dx+oy*dy+oz*dz),disc=b*b-4*a*c;if(disc<0)return null;
-  const root=Math.sqrt(disc),t1=(-b-root)/(2*a),t2=(-b+root)/(2*a);
-  if(t1>=0&&t1<=1)return t1;if(t2>=0&&t2<=1)return t2;return null;
-}
-
-function projectileSegmentHitZone(target,x1,y1,z1,x2,y2,z2) {
-  const tx=finiteNumber(target?.x,0),ty=finiteNumber(target?.y,terrainHeight(tx,finiteNumber(target?.z,0))),tz=finiteNumber(target?.z,0);
-  const scaleY=target?.crouched?CROUCH_HEIGHT/PLAYER_HEIGHT:1;
-  const headT=segmentEllipsoidFirstT(x1,y1,z1,x2,y2,z2,tx,ty+1.66*scaleY,tz,.30,.30*scaleY,.30);
-  const torsoT=segmentEllipsoidFirstT(x1,y1,z1,x2,y2,z2,tx,ty+.99*scaleY,tz,.50,.57*scaleY,.40);
-  const lowerT=segmentEllipsoidFirstT(x1,y1,z1,x2,y2,z2,tx,ty+.39*scaleY,tz,.39,.40*scaleY,.34);
-  let bodyT=null;
-  if(torsoT!=null)bodyT=torsoT;
-  if(lowerT!=null&&(bodyT==null||lowerT<bodyT))bodyT=lowerT;
-  if(headT!=null&&(bodyT==null||headT<=bodyT+.012))return{zone:'head',t:headT};
-  if(bodyT!=null)return{zone:'body',t:bodyT};
-  if(headT!=null)return{zone:'head',t:headT};
-  return null;
-}
-
 function weaponSpreadRadians(player, weapon, settings) {
   const accuracy = WEAPON_ACCURACY[weapon] || WEAPON_ACCURACY.pistol;
   const moveRatio = clamp(finiteNumber(player?.moveSpeed, 0) / Math.max(0.1, settings.movement.runSpeed), 0, 1);
@@ -333,140 +287,6 @@ function spreadShotAngles(yaw, pitch, radius) {
     yaw: yaw + Math.cos(angle) * distance / yawScale,
     pitch: clamp(pitch + pitchOffset, -1.4, 1.4),
   };
-}
-
-function collisionCellKey(cx,cy,cz) { return `${cx},${cy},${cz}`; }
-let COLLISION_INDEX = null;
-function ensureCollisionIndex() {
-  if (COLLISION_INDEX) return COLLISION_INDEX;
-  const grid = new Map();
-  const entries = [];
-  for (const o of WORLD_OBSTACLES) {
-    const baseY = obstacleBaseY(o);
-    let minX, maxX, minZ, maxZ;
-    if (o.type === 'box') {
-      minX = o.x - o.w / 2; maxX = o.x + o.w / 2;
-      minZ = o.z - o.d / 2; maxZ = o.z + o.d / 2;
-    } else if (o.type === 'pyramid') {
-      minX = o.x - o.base / 2; maxX = o.x + o.base / 2;
-      minZ = o.z - o.base / 2; maxZ = o.z + o.base / 2;
-    } else {
-      minX = o.x - o.r; maxX = o.x + o.r;
-      minZ = o.z - o.r; maxZ = o.z + o.r;
-    }
-    const entry = { o, baseY, maxY: Number.isFinite(o.maxY)?o.maxY:baseY + o.h + ((o.type==='tree'||o.type==='bush'||o.type==='rock')?.18:0), minX, maxX, minZ, maxZ };
-    entries.push(entry);
-    const minCX = Math.floor(minX / COLLISION_CELL_SIZE), maxCX = Math.floor(maxX / COLLISION_CELL_SIZE);
-    const minCY = Math.floor(baseY / COLLISION_CELL_HEIGHT), maxCY = Math.floor(entry.maxY / COLLISION_CELL_HEIGHT);
-    const minCZ = Math.floor(minZ / COLLISION_CELL_SIZE), maxCZ = Math.floor(maxZ / COLLISION_CELL_SIZE);
-    for (let cx = minCX; cx <= maxCX; cx += 1) for (let cy = minCY; cy <= maxCY; cy += 1) for (let cz = minCZ; cz <= maxCZ; cz += 1) {
-      const key = collisionCellKey(cx,cy,cz);
-      let list = grid.get(key);
-      if (!list) { list = []; grid.set(key, list); }
-      list.push(entry);
-    }
-  }
-  COLLISION_INDEX = { grid, entries };
-  return COLLISION_INDEX;
-}
-function collisionCandidates(minX,maxX,minY,maxY,minZ,maxZ) {
-  const { grid } = ensureCollisionIndex();
-  const minCX = Math.floor(minX / COLLISION_CELL_SIZE), maxCX = Math.floor(maxX / COLLISION_CELL_SIZE);
-  const minCY = Math.floor(minY / COLLISION_CELL_HEIGHT), maxCY = Math.floor(maxY / COLLISION_CELL_HEIGHT);
-  const minCZ = Math.floor(minZ / COLLISION_CELL_SIZE), maxCZ = Math.floor(maxZ / COLLISION_CELL_SIZE);
-  const out = [], seen = new Set();
-  for (let cx = minCX; cx <= maxCX; cx += 1) for (let cy = minCY; cy <= maxCY; cy += 1) for (let cz = minCZ; cz <= maxCZ; cz += 1) {
-    const list = grid.get(collisionCellKey(cx,cy,cz));
-    if (!list) continue;
-    for (const entry of list) if (!seen.has(entry)) { seen.add(entry); out.push(entry); }
-  }
-  return out;
-}
-
-function worldBlocked(x,z,radius=.38,y=terrainHeight(x,z),playerHeight=PLAYER_HEIGHT){
-  if(Math.abs(x)>ARENA_LIMIT||Math.abs(z)>ARENA_LIMIT)return true;
-  for(const entry of collisionCandidates(x-radius,x+radius,y,y+playerHeight*.92,z-radius,z+radius)){
-    const o=entry.o;if(o.playerSolid===false||o.type==='pyramid')continue;
-    if(y+playerHeight*.92<=entry.baseY||y>=entry.maxY-.04)continue;
-    if(o.type==='box'){
-      if(x>entry.minX-radius&&x<entry.maxX+radius&&z>entry.minZ-radius&&z<entry.maxZ+radius)return true;
-    }else if(Math.hypot(x-o.x,z-o.z)<o.r+radius)return true;
-  }
-  return false;
-}
-function pointHitsEntry(entry,x,y,z){
-  const o=entry.o;if(o.projectileSolid===false||y<entry.baseY||y>entry.maxY)return false;
-  if(o.type==='box')return x>=entry.minX&&x<=entry.maxX&&z>=entry.minZ&&z<=entry.maxZ;
-  if(o.type==='pyramid'){
-    const t=clamp((y-entry.baseY)/o.h,0,1),half=o.base/2*(1-t);
-    return Math.abs(x-o.x)<=half&&Math.abs(z-o.z)<=half;
-  }
-  return Math.hypot(x-o.x,z-o.z)<=o.r;
-}
-function segmentAabbFirstT(x1,y1,z1,x2,y2,z2,minX,maxX,minY,maxY,minZ,maxZ){
-  let lo=0,hi=1;const axes=[[x1,x2-x1,minX,maxX],[y1,y2-y1,minY,maxY],[z1,z2-z1,minZ,maxZ]];
-  for(const [p,d,mn,mx] of axes){
-    if(Math.abs(d)<1e-10){if(p<mn||p>mx)return null;continue;}
-    let a=(mn-p)/d,b=(mx-p)/d;if(a>b)[a,b]=[b,a];lo=Math.max(lo,a);hi=Math.min(hi,b);if(lo>hi)return null;
-  }
-  return lo>=0&&lo<=1?lo:null;
-}
-function segmentCylinderFirstT(x1,y1,z1,x2,y2,z2,cx,cz,r,minY,maxY){
-  const ox=x1-cx,oz=z1-cz,dx=x2-x1,dz=z2-z1,dy=y2-y1;
-  let radialLo=0,radialHi=1;const a=dx*dx+dz*dz,b=2*(ox*dx+oz*dz),c=ox*ox+oz*oz-r*r;
-  if(a<=1e-12){if(c>0)return null;}
-  else{
-    const disc=b*b-4*a*c;if(disc<0)return null;const root=Math.sqrt(disc);let t1=(-b-root)/(2*a),t2=(-b+root)/(2*a);if(t1>t2)[t1,t2]=[t2,t1];
-    radialLo=Math.max(0,t1);radialHi=Math.min(1,t2);if(radialLo>radialHi)return null;
-  }
-  let yLo=0,yHi=1;
-  if(Math.abs(dy)<1e-12){if(y1<minY||y1>maxY)return null;}
-  else{let t1=(minY-y1)/dy,t2=(maxY-y1)/dy;if(t1>t2)[t1,t2]=[t2,t1];yLo=Math.max(0,t1);yHi=Math.min(1,t2);if(yLo>yHi)return null;}
-  const lo=Math.max(radialLo,yLo),hi=Math.min(radialHi,yHi);return lo<=hi?lo:null;
-}
-function segmentPyramidFirstT(entry,x1,y1,z1,x2,y2,z2){
-  const distance=Math.hypot(x2-x1,y2-y1,z2-z1),steps=Math.max(2,Math.ceil(distance/.025));let previousT=0,previousHit=pointHitsEntry(entry,x1,y1,z1);
-  if(previousHit)return 0;
-  for(let i=1;i<=steps;i++){
-    const t=i/steps,x=x1+(x2-x1)*t,y=y1+(y2-y1)*t,z=z1+(z2-z1)*t,hit=pointHitsEntry(entry,x,y,z);
-    if(hit){let lo=previousT,hi=t;for(let n=0;n<7;n++){const mid=(lo+hi)/2,mx=x1+(x2-x1)*mid,my=y1+(y2-y1)*mid,mz=z1+(z2-z1)*mid;if(pointHitsEntry(entry,mx,my,mz))hi=mid;else lo=mid;}return hi;}
-    previousT=t;previousHit=hit;
-  }
-  return null;
-}
-function segmentFirstObstacleT(x1,y1,z1,x2,y2,z2){
-  const minX=Math.min(x1,x2),maxX=Math.max(x1,x2),minY=Math.min(y1,y2),maxY=Math.max(y1,y2),minZ=Math.min(z1,z2),maxZ=Math.max(z1,z2);let best=null;
-  for(const entry of collisionCandidates(minX,maxX,minY,maxY,minZ,maxZ)){
-    const o=entry.o;if(o.projectileSolid===false)continue;let t=null;
-    if(o.type==='box')t=segmentAabbFirstT(x1,y1,z1,x2,y2,z2,entry.minX,entry.maxX,entry.baseY,entry.maxY,entry.minZ,entry.maxZ);
-    else if(o.type==='pyramid')t=segmentPyramidFirstT(entry,x1,y1,z1,x2,y2,z2);
-    else t=segmentCylinderFirstT(x1,y1,z1,x2,y2,z2,o.x,o.z,o.r,entry.baseY,entry.maxY);
-    if(t!=null&&(best==null||t<best))best=t;
-  }
-  return best;
-}
-function segmentTerrainFirstT(x1,y1,z1,x2,y2,z2,sampleStep=.04){
-  const distance=Math.hypot(x2-x1,y2-y1,z2-z1),steps=Math.max(2,Math.ceil(distance/Math.max(.02,sampleStep)));
-  const below=t=>{const x=x1+(x2-x1)*t,y=y1+(y2-y1)*t,z=z1+(z2-z1)*t;return y<=terrainHeight(x,z)+.06;};
-  if(below(0))return 0;let previous=0;
-  for(let i=1;i<=steps;i++){const t=i/steps;if(!below(t)){previous=t;continue;}let lo=previous,hi=t;for(let n=0;n<7;n++){const mid=(lo+hi)/2;if(below(mid))hi=mid;else lo=mid;}return hi;}
-  return null;
-}
-function segmentFirstWorldHitT(x1,y1,z1,x2,y2,z2){
-  const obstacle=segmentFirstObstacleT(x1,y1,z1,x2,y2,z2),terrain=segmentTerrainFirstT(x1,y1,z1,x2,y2,z2);
-  if(obstacle==null)return terrain;if(terrain==null)return obstacle;return Math.min(obstacle,terrain);
-}
-function segmentFirstWorldOcclusionT(x1,y1,z1,x2,y2,z2){
-  const obstacle=segmentFirstObstacleT(x1,y1,z1,x2,y2,z2),terrain=segmentTerrainFirstT(x1,y1,z1,x2,y2,z2,.35);
-  if(obstacle==null)return terrain;if(terrain==null)return obstacle;return Math.min(obstacle,terrain);
-}
-function segmentHitsObstacle(x1,y1,z1,x2,y2,z2){return segmentFirstObstacleT(x1,y1,z1,x2,y2,z2)!=null;}
-function actorHasLineOfSight(from, to) {
-  const fx = finiteNumber(from?.x, 0), fz = finiteNumber(from?.z, 0);
-  const tx = finiteNumber(to?.x, 0), tz = finiteNumber(to?.z, 0);
-  const fy = finiteNumber(from?.y, terrainHeight(fx, fz)) + 1.28;
-  const ty = finiteNumber(to?.y, terrainHeight(tx, tz)) + 1.08;
-  return segmentFirstWorldOcclusionT(fx, fy, fz, tx, ty, tz) == null;
 }
 
 function publicPlayer(attachment) {
@@ -619,7 +439,7 @@ export default {
     if (url.pathname === "/health") {
       return json(request, env, {
         ok: true,
-        service: "breachline-online",
+        service: "breach-online",
         protocol: PROTOCOL_VERSION,
         game: GAME_VERSION,
         mode: "durable-object-tactical-team-fps",
@@ -647,7 +467,7 @@ export default {
       const creatorGod = !!body.creatorGod;
       if (!clientId) return json(request, env, { error: "Missing client ID." }, 400);
       if (clientAuth.length < 32) return json(request, env, { error: "Missing client credential." }, 400);
-      if (botCount > MAX_BOTS) return json(request, env, { error: `Maximum ${MAX_BOTS} bots per world.` }, 400);
+      if (botCount > MAX_BOTS) return json(request, env, { error: `Maximum ${MAX_BOTS} bots per match.` }, 400);
 
       const directory = await directoryStub(env);
       const networkId = request.headers.get('CF-Connecting-IP') || request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
@@ -1058,20 +878,20 @@ export class GameRoom {
 
     if (url.pathname === "/create" && request.method === "POST") {
       const existing = await this.getMeta();
-      if (existing) return json(request, this.env, { error: "World already exists." }, 409);
+      if (existing) return json(request, this.env, { error: "Match already exists." }, 409);
 
       let body = {};
       try { body = await request.json(); } catch {}
       const code = normalizeRoomCode(body.code);
       const ownerClientId = safeClientId(body.ownerClientId);
       const ownerAuthHash = String(body.ownerAuthHash || '').toLowerCase().replace(/[^a-f0-9]/g, '').slice(0, 64);
-      if (!code || !ownerClientId || ownerAuthHash.length !== 64) return json(request, this.env, { error: "Invalid world owner credentials." }, 400);
+      if (!code || !ownerClientId || ownerAuthHash.length !== 64) return json(request, this.env, { error: "Invalid match owner credentials." }, 400);
       const blueBots = clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS);
       const redBots = clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS);
       const botCount = blueBots + redBots;
       const botDifficulty = safeBotDifficulty(body.botDifficulty);
       const creatorGod = !!body.creatorGod;
-      if (botCount > MAX_BOTS) return json(request, this.env, { error: `Maximum ${MAX_BOTS} bots per world.` }, 400);
+      if (botCount > MAX_BOTS) return json(request, this.env, { error: `Maximum ${MAX_BOTS} bots per match.` }, 400);
       const now = Date.now();
       const match = defaultMatchState(now, DEFAULT_MATCH_RULES);
       const meta = {
@@ -1100,7 +920,7 @@ export class GameRoom {
 
     if (url.pathname === "/ticket" && request.method === "POST") {
       const meta = await this.getMeta();
-      if (!meta) return json(request, this.env, { error: "World not found." }, 404);
+      if (!meta) return json(request, this.env, { error: "Match not found." }, 404);
       if (Math.floor(finiteNumber(meta.protocol, 0)) !== PROTOCOL_VERSION) return json(request, this.env, { error: "Match protocol mismatch. Create a new match.", protocol: PROTOCOL_VERSION }, 409);
       let body = {};
       try { body = await request.json(); } catch {}
@@ -1109,10 +929,10 @@ export class GameRoom {
     }
 
     let meta = await this.getMeta();
-    if (!meta) return json(request, this.env, { error: "World not found." }, 404);
+    if (!meta) return json(request, this.env, { error: "Match not found." }, 404);
     if (Math.floor(finiteNumber(meta.protocol, 0)) !== PROTOCOL_VERSION) return json(request, this.env, { error: "Match protocol mismatch. Create a new match.", protocol: PROTOCOL_VERSION }, 409);
     const fetchNow = Date.now();
-    if (fetchNow >= finiteNumber(meta.expiresAt, 0)) return json(request, this.env, { error: "World expired." }, 410);
+    if (fetchNow >= finiteNumber(meta.expiresAt, 0)) return json(request, this.env, { error: "Match expired." }, 410);
     if (finiteNumber(meta.expiresAt, 0) <= fetchNow + 60_000) {
       meta.expiresAt = fetchNow + ROOM_MAX_LIFETIME_MS;
       await this.putMeta(meta);
@@ -1152,7 +972,7 @@ export class GameRoom {
 
     const liveMembers = members.filter(({ attachment }) => attachment.clientId !== clientId && !attachment.replaced);
     if (liveMembers.length >= MAX_PLAYERS) {
-      return json(request, this.env, { error: "World is full." }, 409);
+      return json(request, this.env, { error: "Match is full." }, 409);
     }
     if (!expectedAuthHash) {
       if (Object.keys(authHashes).length >= MAX_CLIENT_IDENTITIES) return json(request, this.env, { error: "Match identity capacity reached. Create a new match." }, 429);
@@ -1420,7 +1240,7 @@ export class GameRoom {
       if (action === "admin") {
         const enabled = !!payload.enabled;
         if (targetId === meta.ownerClientId && !enabled) {
-          try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "The world owner cannot be demoted." })); } catch {}
+          try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "The match owner cannot be demoted." })); } catch {}
           return;
         }
         const admins = new Set(normalizeAdminIds(meta));
@@ -1485,7 +1305,7 @@ export class GameRoom {
       const blueBots = clamp(Math.floor(finiteNumber(payload.blueBots, meta.blueBots || 0)), 0, MAX_BOTS);
       const redBots = clamp(Math.floor(finiteNumber(payload.redBots, meta.redBots || 0)), 0, MAX_BOTS);
       if (blueBots + redBots > MAX_BOTS) {
-        try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: `Maximum ${MAX_BOTS} bots per world.` })); } catch {}
+        try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: `Maximum ${MAX_BOTS} bots per match.` })); } catch {}
         return;
       }
       meta.blueBots = blueBots;
@@ -1557,16 +1377,11 @@ export class GameRoom {
     const worldInputX = inputX * cos + inputZ * sin;
     const worldInputZ = -inputX * sin + inputZ * cos;
 
-    const priorKnockX = finiteNumber(me.knockVelocityX, 0);
-    const priorKnockZ = finiteNumber(me.knockVelocityZ, 0);
-    const knockDecay = elapsed > 0 ? Math.pow(KNOCK_DAMPING_BASE, elapsed) : 1;
-    const knockFactor = elapsed > 0 ? (1 - knockDecay) / KNOCK_DAMPING_RATE : 0;
-    const knockDx = priorKnockX * knockFactor;
-    const knockDz = priorKnockZ * knockFactor;
-    let knockVelocityX = priorKnockX * knockDecay;
-    let knockVelocityZ = priorKnockZ * knockDecay;
-    if (Math.abs(knockVelocityX) < 0.015) knockVelocityX = 0;
-    if (Math.abs(knockVelocityZ) < 0.015) knockVelocityZ = 0;
+    const knock = advanceKnockback(finiteNumber(me.knockVelocityX, 0), finiteNumber(me.knockVelocityZ, 0), elapsed);
+    const knockDx = knock.dx;
+    const knockDz = knock.dz;
+    let knockVelocityX = knock.xVelocity;
+    let knockVelocityZ = knock.zVelocity;
 
     // Client position is never allowed to increase the server movement budget.
     // It is only used to avoid applying a newly pressed input across time that
@@ -1655,15 +1470,13 @@ export class GameRoom {
       serverGrounded = true;
     } else {
       serverGrounded = false;
-      const verticalElapsed = clamp((now - finiteNumber(me.lastVerticalAt, now)) / 1000, 0, 0.15);
+      const verticalElapsed = clamp((now - finiteNumber(me.lastVerticalAt, now)) / 1000, 0, MAX_PLAYER_PHYSICS_STEP_SEC);
       if (verticalElapsed > 0) {
-        const nextY = y + verticalVelocity * verticalElapsed - 0.5 * gravity * verticalElapsed * verticalElapsed;
-        let nextVelocity = verticalVelocity - gravity * verticalElapsed;
-        const ceiling = resolveCeilingCollision(y, nextY, x, z, playerHeight);
+        const verticalStep = advanceVerticalMotion(y, verticalVelocity, gravity, verticalElapsed);
+        const ceiling = resolveCeilingCollision(y, verticalStep.y, x, z, playerHeight);
         y = ceiling.y;
         ceilingHit = ceiling.hit;
-        if (ceilingHit && nextVelocity > 0) nextVelocity = 0;
-        verticalVelocity = nextVelocity;
+        verticalVelocity = ceilingHit && verticalStep.velocity > 0 ? 0 : verticalStep.velocity;
       }
       const ground = worldSupportHeight(x, z, y);
       const clientGrounded = payload.grounded === true;
@@ -1791,7 +1604,7 @@ export class GameRoom {
     }
     if (this.matchDirty) {
       await this.putMeta(meta); this.matchDirty = false;
-      void this.updateDirectory(this.liveSockets().length, meta);
+      void this.updateDirectory(this.liveSockets().length, meta).catch(()=>{});
     }
 
     if (now - this.lastBotBroadcastAt >= 100) {
@@ -1804,12 +1617,12 @@ export class GameRoom {
     }
     if (now - this.lastDirectoryHeartbeatAt >= DIRECTORY_HEARTBEAT_MS) {
       this.lastDirectoryHeartbeatAt = now;
-      void this.updateDirectory(this.liveSockets().length, meta);
+      void this.updateDirectory(this.liveSockets().length, meta).catch(()=>{});
     }
     if (now >= meta.expiresAt - 60_000) {
       meta.expiresAt = now + ROOM_MAX_LIFETIME_MS;
       await this.putMeta(meta);
-      void this.updateDirectory(this.liveSockets().length, meta);
+      void this.updateDirectory(this.liveSockets().length, meta).catch(()=>{});
     }
   }
 
@@ -2359,7 +2172,6 @@ export class GameRoom {
       await this.removeDirectory(meta.code);
       return;
     }
-    const directory = await directoryStub(this.env);
     let blue = 0, red = 0;
     for (const socket of this.ctx.getWebSockets()) {
       const p = socket.deserializeAttachment() || {};
@@ -2369,7 +2181,9 @@ export class GameRoom {
     for (const bot of this.bots || []) {
       if (safeTeam(bot.team) === "red") red += 1; else blue += 1;
     }
+    const match = normalizeMatchState(meta.match, Date.now(), meta.match || DEFAULT_MATCH_RULES);
     try {
+      const directory = await directoryStub(this.env);
       await directory.fetch("https://directory.internal/upsert", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -2383,10 +2197,10 @@ export class GameRoom {
           blue,
           red,
           custom: !!meta.custom,
-          matchStatus: normalizeMatchState(meta.match, Date.now(), meta.match || DEFAULT_MATCH_RULES).status,
-          blueScore: normalizeMatchState(meta.match, Date.now(), meta.match || DEFAULT_MATCH_RULES).blueScore,
-          redScore: normalizeMatchState(meta.match, Date.now(), meta.match || DEFAULT_MATCH_RULES).redScore,
-          scoreLimit: normalizeMatchState(meta.match, Date.now(), meta.match || DEFAULT_MATCH_RULES).scoreLimit,
+          matchStatus: match.status,
+          blueScore: match.blueScore,
+          redScore: match.redScore,
+          scoreLimit: match.scoreLimit,
           createdAt: meta.createdAt,
           expiresAt: meta.expiresAt,
         }),
@@ -2395,8 +2209,8 @@ export class GameRoom {
   }
 
   async removeDirectory(code) {
-    const directory = await directoryStub(this.env);
     try {
+      const directory = await directoryStub(this.env);
       await directory.fetch("https://directory.internal/remove", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -2405,34 +2219,3 @@ export class GameRoom {
     } catch {}
   }
 }
-
-export const __test = Object.freeze({
-  makeRoomCode,
-  normalizeRoomCode,
-  normalizeWorldSettings,
-  activeFlashPower,
-  configuredOrigins,
-  safeJoinTicket,
-  makeJoinTicket,
-  WEAPON_SWITCH_LOCK_MS,
-  JOIN_TICKET_TTL_MS,
-  JOIN_TICKET_RATE_WINDOW_MS,
-  JOIN_TICKET_RATE_MAX_TOTAL,
-  JOIN_TICKET_RATE_MAX_PER_CLIENT,
-  MAX_CLIENT_IDENTITIES,
-  SIM_FIXED_STEP_MS,
-  SIM_MAX_CATCHUP_MS,
-  BULLET_MAX_SEGMENT_DISTANCE,
-  normalizeMatchRules,
-  defaultMatchState,
-  normalizeMatchState,
-  safePrimaryWeapon,
-  playerCanEquip,
-  worldBlocked,
-  weaponSpreadRadians,
-  projectileSegmentHitZone,
-  segmentFirstObstacleT,
-  segmentFirstWorldHitT,
-  segmentFirstWorldOcclusionT,
-  actorHasLineOfSight,
-});
