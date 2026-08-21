@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#090b0d">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest?v=1.18.7">
+<title>Breach v1.18.7</title>
+<link rel="stylesheet" href="ui.css?v=1.18.6">
+</head>
+<body>
+<svg class="svg-sprite" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-mark" viewBox="0 0 24 24"><path d="M5 4h8.5c3.2 0 5.5 1.7 5.5 4.4 0 1.9-1 3.2-2.8 4 2.2.7 3.3 2.1 3.3 4.1 0 2.8-2.4 4.5-6.1 4.5H5V4Z"/><path d="M9 8h4.1c1.2 0 1.9.5 1.9 1.4 0 .9-.7 1.5-1.9 1.5H9V8Zm0 6.5h4.6c1.3 0 2 .5 2 1.5s-.7 1.5-2 1.5H9v-3Z" class="cut"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m9 6 9 6-9 6V6Z"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5"/><path d="M19 11a7.5 7.5 0 1 0 .2 3"/></symbol>
+    <symbol id="i-full" viewBox="0 0 24 24"><path d="M8 4H4v4M16 4h4v4M8 20H4v-4M16 20h4v-4"/></symbol>
+    <symbol id="i-sound" viewBox="0 0 24 24"><path d="M5 9v6h4l4.5 3.5v-13L9 9H5Z"/><path d="M16.5 9.2a4 4 0 0 1 0 5.6M19 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
+    <symbol id="i-mute" viewBox="0 0 24 24"><path d="M5 9v6h4l4.5 3.5v-13L9 9H5Z"/><path d="m17 9 4 4m0-4-4 4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-enter" viewBox="0 0 24 24"><path d="M13 5h6v14h-6"/><path d="m10 8 4 4-4 4M4 12h10"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.5 19 6v5.5c0 4.5-2.8 7.5-7 9-4.2-1.5-7-4.5-7-9V6l7-2.5Z"/><path d="m9.2 12 1.8 1.8 3.9-4.4"/></symbol>
+    <symbol id="i-team" viewBox="0 0 24 24"><circle cx="8.5" cy="8" r="2.8"/><circle cx="16.5" cy="9.5" r="2.3"/><path d="M3.5 20c.2-3.8 1.9-5.8 5-5.8s4.9 2 5.1 5.8M14 15.5c3.8 0 6 1.5 6.5 4.5"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+    <symbol id="i-exit" viewBox="0 0 24 24"><path d="M10 4H5v16h5"/><path d="m14 8 4 4-4 4M8 12h10"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.5 1.5M16.5 16.5 18 18M18 6l-1.5 1.5M7.5 16.5 6 18"/><circle cx="12" cy="12" r="7"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></symbol>
+  </defs>
+</svg>
+<canvas id="game" draggable="false" aria-label="Breach gameplay"></canvas>
+
+<section id="boot" class="boot">
+  <div class="boot-card">
+    <div class="boot-emblem"><svg class="brand-icon"><use href="#i-mark"/></svg></div>
+    <div class="eyebrow">ONLINE TACTICAL FPS</div>
+    <h1>Breach</h1>
+    <div class="version" data-app-version></div>
+    <p>Fast gunplay. Live team combat. Built for short, aggressive matches.</p>
+    <button id="enterBtn" class="btn primary hero-action"><svg class="ui-icon"><use href="#i-play"/></svg><span>DEPLOY</span></button>
+    <div id="engineStatus" class="engine-status" role="status" aria-live="polite">LOADING 3D ENGINE</div>
+    <div id="iosInstallHint" class="ios-install-hint hide">
+      <b>iPhone Safari Fullscreen</b>
+      <span>Safari on iPhone does not provide webpage fullscreen for the game canvas. For the full-screen app experience: tap <b>Share</b> → <b>Add to Home Screen</b>, keep <b>Open as Web App</b> enabled, then launch Breach from the Home Screen.</span>
+      <button id="continueSafariBtn" class="btn">Continue in Safari</button>
+    </div>
+  </div>
+</section>
+
+<section id="rotateGate" class="boot hide">
+  <div class="boot-card">
+    <div class="rotate-icon">↻</div>
+    <h1>Landscape Required</h1>
+    <p id="rotateText">Rotate your device to landscape to continue.</p>
+    <button id="rotateFullBtn" class="btn primary">Try Landscape</button>
+  </div>
+</section>
+
+<section id="menu" class="menu hide">
+  <div class="menu-shell">
+    <header class="menu-header">
+      <div class="brand"><div class="logo"><svg class="brand-icon"><use href="#i-mark"/></svg></div><div class="brand-copy"><div class="eyebrow">LIVE COMBAT NETWORK</div><h1>Breach</h1><div class="version brand-version" data-app-version></div><p class="sub">Tactical team combat · persistent live sessions · instant deployment</p></div></div>
+      <div class="header-actions"><button id="musicBtn" class="btn icon-btn" title="Mute all audio" aria-label="Mute all audio"><svg class="ui-icon"><use id="musicIconUse" href="#i-sound"/></svg></button><button id="settingsBtn" class="btn icon-btn" title="Player settings" aria-label="Player settings"><svg class="ui-icon"><use href="#i-settings"/></svg></button><button id="menuFullBtn" class="btn icon-btn" title="Fullscreen" aria-label="Fullscreen"><svg class="ui-icon"><use href="#i-full"/></svg></button><button id="refreshBtn" class="btn icon-btn" title="Refresh matches" aria-label="Refresh matches"><svg class="ui-icon"><use href="#i-refresh"/></svg></button></div>
+    </header>
+
+    <div class="menu-grid">
+      <section class="panel operator-panel">
+        <div class="panel-title"><strong><svg class="mini-icon"><use href="#i-team"/></svg> Operator</strong><span>Name, team and loadout apply to Create + Join</span></div>
+        <div class="operator-row">
+          <div class="field operator-name"><label class="label" for="nameInput">Player name</label><input id="nameInput" class="input" maxlength="18" autocomplete="nickname" placeholder="Player"></div>
+          <div class="field operator-team">
+            <span class="label">Team</span>
+            <div class="team-picker" role="radiogroup" aria-label="Team selection">
+              <button type="button" class="team-option blue" data-team-choice="blue" aria-pressed="true"><span class="team-swatch"></span><span class="team-copy"><strong><span class="team-long">Blue Team</span><span class="team-short">Blue</span></strong><small>Friendly fire off</small></span></button>
+              <button type="button" class="team-option red" data-team-choice="red" aria-pressed="false"><span class="team-swatch"></span><span class="team-copy"><strong><span class="team-long">Red Team</span><span class="team-short">Red</span></strong><small>Friendly fire off</small></span></button>
+            </div>
+            <div id="teamSummary" class="team-summary"></div>
+          </div>
+          <label class="field operator-primary"><span class="label">Primary</span><select id="primaryWeapon" class="input"><option value="assault">Assault Rifle</option><option value="shotgun">Shotgun</option><option value="sniper">Sniper Rifle</option></select><small class="field-help">Pistol is always your secondary</small></label>
+        </div>
+      </section>
+
+      <section class="panel create-panel">
+        <div class="panel-title"><strong><svg class="mini-icon"><use href="#i-plus"/></svg> Create Match</strong><span>Standard rules unless a custom option is enabled</span></div>
+        <div class="bot-config-grid">
+          <label class="bot-team-field blue"><span class="bot-team-label">Blue bots</span><select id="blueBotCount" class="input"><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option></select></label>
+          <label class="bot-team-field red"><span class="bot-team-label">Red bots</span><select id="redBotCount" class="input"><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option></select></label>
+          <label class="bot-team-field"><span class="bot-team-label neutral">Difficulty</span><select id="botDifficulty" class="input"><option value="easy">Easy</option><option value="normal" selected>Normal</option><option value="hard">Hard</option><option value="elite">Elite</option></select></label>
+        </div>
+        <div class="create-options"><button id="godToggle" type="button" class="god-toggle" aria-pressed="false" title="Create a custom match with host invulnerability"><span class="god-icon"><svg class="ui-icon"><use href="#i-shield"/></svg></span><span class="god-copy"><strong>Host Invulnerability</strong><small>Marks this as a custom match</small></span><span id="godState" class="god-state">OFF</span></button></div><div class="create-footer"><div id="botTotal" class="bot-total">2 / 8 bots</div><button id="createBtn" class="btn primary action-btn"><svg class="ui-icon"><use href="#i-plus"/></svg><span>Create Match</span></button></div>
+      </section>
+
+      <section class="panel join-panel">
+        <div class="panel-title"><strong><svg class="mini-icon"><use href="#i-enter"/></svg> Join Match</strong><span>Join by code or live session</span></div>
+        <div class="field"><label class="label" for="codeInput">Match code</label><div class="join-row"><input id="codeInput" class="input" maxlength="4" autocapitalize="characters" placeholder="ABCD"><button id="joinBtn" class="btn primary icon-label"><svg class="ui-icon"><use href="#i-enter"/></svg><span>Join</span></button></div></div>
+        <div class="match-section"><div class="section-title"><span>Live matches</span><span id="matchCount"></span></div><div id="matchList" class="match-list" aria-live="polite"><div class="empty">Loading matches…</div></div></div>
+      </section>
+    </div>
+
+    <footer class="menu-footer"><div id="menuStatus" class="status" role="status" aria-live="polite">Ready.</div><div class="controls-note" aria-label="Desktop controls"><span>WASD</span><span>◉ FIRE</span><span>⌖ ADS</span><span>C CROUCH</span><span>R RELOAD</span><span>1 PRIMARY · 2 PISTOL · Q SWAP</span><span>F FLASH</span><span>G STICKY</span><span>HOLD TAB SCORE</span></div></footer>
+  </div>
+</section>
+
+<section id="pause" class="pause hide">
+  <div class="pause-card">
+    <div class="pause-head"><div><div class="eyebrow">SESSION CONTROL</div><h2>Match Menu</h2><div class="version brand-version" data-app-version></div><div class="pause-context"><span id="pauseRoom">Match ----</span><span id="pauseLoadout">Pistol · 12 rounds</span></div></div><span id="pauseTeamBadge" class="pause-team">BLUE TEAM</span></div>
+    <button id="resumeBtn" class="btn primary pause-resume"><svg class="ui-icon"><use href="#i-play"/></svg><span>Resume</span></button>
+    <div class="pause-group">
+      <div class="pause-group-title">PLAYER</div>
+      <div class="pause-player-actions">
+        <button id="pauseSettingsBtn" class="btn"><svg class="ui-icon"><use href="#i-settings"/></svg><span>Settings</span></button>
+        <button id="teamSwitchBtn" class="btn"><svg class="ui-icon"><use href="#i-team"/></svg><span id="teamSwitchText">Switch on Respawn</span></button>
+        <button id="adminBtn" class="btn pause-admin-badge hide"><svg class="ui-icon"><use href="#i-shield"/></svg><span>Match Control</span></button>
+      </div>
+    </div>
+    <div class="pause-group">
+      <div class="pause-group-title">SESSION</div>
+      <div class="pause-session-actions">
+        <button id="copyBtn" class="btn"><svg class="ui-icon"><use href="#i-copy"/></svg><span>Invite</span></button>
+        <button id="fullBtn" class="btn"><svg class="ui-icon"><use href="#i-full"/></svg><span>Fullscreen</span></button>
+        <button id="leaveBtn" class="btn danger"><svg class="ui-icon"><use href="#i-exit"/></svg><span>Leave</span></button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="settingsPanel" class="admin-panel hide" aria-label="Player settings">
+  <div class="admin-shell settings-shell">
+    <header class="admin-head"><div><div class="eyebrow">PLAYER SETTINGS</div><h2>Settings</h2><div class="admin-sub">Saved on this device.</div></div><button id="settingsCloseBtn" class="btn icon-btn" aria-label="Close settings"><svg class="ui-icon"><use href="#i-close"/></svg></button></header>
+    <div class="settings-grid player-settings-grid">
+      <label class="setting"><span>Look Sensitivity</span><input id="playerLookSensitivity" type="range" min="0.5" max="2" step="0.05"><output id="playerLookSensitivityValue"></output></label>
+      <label class="setting"><span>ADS Sensitivity</span><input id="playerAdsSensitivity" type="range" min="0.35" max="1.25" step="0.05"><output id="playerAdsSensitivityValue"></output></label>
+      <label class="setting"><span>Touch Sensitivity</span><input id="playerTouchSensitivity" type="range" min="0.5" max="2" step="0.05"><output id="playerTouchSensitivityValue"></output></label>
+      <label class="setting"><span>Master Volume</span><input id="playerMasterVolume" type="range" min="0" max="1" step="0.05"><output id="playerMasterVolumeValue"></output></label>
+      <label class="setting"><span>SFX Volume</span><input id="playerSfxVolume" type="range" min="0" max="1" step="0.05"><output id="playerSfxVolumeValue"></output></label>
+      <label class="setting"><span>Music Volume</span><input id="playerMusicVolume" type="range" min="0" max="1" step="0.05"><output id="playerMusicVolumeValue"></output></label>
+      <label class="setting"><span>Graphics</span><select id="playerGraphics" class="input"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+    </div>
+    <footer class="admin-foot"><div class="admin-status">Changes apply immediately.</div><button id="settingsDefaultsBtn" class="btn">Defaults</button><button id="settingsDoneBtn" class="btn primary">Done</button></footer>
+  </div>
+</section>
+
+<section id="adminPanel" class="admin-panel hide" aria-label="Match control">
+  <div class="admin-shell" data-page="match">
+    <header class="admin-head"><div><div class="eyebrow">CUSTOM MATCH CONTROL</div><h2>Match Control</h2><div class="admin-sub">Changing standard rules marks the room as CUSTOM.</div></div><button id="adminCloseBtn" class="btn icon-btn" aria-label="Close match control"><svg class="ui-icon"><use href="#i-close"/></svg></button></header>
+    <div class="admin-tabs" role="tablist"><button class="admin-tab active" data-admin-tab="match">MATCH</button><button class="admin-tab" data-admin-tab="gameplay">GAMEPLAY</button><button class="admin-tab" data-admin-tab="advanced">ADVANCED</button><button class="admin-tab" data-admin-tab="bots">BOTS</button><button class="admin-tab" data-admin-tab="players">PLAYERS</button></div>
+    <div id="adminMatch" class="admin-page" data-admin-page="match">
+      <div class="settings-grid"><label class="setting"><span>Score Limit</span><input id="setScoreLimit" type="number" min="5" max="100" step="5"></label><label class="setting"><span>Time Limit (minutes)</span><input id="setTimeLimit" type="number" min="2" max="30" step="1"></label></div>
+      <div class="admin-note">Standard: 30 eliminations or 8 minutes. The server owns score, winner and round reset.</div>
+    </div>
+    <div id="adminGameplay" class="admin-page hide" data-admin-page="gameplay">
+      <div class="settings-grid"><label class="setting"><span>Run Speed</span><input id="setRunSpeed" type="number" min="3" max="16" step="0.1"></label><label class="setting"><span>ADS Walk Speed</span><input id="setWalkSpeed" type="number" min="1.5" max="9" step="0.1"></label><label class="setting"><span>Jump Height</span><input id="setJumpHeight" type="number" min="0.4" max="5" step="0.1"></label><label class="setting"><span>Gravity</span><input id="setGravity" type="number" min="8" max="40" step="1"></label><label class="setting"><span>Health Regen Delay (s)</span><input id="setRegenDelay" type="number" min="0" max="15" step="0.5"></label><label class="setting"><span>Health Regen / Second</span><input id="setRegenRate" type="number" min="0" max="30" step="0.5"></label><label class="setting"><span>Respawn Delay (s)</span><input id="setRespawnDelay" type="number" min="1" max="10" step="0.1"></label></div>
+    </div>
+    <div id="adminAdvanced" class="admin-page hide" data-admin-page="advanced">
+      <div class="weapon-settings-grid">
+        <section class="weapon-settings-card"><strong>PISTOL</strong><label>Damage<input id="setPistolDamage" type="number" min="1" max="400" step="1"></label><label>Projectile Velocity<input id="setPistolSpeed" type="number" min="10" max="400" step="1"></label><label>Reload Time (s)<input id="setPistolReload" type="number" min="0.1" max="5" step="0.05"></label><label>Rate (RPM)<input id="setPistolCooldown" type="number" min="24" max="1200" step="5"></label></section>
+        <section class="weapon-settings-card assault"><strong>ASSAULT RIFLE</strong><label>Damage<input id="setAssaultDamage" type="number" min="1" max="400" step="1"></label><label>Projectile Velocity<input id="setAssaultSpeed" type="number" min="10" max="400" step="1"></label><label>Reload Time (s)<input id="setAssaultReload" type="number" min="0.1" max="5" step="0.05"></label><label>Rate (RPM)<input id="setAssaultCooldown" type="number" min="24" max="1200" step="5"></label></section>
+        <section class="weapon-settings-card"><strong>SHOTGUN</strong><label>Pellet Damage<input id="setShotgunDamage" type="number" min="1" max="100" step="1"></label><label>Projectile Velocity<input id="setShotgunSpeed" type="number" min="10" max="200" step="1"></label><label>Reload Time (s)<input id="setShotgunReload" type="number" min="0.1" max="5" step="0.05"></label><label>Rate (RPM)<input id="setShotgunCooldown" type="number" min="24" max="600" step="5"></label></section>
+        <section class="weapon-settings-card sniper"><strong>SNIPER</strong><label>Damage<input id="setSniperDamage" type="number" min="1" max="400" step="1"></label><label>Projectile Velocity<input id="setSniperSpeed" type="number" min="10" max="400" step="1"></label><label>Reload Time (s)<input id="setSniperReload" type="number" min="0.1" max="5" step="0.05"></label><label>Rate (RPM)<input id="setSniperCooldown" type="number" min="24" max="1200" step="5"></label></section>
+      </div>
+    </div>
+    <div id="adminBots" class="admin-page hide" data-admin-page="bots"><div class="settings-grid bot-admin-grid"><label class="setting"><span>Blue Bots</span><input id="setBlueBots" type="number" min="0" max="8" step="1"></label><label class="setting"><span>Red Bots</span><input id="setRedBots" type="number" min="0" max="8" step="1"></label><label class="setting"><span>Difficulty</span><select id="setBotDifficulty" class="input"><option value="easy">Easy</option><option value="normal">Normal</option><option value="hard">Hard</option><option value="elite">Elite</option></select></label><div class="setting"><span>Difficulty Effect</span><div id="botDifficultyHelp" class="input difficulty-help"></div></div></div></div>
+    <div id="adminPlayers" class="admin-page hide" data-admin-page="players"><div id="adminPlayerList" class="admin-player-list"></div></div>
+    <footer class="admin-foot"><div id="adminStatus" class="admin-status" role="status" aria-live="polite">Standard match rules are active.</div><button id="adminResetBtn" class="btn">Reset This Tab</button><button id="adminSaveBtn" class="btn primary">Apply</button></footer>
+  </div>
+</section>
+<script>
+(()=>{
+  window.__breachModuleBooted=false;
+  const fail=(message)=>{const el=document.getElementById('engineStatus');if(el){el.textContent=message;el.className='engine-status error';}};
+  window.addEventListener('error',(event)=>{const target=event.target;if(target&&target!==window&&(target.tagName==='SCRIPT'||target.tagName==='LINK'))fail('CLIENT ASSET LOAD FAILED');},true);
+  window.addEventListener('unhandledrejection',()=>{if(!window.__breachModuleBooted)fail('CLIENT MODULE LOAD FAILED');});
+})();
+</script>
+
+<script type="module" src="client.js?v=1.18.7"></script>
+</body>
+</html>
