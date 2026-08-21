@@ -1,16 +1,17 @@
-export const APP_VERSION = '1.16.23';
-export const PROTOCOL_VERSION = 34;
+export const APP_VERSION = '1.17.0';
+export const PROTOCOL_VERSION = 36;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
 export const TEAM_COLORS = Object.freeze({ blue:'#54a9ff', red:'#ff6873' });
 
 export const WEAPON_ORDER = Object.freeze(['pistol','assault','shotgun','sniper']);
+export const PRIMARY_WEAPONS = Object.freeze(['assault','shotgun','sniper']);
 export const WEAPON_SPECS = Object.freeze({
   pistol: Object.freeze({ name:'PISTOL', short:'PST', mag:12, damage:34, reloadMs:475, cooldownMs:190, bulletSpeed:42, lifetimeMs:3200, adsFov:54 }),
-  assault: Object.freeze({ name:'ASSAULT RIFLE', short:'AR', mag:12, damage:26, reloadMs:650, cooldownMs:105, bulletSpeed:82, lifetimeMs:3400, adsFov:46 }),
+  assault: Object.freeze({ name:'ASSAULT RIFLE', short:'AR', mag:24, damage:26, reloadMs:850, cooldownMs:105, bulletSpeed:82, lifetimeMs:3400, adsFov:46 }),
   shotgun: Object.freeze({ name:'SHOTGUN', short:'SG', mag:6, damage:18, reloadMs:980, cooldownMs:760, bulletSpeed:68, lifetimeMs:1800, adsFov:52 }),
-  sniper: Object.freeze({ name:'SNIPER', short:'SNP', mag:12, damage:120, reloadMs:1100, cooldownMs:950, bulletSpeed:180, lifetimeMs:3600, adsFov:18 }),
+  sniper: Object.freeze({ name:'SNIPER', short:'SNP', mag:6, damage:120, reloadMs:1100, cooldownMs:950, bulletSpeed:180, lifetimeMs:3600, adsFov:18 }),
 });
 
 export const WEAPON_ACCURACY = Object.freeze({
@@ -22,8 +23,11 @@ export const WEAPON_ACCURACY = Object.freeze({
 
 export const CROUCH_HEIGHT = 1.08;
 export const CROUCH_SPEED_MULTIPLIER = 0.62;
-
 export const EQUIPMENT_CAPS = Object.freeze({ flash: 2, sticky: 2 });
+
+export const DEFAULT_MATCH_RULES = Object.freeze({ scoreLimit:30, timeLimitMs:8*60*1000 });
+export const MATCH_WARMUP_MS = 4000;
+export const MATCH_END_MS = 7000;
 
 export const DEFAULT_WORLD_SETTINGS = Object.freeze({
   movement: Object.freeze({ runSpeed:8.4, walkSpeed:4.6, jumpHeight:1.6, gravity:23 }),

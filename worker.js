@@ -4,9 +4,10 @@ import {
 } from './world-geometry.js';
 import {
   APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS,
-  WEAPON_ORDER, WEAPON_SPECS, WEAPON_ACCURACY, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, DEFAULT_WORLD_SETTINGS,
-  TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, GROUND_FOLLOW_DROP
+  WEAPON_ORDER, PRIMARY_WEAPONS, WEAPON_SPECS, WEAPON_ACCURACY, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, DEFAULT_WORLD_SETTINGS,
+  DEFAULT_MATCH_RULES, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, GROUND_FOLLOW_DROP
 } from './game-config.js';
+import { normalizeMatchRules, defaultMatchState, normalizeMatchState, publicMatchState, matchRulesAreDefault } from './match-model.js';
 
 const GAME_VERSION = APP_VERSION;
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -17,6 +18,11 @@ const ALARM_MIN_FUTURE_MS = 5 * 1000;
 const DIRECTORY_LEASE_MS = 30 * 1000;
 const DIRECTORY_HEARTBEAT_MS = 10 * 1000;
 const SIM_MIN_STEP_MS = 16;
+const SIM_FIXED_STEP_MS = 1000 / 30;
+const SIM_MAX_CATCHUP_MS = 400;
+const BULLET_MAX_SEGMENT_DISTANCE = 6;
+const KNOCK_DAMPING_BASE = 0.08;
+const KNOCK_DAMPING_RATE = -Math.log(KNOCK_DAMPING_BASE);
 const THROWABLE_BROADCAST_MS = 33;
 const COLLISION_CELL_SIZE = 8;
 const COLLISION_CELL_HEIGHT = 3;
@@ -30,6 +36,10 @@ const CREATE_RATE_MAX_GLOBAL = 60;
 const WEAPON_SWITCH_LOCK_MS = 120;
 const JOIN_TICKET_TTL_MS = 30 * 1000;
 const JOIN_TICKET_MAX = 64;
+const JOIN_TICKET_RATE_WINDOW_MS = 60 * 1000;
+const JOIN_TICKET_RATE_MAX_TOTAL = 80;
+const JOIN_TICKET_RATE_MAX_PER_CLIENT = 10;
+const MAX_CLIENT_IDENTITIES = 64;
 const WEAPONS = Object.freeze(Object.fromEntries(WEAPON_ORDER.map((name) => [name, Object.freeze({
   mag: WEAPON_SPECS[name].mag,
   lifetimeMs: WEAPON_SPECS[name].lifetimeMs,
@@ -199,6 +209,14 @@ function isRoomAdmin(meta, clientId) {
 function safeWeapon(value) {
   return Object.prototype.hasOwnProperty.call(WEAPONS, value) ? value : "pistol";
 }
+function safePrimaryWeapon(value) {
+  const weapon = safeWeapon(value);
+  return PRIMARY_WEAPONS.includes(weapon) ? weapon : 'assault';
+}
+function playerCanEquip(player, weapon) {
+  const safe = safeWeapon(weapon);
+  return safe === 'pistol' || safe === safePrimaryWeapon(player?.primaryWeapon);
+}
 
 function safeEquipmentKind(value){return Object.prototype.hasOwnProperty.call(EQUIPMENT_CAPS,value)?value:'flash';}
 function freshAmmo(){return Object.fromEntries(Object.entries(WEAPONS).map(([name,spec])=>[name,spec.mag]));}
@@ -259,6 +277,7 @@ function normalizeWorldSettings(value) {
     weapons: { pistol: weapon("pistol"), assault: weapon("assault"), shotgun: weapon("shotgun"), sniper: weapon("sniper") },
   };
 }
+
 
 function obstacleBaseY(o){
   if(Number.isFinite(o.minY))return o.minY;
@@ -423,8 +442,8 @@ function segmentFirstObstacleT(x1,y1,z1,x2,y2,z2){
   }
   return best;
 }
-function segmentTerrainFirstT(x1,y1,z1,x2,y2,z2){
-  const distance=Math.hypot(x2-x1,y2-y1,z2-z1),steps=Math.max(2,Math.ceil(distance/.04));
+function segmentTerrainFirstT(x1,y1,z1,x2,y2,z2,sampleStep=.04){
+  const distance=Math.hypot(x2-x1,y2-y1,z2-z1),steps=Math.max(2,Math.ceil(distance/Math.max(.02,sampleStep)));
   const below=t=>{const x=x1+(x2-x1)*t,y=y1+(y2-y1)*t,z=z1+(z2-z1)*t;return y<=terrainHeight(x,z)+.06;};
   if(below(0))return 0;let previous=0;
   for(let i=1;i<=steps;i++){const t=i/steps;if(!below(t)){previous=t;continue;}let lo=previous,hi=t;for(let n=0;n<7;n++){const mid=(lo+hi)/2;if(below(mid))hi=mid;else lo=mid;}return hi;}
@@ -434,13 +453,17 @@ function segmentFirstWorldHitT(x1,y1,z1,x2,y2,z2){
   const obstacle=segmentFirstObstacleT(x1,y1,z1,x2,y2,z2),terrain=segmentTerrainFirstT(x1,y1,z1,x2,y2,z2);
   if(obstacle==null)return terrain;if(terrain==null)return obstacle;return Math.min(obstacle,terrain);
 }
+function segmentFirstWorldOcclusionT(x1,y1,z1,x2,y2,z2){
+  const obstacle=segmentFirstObstacleT(x1,y1,z1,x2,y2,z2),terrain=segmentTerrainFirstT(x1,y1,z1,x2,y2,z2,.35);
+  if(obstacle==null)return terrain;if(terrain==null)return obstacle;return Math.min(obstacle,terrain);
+}
 function segmentHitsObstacle(x1,y1,z1,x2,y2,z2){return segmentFirstObstacleT(x1,y1,z1,x2,y2,z2)!=null;}
 function actorHasLineOfSight(from, to) {
   const fx = finiteNumber(from?.x, 0), fz = finiteNumber(from?.z, 0);
   const tx = finiteNumber(to?.x, 0), tz = finiteNumber(to?.z, 0);
   const fy = finiteNumber(from?.y, terrainHeight(fx, fz)) + 1.28;
   const ty = finiteNumber(to?.y, terrainHeight(tx, tz)) + 1.08;
-  return !segmentHitsObstacle(fx, fy, fz, tx, ty, tz);
+  return segmentFirstWorldOcclusionT(fx, fy, fz, tx, ty, tz) == null;
 }
 
 function publicPlayer(attachment) {
@@ -460,6 +483,8 @@ function publicPlayer(attachment) {
     ads: !!attachment.ads,
     crouched: !!attachment.crouched,
     weapon: safeWeapon(attachment.weapon),
+    primaryWeapon: safePrimaryWeapon(attachment.primaryWeapon),
+    pendingTeam: attachment.pendingTeam ? safeTeam(attachment.pendingTeam) : '',
     ammo: normalizeAmmo(attachment.ammo),
     equipment: normalizeEquipment(attachment.equipment),
     reloadAt: attachment.reloadAt || 0,
@@ -490,6 +515,7 @@ function publicBot(bot) {
     yaw: bot.yaw,
     pitch: 0,
     weapon: "assault",
+    primaryWeapon: 'assault',
     ads: false,
     reloadAt: bot.reloadAt || 0,
     reloadWeapon: bot.reloadWeapon || "",
@@ -499,7 +525,7 @@ function publicBot(bot) {
 }
 
 function sendLoadout(socket, me, extra = {}) {
-  try { socket.send(JSON.stringify({ t:'loadout', weapon:safeWeapon(me.weapon), ammo:normalizeAmmo(me.ammo), reloadAt:me.reloadAt||0, reloadWeapon:me.reloadWeapon||'', rev:Math.max(0,Math.floor(finiteNumber(me.combatRev,0))), ...extra })); } catch {}
+  try { socket.send(JSON.stringify({ t:'loadout', weapon:safeWeapon(me.weapon), primaryWeapon:safePrimaryWeapon(me.primaryWeapon), ammo:normalizeAmmo(me.ammo), reloadAt:me.reloadAt||0, reloadWeapon:me.reloadWeapon||'', rev:Math.max(0,Math.floor(finiteNumber(me.combatRev,0))), ...extra })); } catch {}
 }
 
 const TEAM_SPAWNS = {
@@ -529,6 +555,7 @@ function makeBot(index, team, teamIndex) {
     reloadAt: 0,
     reloadWeapon: "",
     weapon: "assault",
+    primaryWeapon: 'assault',
     lastHitAt: 0,
     regenAt: 0,
     kills: 0,
@@ -614,6 +641,7 @@ export default {
       const redBots = clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS);
       const botCount = blueBots + redBots;
       const botDifficulty = safeBotDifficulty(body.botDifficulty);
+      const creatorGod = !!body.creatorGod;
       if (!clientId) return json(request, env, { error: "Missing client ID." }, 400);
       if (clientAuth.length < 32) return json(request, env, { error: "Missing client credential." }, 400);
       if (botCount > MAX_BOTS) return json(request, env, { error: `Maximum ${MAX_BOTS} bots per world.` }, 400);
@@ -639,7 +667,7 @@ export default {
         const created = await room.fetch('https://room.internal/create', {
           method: "POST",
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ code, ownerClientId: clientId, ownerAuthHash, blueBots, redBots, botDifficulty }),
+          body: JSON.stringify({ code, ownerClientId: clientId, ownerAuthHash, blueBots, redBots, botDifficulty, creatorGod }),
         });
         if (created.status === 201) {
           return json(request, env, { code }, 201);
@@ -750,6 +778,11 @@ export class WorldDirectory {
         createdAt: finiteNumber(body.createdAt, now),
         updatedAt: now,
         expiresAt: finiteNumber(body.expiresAt, now + ROOM_MAX_LIFETIME_MS),
+        custom: !!body.custom,
+        matchStatus: String(body.matchStatus || 'waiting'),
+        blueScore: Math.max(0, Math.floor(finiteNumber(body.blueScore, 0))),
+        redScore: Math.max(0, Math.floor(finiteNumber(body.redScore, 0))),
+        scoreLimit: clamp(Math.floor(finiteNumber(body.scoreLimit, DEFAULT_MATCH_RULES.scoreLimit)), 5, 100),
       };
       await this.ctx.storage.put("rooms", rooms);
       return new Response("ok");
@@ -777,11 +810,14 @@ export class GameRoom {
     this.bullets = new Map();
     this.throwables = new Map();
     this.lastSimAt = 0;
+    this.simAccumulatorMs = 0;
     this.lastBotBroadcastAt = 0;
     this.lastPersistAt = 0;
     this.lastDirectoryHeartbeatAt = 0;
     this.metaCache = null;
     this.socketRate = new WeakMap();
+    this.joinTicketRate = { windowAt:0, total:0, clients:new Map() };
+    this.matchDirty = false;
   }
 
   async getMeta() {
@@ -815,7 +851,7 @@ export class GameRoom {
       : type === 'state' ? { rate: 55, burst: 80 }
       : type === 'simTick' ? { rate: 40, burst: 60 }
       : type === 'fire' ? { rate: 24, burst: 30 }
-      : ['throw','reload','weapon','team','god','adminPlayer','adminSettings','adminBots'].includes(type) ? { rate: 14, burst: 22 }
+      : ['throw','reload','weapon','team','god','adminPlayer','adminSettings','adminMatch','adminBots'].includes(type) ? { rate: 14, burst: 22 }
       : ['ping','combatSync'].includes(type) ? { rate: 8, burst: 12 }
       : { rate: 30, burst: 45 };
     let state = this.socketRate.get(socket);
@@ -877,7 +913,77 @@ export class GameRoom {
       this.bots = makeBots(counts.blueBots, counts.redBots);
       await this.ctx.storage.put("bots", this.bots);
     }
+    meta.match = normalizeMatchState(meta.match, Date.now(), meta.match || DEFAULT_MATCH_RULES);
     this.lastSimAt = Date.now();
+    this.simAccumulatorMs = 0;
+  }
+
+  startWarmupIfWaiting(meta, now = Date.now()) {
+    const match = normalizeMatchState(meta.match, now, meta.match || DEFAULT_MATCH_RULES);
+    if (match.status !== 'waiting') { meta.match = match; return false; }
+    Object.assign(match, { status:'warmup', warmupEndsAt:now + MATCH_WARMUP_MS, startedAt:0, endsAt:0, endedAt:0, restartAt:0, winner:'', reason:'', updatedAt:now });
+    meta.match = match; this.matchDirty = true;
+    return true;
+  }
+
+  broadcastMatch(meta, now = Date.now()) {
+    this.broadcast({ t:'match', match:publicMatchState(meta.match, now), custom:!!meta.custom });
+  }
+
+  finishMatch(meta, winner, reason, now = Date.now()) {
+    const match = normalizeMatchState(meta.match, now, meta.match || DEFAULT_MATCH_RULES);
+    if (match.status === 'ended') return false;
+    Object.assign(match, { status:'ended', endedAt:now, restartAt:now + MATCH_END_MS, winner: winner || 'draw', reason:String(reason||'').slice(0,24), updatedAt:now });
+    this.bullets.clear(); this.throwables.clear();
+    meta.match = match; this.matchDirty = true; this.broadcastMatch(meta, now);
+    return true;
+  }
+
+  resetRound(meta, now = Date.now()) {
+    const old = normalizeMatchState(meta.match, now, meta.match || DEFAULT_MATCH_RULES);
+    meta.match = { ...defaultMatchState(now, old), round:old.round + 1, status:'warmup', warmupEndsAt:now + MATCH_WARMUP_MS, scoreLimit:old.scoreLimit, timeLimitMs:old.timeLimitMs };
+    this.bullets.clear(); this.throwables.clear();
+    const players=[];
+    let index=0;
+    for (const socket of this.ctx.getWebSockets()) {
+      const p = socket.deserializeAttachment() || {};
+      if (!p.clientId || p.replaced) continue;
+      const team = p.pendingTeam ? safeTeam(p.pendingTeam) : safeTeam(p.team);
+      const spawn = spawnForTeam(team, index++);
+      const reset = { ...p, ...spawn, team, pendingTeam:'', hp:100, wastedUntil:0, lastHitAt:0, regenAt:0, kills:0, deaths:0, multiKillCount:0, lastKillAt:0, weapon:safePrimaryWeapon(p.primaryWeapon), ammo:freshAmmo(), equipment:freshEquipment(), reloadAt:0, reloadWeapon:'', weaponReadyAt:0, combatRev:Math.max(0,finiteNumber(p.combatRev,0))+1, ads:false, crouched:false, moveSpeed:0, verticalVelocity:0, serverGrounded:true, lastVerticalAt:now, lastStateAt:now, flashUntil:0, flashPower:0, flashDurationMs:0, knockVelocityX:0, knockVelocityZ:0 };
+      if (reset.godMode) refreshUnlimitedResources(reset);
+      socket.serializeAttachment(reset); players.push(publicPlayer(reset));
+    }
+    this.bots = makeBots(meta.blueBots || 0, meta.redBots || 0);
+    this.matchDirty = true;
+    this.broadcast({ t:'matchReset', match:publicMatchState(meta.match, now), players, bots:this.bots.map(publicBot), custom:!!meta.custom });
+  }
+
+  stepMatch(now, meta) {
+    const match = normalizeMatchState(meta.match, now, meta.match || DEFAULT_MATCH_RULES);
+    meta.match = match;
+    if (match.status === 'waiting') return;
+    if (match.status === 'warmup' && match.warmupEndsAt && now >= match.warmupEndsAt) {
+      Object.assign(match, { status:'active', startedAt:now, endsAt:now + match.timeLimitMs, warmupEndsAt:0, winner:'', reason:'', updatedAt:now });
+      this.matchDirty = true; this.broadcastMatch(meta, now); return;
+    }
+    if (match.status === 'active' && match.endsAt && now >= match.endsAt) {
+      const winner = match.blueScore === match.redScore ? 'draw' : (match.blueScore > match.redScore ? 'blue' : 'red');
+      this.finishMatch(meta, winner, 'time', now); return;
+    }
+    if (match.status === 'ended' && match.restartAt && now >= match.restartAt) this.resetRound(meta, now);
+  }
+
+  recordMatchKill(attackerId, victimId, now = Date.now()) {
+    const meta = this.metaCache; if (!meta) return;
+    const match = normalizeMatchState(meta.match, now, meta.match || DEFAULT_MATCH_RULES);
+    if (match.status !== 'active' || !attackerId || attackerId === victimId) return;
+    const attacker = this.findCombatant(attackerId), victim = this.findCombatant(victimId);
+    if (!attacker?.id || !victim?.id || attacker.team === victim.team || attacker.godMode) return;
+    if (attacker.team === 'red') match.redScore += 1; else match.blueScore += 1;
+    match.updatedAt = now; meta.match = match; this.matchDirty = true;
+    const reached = attacker.team === 'red' ? match.redScore >= match.scoreLimit : match.blueScore >= match.scoreLimit;
+    if (reached) this.finishMatch(meta, attacker.team, 'score', now); else this.broadcastMatch(meta, now);
   }
 
   async loadJoinTickets(now = Date.now()) {
@@ -894,6 +1000,20 @@ export class GameRoom {
     return tickets;
   }
 
+  allowJoinTicketRequest(clientId, now = Date.now()) {
+    const id = safeClientId(clientId);
+    let state = this.joinTicketRate;
+    if (!state || now - finiteNumber(state.windowAt, 0) >= JOIN_TICKET_RATE_WINDOW_MS || now < finiteNumber(state.windowAt, 0)) {
+      state = { windowAt:now, total:0, clients:new Map() };
+      this.joinTicketRate = state;
+    }
+    const clientCount = state.clients.get(id) || 0;
+    if (state.total >= JOIN_TICKET_RATE_MAX_TOTAL || clientCount >= JOIN_TICKET_RATE_MAX_PER_CLIENT) return false;
+    state.total += 1;
+    state.clients.set(id, clientCount + 1);
+    return true;
+  }
+
   async issueJoinTicket(meta, body, now = Date.now()) {
     const protocol = Math.floor(finiteNumber(body?.protocol, 0));
     if (protocol !== PROTOCOL_VERSION) return { status: 409, data: { error: "Client update required.", protocol: PROTOCOL_VERSION } };
@@ -901,14 +1021,16 @@ export class GameRoom {
     const clientAuth = safeClientAuth(body?.auth);
     const name = safeName(body?.name);
     const team = safeTeam(body?.team);
+    const primaryWeapon = safePrimaryWeapon(body?.primaryWeapon);
     if (!clientId) return { status: 400, data: { error: "Missing client ID." } };
     if (clientAuth.length < 32) return { status: 401, data: { error: "Missing client credential." } };
+    if (!this.allowJoinTicketRequest(clientId, now)) return { status: 429, data: { error: "Too many join attempts. Try again shortly." } };
     const clientAuthHash = await sha256Hex(clientAuth);
     const expected = normalizeClientAuthHashes(meta)[clientId] || "";
     if (expected && expected !== clientAuthHash) return { status: 403, data: { error: "Client credential rejected." } };
     const tickets = await this.loadJoinTickets(now);
     const ticket = makeJoinTicket();
-    tickets[ticket] = { clientId, clientAuthHash, name, team, issuedAt: now, expiresAt: now + JOIN_TICKET_TTL_MS };
+    tickets[ticket] = { clientId, clientAuthHash, name, team, primaryWeapon, issuedAt: now, expiresAt: now + JOIN_TICKET_TTL_MS };
     await this.ctx.storage.put("joinTickets", tickets);
     return { status: 201, data: { ticket, expiresInMs: JOIN_TICKET_TTL_MS } };
   }
@@ -945,8 +1067,10 @@ export class GameRoom {
       const redBots = clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS);
       const botCount = blueBots + redBots;
       const botDifficulty = safeBotDifficulty(body.botDifficulty);
+      const creatorGod = !!body.creatorGod;
       if (botCount > MAX_BOTS) return json(request, this.env, { error: `Maximum ${MAX_BOTS} bots per world.` }, 400);
       const now = Date.now();
+      const match = defaultMatchState(now, DEFAULT_MATCH_RULES);
       const meta = {
         code,
         protocol: PROTOCOL_VERSION,
@@ -956,7 +1080,10 @@ export class GameRoom {
         blueBots,
         redBots,
         botDifficulty,
+        creatorGod,
         settings: normalizeWorldSettings(),
+        match,
+        custom: creatorGod,
         createdAt: now,
         expiresAt: now + ROOM_MAX_LIFETIME_MS,
       };
@@ -1002,6 +1129,7 @@ export class GameRoom {
     const clientAuthHash = String(join.clientAuthHash || "");
     const name = safeName(join.name);
     const requestedTeam = safeTeam(join.team);
+    const requestedPrimary = safePrimaryWeapon(join.primaryWeapon);
     const authHashes = normalizeClientAuthHashes(meta);
     const expectedAuthHash = authHashes[clientId] || '';
     if (expectedAuthHash && expectedAuthHash !== clientAuthHash) return json(request, this.env, { error: "Client credential rejected." }, 403);
@@ -1024,6 +1152,7 @@ export class GameRoom {
       return json(request, this.env, { error: "World is full." }, 409);
     }
     if (!expectedAuthHash) {
+      if (Object.keys(authHashes).length >= MAX_CLIENT_IDENTITIES) return json(request, this.env, { error: "Match identity capacity reached. Create a new match." }, 429);
       authHashes[clientId] = clientAuthHash;
       meta.clientAuthHashes = authHashes;
       await this.putMeta(meta);
@@ -1053,7 +1182,10 @@ export class GameRoom {
       lastShot: 0,
       lastHitAt: finiteNumber(spawn.lastHitAt, 0),
       regenAt: finiteNumber(spawn.regenAt, 0),
-      weapon: safeWeapon(spawn.weapon),
+      primaryWeapon: safePrimaryWeapon(preserved?.primaryWeapon || requestedPrimary),
+      weapon: preserved && playerCanEquip({ primaryWeapon: preserved?.primaryWeapon || requestedPrimary }, preserved.weapon)
+        ? safeWeapon(preserved.weapon)
+        : safePrimaryWeapon(preserved?.primaryWeapon || requestedPrimary),
       ammo: normalizeAmmo(spawn.ammo),
       equipment: normalizeEquipment(spawn.equipment),
       reloadAt: finiteNumber(spawn.reloadAt, 0),
@@ -1062,7 +1194,8 @@ export class GameRoom {
       combatRev: Math.max(0, Math.floor(finiteNumber(spawn.combatRev, 0))),
       kills: Math.max(0, Math.floor(finiteNumber(spawn.kills, 0))),
       deaths: Math.max(0, Math.floor(finiteNumber(spawn.deaths, 0))),
-      godMode: !!preserved?.godMode,
+      godMode: preserved ? !!preserved.godMode : (clientId === meta.ownerClientId && !!meta.creatorGod),
+      pendingTeam: preserved?.pendingTeam ? safeTeam(preserved.pendingTeam) : '',
       admin: isRoomAdmin(meta, clientId),
       ads: false,
       crouched: !!preserved?.crouched,
@@ -1075,7 +1208,7 @@ export class GameRoom {
       lastJumpSeq: Math.max(0, Math.floor(finiteNumber(preserved?.lastJumpSeq, 0))),
       lastVerticalAt: Date.now(),
       lastStateAt: Date.now(),
-      moveCredit: normalizeWorldSettings(meta.settings).movement.runSpeed * 0.04,
+      knockVelocityX: 0, knockVelocityZ: 0,
     };
 
     server.serializeAttachment(attachment);
@@ -1085,6 +1218,8 @@ export class GameRoom {
     await this.scheduleRoomAlarm(meta.expiresAt);
 
     const currentPlayers = liveMembers.map(({ attachment: a }) => publicPlayer(a));
+    if (this.startWarmupIfWaiting(meta, Date.now())) await this.putMeta(meta);
+
     server.send(JSON.stringify({
       t: "welcome",
       self: publicPlayer(attachment),
@@ -1096,6 +1231,8 @@ export class GameRoom {
       isAdmin: isRoomAdmin(meta, clientId),
       ownerClientId: meta.ownerClientId,
       settings: normalizeWorldSettings(meta.settings),
+      match: publicMatchState(meta.match, Date.now()),
+      custom: !!meta.custom,
       serverTime: Date.now(),
       protocol: PROTOCOL_VERSION,
       gameVersion: GAME_VERSION,
@@ -1159,7 +1296,10 @@ export class GameRoom {
     if (payload.t === "combatSync") { sendLoadout(socket, me, { action:'sync', accepted:true }); return; }
 
     if (payload.t === "fire") {
-      const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
+      const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));
+      const liveMatch=normalizeMatchState(meta.match,now,meta.match||DEFAULT_MATCH_RULES);
+      if(liveMatch.status!=='active'){sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'match_inactive'});return;}
+      const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
       if(requestedWeapon!==me.weapon){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'weapon_mismatch'});return;}
       if(now<finiteNumber(me.weaponReadyAt,0)){const retryAfterMs=Math.max(1,Math.ceil(finiteNumber(me.weaponReadyAt,0)-now));socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'weapon_switch',retryAfterMs});return;}
       me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4);
@@ -1178,6 +1318,8 @@ export class GameRoom {
     }
 
     if(payload.t==='throw'){
+      const liveMatch=normalizeMatchState(meta.match,now,meta.match||DEFAULT_MATCH_RULES);
+      if(liveMatch.status!=='active'){try{socket.send(JSON.stringify({t:'throwAck',id:safeClientId(payload.id).slice(0,24),accepted:false,reason:'match_inactive'}));}catch{}return;}
       const kind=safeEquipmentKind(payload.kind),unlimited=!!me.godMode;me.equipment=normalizeEquipment(me.equipment);if(unlimited)refreshUnlimitedResources(me);
       const requestedId=safeClientId(payload.id).slice(0,24),id=requestedId&&!this.throwables.has(requestedId)?requestedId:crypto.randomUUID().replace(/-/g,'').slice(0,16);
       if(me.hp<=0||now<me.wastedUntil||now-finiteNumber(me.lastThrow,0)<360||(!unlimited&&me.equipment[kind]<=0)){try{socket.send(JSON.stringify({t:'throwAck',id:requestedId||id,accepted:false}));}catch{}return;}
@@ -1205,6 +1347,7 @@ export class GameRoom {
     if (payload.t === "weapon") {
       if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'weapon',seq:Math.max(0,Math.floor(finiteNumber(payload.seq,0))),accepted:false,reason:'dead'});return;}
       const weapon=safeWeapon(payload.weapon),seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));
+      if(!playerCanEquip(me,weapon)){sendLoadout(socket,me,{action:'weapon',seq,accepted:false,reason:'loadout'});return;}
       if(weapon!==me.weapon){me.weapon=weapon;me.reloadAt=0;me.reloadWeapon="";me.weaponReadyAt=now+WEAPON_SWITCH_LOCK_MS;me.ammo=normalizeAmmo(me.ammo);me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);this.broadcast({t:'weapon',id:me.clientId,weapon},socket);}
       sendLoadout(socket,me,{action:'weapon',seq,accepted:true,retryAfterMs:Math.max(0,Math.ceil(finiteNumber(me.weaponReadyAt,0)-now))});return;
     }
@@ -1216,7 +1359,8 @@ export class GameRoom {
         return;
       }
       me.godMode = !!payload.enabled;
-      if(me.godMode)refreshUnlimitedResources(me);
+      if(me.godMode){refreshUnlimitedResources(me);meta.custom=true;await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);}
+
       me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;
       socket.serializeAttachment(me);
       this.broadcast({ t: "god", id: me.clientId, enabled: me.godMode });
@@ -1227,23 +1371,17 @@ export class GameRoom {
 
     if (payload.t === "team") {
       const nextTeam = safeTeam(payload.team);
-      if (nextTeam === safeTeam(me.team)) return;
-      const spawn = spawnForTeam(nextTeam, Math.floor(Math.random() * TEAM_SPAWNS[nextTeam].length));
-      me = {
-        ...me, ...spawn, team: nextTeam, hp: 100, wastedUntil: 0, lastHitAt: 0, regenAt: 0,
-        weapon: "pistol", ammo: freshAmmo(), equipment: freshEquipment(), reloadAt: 0, reloadWeapon: "", weaponReadyAt: 0,
-        lastShot: 0, lastThrow: 0, ads: false, crouched: false, moveSpeed: 0, combatRev: Math.max(0, finiteNumber(me.combatRev, 0)) + 1,
-        verticalVelocity: 0, serverGrounded: true, lastVerticalAt: now,
-        flashUntil: 0, flashPower: 0, flashDurationMs: 0,
-        moveCredit: settings.movement.runSpeed * 0.04,
-      };
-      if (me.godMode) refreshUnlimitedResources(me);
-      socket.serializeAttachment(me);
-      this.broadcast({ t: "teamChange", player: publicPlayer(me) });
-      sendLoadout(socket, me, { action: "team", accepted: true, unlimited: !!me.godMode });
-      try { socket.send(JSON.stringify({ t: "equipment", equipment: me.equipment, unlimited: !!me.godMode })); } catch {}
-      const players = this.liveSockets().length;
-      await this.updateDirectory(players, meta);
+      const seq = Math.max(0, Math.floor(finiteNumber(payload.seq, 0)));
+      const currentTeam = safeTeam(me.team);
+      if (nextTeam === currentTeam) {
+        me.pendingTeam = ''; socket.serializeAttachment(me);
+        sendLoadout(socket, me, { action:'team', seq, accepted:true, pendingTeam:'' });
+        try { socket.send(JSON.stringify({ t:'teamQueued', id:me.clientId, team:currentTeam, pendingTeam:'' })); } catch {}
+        return;
+      }
+      me.pendingTeam = nextTeam; socket.serializeAttachment(me);
+      sendLoadout(socket, me, { action:'team', seq, accepted:true, pendingTeam:nextTeam });
+      try { socket.send(JSON.stringify({ t:'teamQueued', id:me.clientId, team:currentTeam, pendingTeam:nextTeam })); } catch {}
       return;
     }
 
@@ -1265,7 +1403,7 @@ export class GameRoom {
       const action = String(payload.action || "");
       if (action === "god") {
         target.godMode = !!payload.enabled;
-        if (target.godMode) refreshUnlimitedResources(target);
+        if (target.godMode) { refreshUnlimitedResources(target); meta.custom = true; await this.putMeta(meta); await this.updateDirectory(this.liveSockets().length, meta); }
         target.combatRev = Math.max(0, finiteNumber(target.combatRev, 0)) + 1;
         targetSocket.serializeAttachment(target);
         this.broadcast({ t: "god", id: target.clientId, enabled: target.godMode });
@@ -1307,8 +1445,30 @@ export class GameRoom {
       }
       const nextSettings = normalizeWorldSettings(payload.settings);
       meta.settings = nextSettings;
+      if (!worldSettingsAreDefault(nextSettings)) meta.custom = true;
       await this.putMeta(meta);
-      this.broadcast({ t: "settings", settings: nextSettings, by: me.clientId });
+      this.broadcast({ t: "settings", settings: nextSettings, by: me.clientId, custom:!!meta.custom });
+      await this.updateDirectory(this.liveSockets().length, meta);
+      return;
+    }
+
+    if (payload.t === "adminMatch") {
+      if (!isRoomAdmin(meta, me.clientId)) {
+        try { socket.send(JSON.stringify({ t:"notice", tone:"error", text:"Admin access required." })); } catch {}
+        return;
+      }
+      const rules = normalizeMatchRules(payload.rules);
+      const match = normalizeMatchState(meta.match, now, rules);
+      match.scoreLimit = rules.scoreLimit; match.timeLimitMs = rules.timeLimitMs;
+      if (match.status === 'active' && match.startedAt) match.endsAt = match.startedAt + match.timeLimitMs;
+      match.updatedAt = now; meta.match = match;
+      if (!matchRulesAreDefault(match)) meta.custom = true;
+      this.matchDirty = true; await this.putMeta(meta); this.matchDirty = false;
+      this.broadcastMatch(meta, now); await this.updateDirectory(this.liveSockets().length, meta);
+      if (match.status === 'active' && (match.blueScore >= match.scoreLimit || match.redScore >= match.scoreLimit)) {
+        const winner = match.blueScore === match.redScore ? 'draw' : (match.blueScore > match.redScore ? 'blue' : 'red');
+        this.finishMatch(meta, winner, 'score', now);
+      }
       return;
     }
 
@@ -1374,13 +1534,7 @@ export class GameRoom {
   validateHumanState(me, payload, now, settings) {
     const desiredX = clamp(finiteNumber(payload.x, me.x), -ARENA_LIMIT, ARENA_LIMIT);
     const desiredZ = clamp(finiteNumber(payload.z, me.z), -ARENA_LIMIT, ARENA_LIMIT);
-    const serverElapsed = clamp((now - finiteNumber(me.lastStateAt, now)) / 1000, 0.016, 0.75);
-    const clientAt = finiteNumber(payload.clientAt, 0);
-    const previousClientAt = finiteNumber(me.lastClientStateAt, 0);
-    const clientElapsed = clientAt > previousClientAt && previousClientAt > 0
-      ? clamp((clientAt - previousClientAt) / 1000, 0.016, 0.15)
-      : 0;
-    const elapsed = Math.max(serverElapsed, clientElapsed);
+    const elapsed = clamp((now - finiteNumber(me.lastStateAt, now)) / 1000, 0, 0.25);
     const flashPower = activeFlashPower(me, now);
     const ads = flashPower > 0.12 ? false : !!payload.ads;
     let crouched = !!payload.crouched;
@@ -1388,19 +1542,44 @@ export class GameRoom {
     const playerHeight = crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
     const baseSpeed = ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
     const allowedSpeed = baseSpeed * (crouched ? CROUCH_SPEED_MULTIPLIER : 1);
-    const creditCap = allowedSpeed * 0.25 + 0.12;
-    const priorCredit = clamp(finiteNumber(me.moveCredit, allowedSpeed * 0.04), 0, creditCap);
-    const availableCredit = Math.min(creditCap, priorCredit + allowedSpeed * elapsed);
-    const maxDistance = availableCredit + 0.04;
-    let dx = desiredX - me.x;
-    let dz = desiredZ - me.z;
-    const requestedDistance = Math.hypot(dx, dz);
-    let corrected = requestedDistance > maxDistance + 0.001;
-    if (requestedDistance > maxDistance && requestedDistance > 0) {
-      const scale = maxDistance / requestedDistance;
-      dx *= scale;
-      dz *= scale;
-    }
+
+    let inputX = clamp(finiteNumber(payload.moveX, 0), -1, 1);
+    let inputZ = clamp(finiteNumber(payload.moveZ, 0), -1, 1);
+    const rawInputLength = Math.hypot(inputX, inputZ);
+    if (rawInputLength > 1) { inputX /= rawInputLength; inputZ /= rawInputLength; }
+    const inputMagnitude = Math.min(1, rawInputLength);
+    const nextYaw = finiteNumber(payload.yaw, me.yaw);
+    const sin = Math.sin(nextYaw), cos = Math.cos(nextYaw);
+    const worldInputX = inputX * cos + inputZ * sin;
+    const worldInputZ = -inputX * sin + inputZ * cos;
+
+    const priorKnockX = finiteNumber(me.knockVelocityX, 0);
+    const priorKnockZ = finiteNumber(me.knockVelocityZ, 0);
+    const knockDecay = elapsed > 0 ? Math.pow(KNOCK_DAMPING_BASE, elapsed) : 1;
+    const knockFactor = elapsed > 0 ? (1 - knockDecay) / KNOCK_DAMPING_RATE : 0;
+    const knockDx = priorKnockX * knockFactor;
+    const knockDz = priorKnockZ * knockFactor;
+    let knockVelocityX = priorKnockX * knockDecay;
+    let knockVelocityZ = priorKnockZ * knockDecay;
+    if (Math.abs(knockVelocityX) < 0.015) knockVelocityX = 0;
+    if (Math.abs(knockVelocityZ) < 0.015) knockVelocityZ = 0;
+
+    // Client position is never allowed to increase the server movement budget.
+    // It is only used to avoid applying a newly pressed input across time that
+    // was actually spent idle, and to respect shorter predicted movement when
+    // the local collision controller stopped against geometry.
+    const reportedUserDx = desiredX - me.x - knockDx;
+    const reportedUserDz = desiredZ - me.z - knockDz;
+    const reportedUserDistance = Math.hypot(reportedUserDx, reportedUserDz);
+    const maxUserDistance = allowedSpeed * inputMagnitude * elapsed;
+    const userDistance = Math.min(maxUserDistance, reportedUserDistance);
+    const inputNorm = inputMagnitude > 1e-6 ? Math.hypot(worldInputX, worldInputZ) || 1 : 1;
+    const moveDx = inputMagnitude > 1e-6 ? worldInputX / inputNorm * userDistance : 0;
+    const moveDz = inputMagnitude > 1e-6 ? worldInputZ / inputNorm * userDistance : 0;
+
+    const dx = moveDx + knockDx;
+    const dz = moveDz + knockDz;
+    let corrected = reportedUserDistance > maxUserDistance + 0.08;
 
     const startSupport = worldSupportHeight(me.x, me.z, me.y);
     const currentVerticalVelocity = finiteNumber(me.verticalVelocity, 0);
@@ -1487,7 +1666,7 @@ export class GameRoom {
 
     const verticalError = Math.abs(y - rawRequestedY);
     const verticalCorrected = ceilingHit || verticalError > 0.28;
-    if (verticalCorrected || Math.hypot(x - desiredX, z - desiredZ) > 0.08) corrected = true;
+    if (verticalCorrected || Math.hypot(x - desiredX, z - desiredZ) > 0.12) corrected = true;
     const actualTravel = Math.hypot(x - me.x, z - me.z);
 
     return {
@@ -1503,12 +1682,12 @@ export class GameRoom {
         moveSpeed: elapsed > 0 ? actualTravel / elapsed : 0,
         serverGrounded,
         verticalVelocity,
+        knockVelocityX,
+        knockVelocityZ,
         lastVerticalAt: now,
         lastJumpSeq: Math.max(previousJumpSeq, incomingJumpSeq),
         lastStateAt: now,
-        lastClientStateAt: clientAt > 0 ? clientAt : previousClientAt,
-        moveCredit: Math.max(0, availableCredit - actualTravel),
-        yaw: finiteNumber(payload.yaw, me.yaw),
+        yaw: nextYaw,
         pitch: clamp(finiteNumber(payload.pitch, me.pitch), -1.4, 1.4),
       },
     };
@@ -1565,24 +1744,43 @@ export class GameRoom {
   }
 
   async stepSimulation(now, meta) {
-    // Human respawn is server-authoritative. Never depend on a dead client
-    // sending a one-shot respawn request. Any room activity advances expired
-    // human respawns, which also keeps all clients on the same life state.
+    // Gameplay time is advanced from the server clock only. Bots use a fixed
+    // 30 Hz accumulator so idle clients no longer slow the match, while a
+    // bounded catch-up window prevents a long-suspended room from creating a
+    // large CPU spike on the first packet back.
     const settings = normalizeWorldSettings(meta.settings);
-    this.respawnExpiredHumans(now, settings);
+    this.stepMatch(now, meta);
+    const match = normalizeMatchState(meta.match, now, meta.match || DEFAULT_MATCH_RULES);
+    if (match.status === 'active') this.respawnExpiredHumans(now, settings);
+    if (this.matchDirty) { await this.putMeta(meta); this.matchDirty = false; }
 
-    if (!this.lastSimAt) { this.lastSimAt = now; return; }
-    const simDeltaMs = now - this.lastSimAt;
+    if (!this.lastSimAt) { this.lastSimAt = now; this.simAccumulatorMs = 0; return; }
+    const simDeltaMs = Math.max(0, now - this.lastSimAt);
     if (simDeltaMs < SIM_MIN_STEP_MS) return;
-    const elapsed = Math.min(0.12, Math.max(0, simDeltaMs / 1000));
     this.lastSimAt = now;
-    if (elapsed <= 0) return;
+    this.simAccumulatorMs = Math.min(SIM_MAX_CATCHUP_MS, finiteNumber(this.simAccumulatorMs, 0) + simDeltaMs);
+
+    const fixedSeconds = SIM_FIXED_STEP_MS / 1000;
+    let simAt = now - this.simAccumulatorMs;
+    let fixedSteps = 0;
+    const maxFixedSteps = Math.ceil(SIM_MAX_CATCHUP_MS / SIM_FIXED_STEP_MS);
+    while (this.simAccumulatorMs + 1e-6 >= SIM_FIXED_STEP_MS && fixedSteps < maxFixedSteps) {
+      simAt += SIM_FIXED_STEP_MS;
+      if (match.status === 'active') this.stepBots(simAt, fixedSeconds, settings, meta);
+      this.simAccumulatorMs -= SIM_FIXED_STEP_MS;
+      fixedSteps += 1;
+    }
 
     this.advanceHumanReloads(now, settings);
-    this.stepBots(now, elapsed, settings, meta);
-    this.stepThrowables(now,elapsed,settings);
-    this.stepBullets(now, settings);
-    this.stepRegeneration(now, settings);
+    if (match.status === 'active') {
+      this.stepThrowables(now, settings);
+      this.stepBullets(now, settings);
+      this.stepRegeneration(now, settings);
+    }
+    if (this.matchDirty) {
+      await this.putMeta(meta); this.matchDirty = false;
+      await this.updateDirectory(this.liveSockets().length, meta);
+    }
 
     if (now - this.lastBotBroadcastAt >= 100) {
       this.lastBotBroadcastAt = now;
@@ -1609,7 +1807,7 @@ export class GameRoom {
       if (!player.clientId || player.replaced || player.hp > 0) continue;
       if (!player.wastedUntil || now < player.wastedUntil) continue;
 
-      const team = safeTeam(player.team);
+      const team = player.pendingTeam ? safeTeam(player.pendingTeam) : safeTeam(player.team);
       const spawn = spawnForTeam(
         team,
         Math.floor(Math.random() * TEAM_SPAWNS[team].length),
@@ -1617,11 +1815,11 @@ export class GameRoom {
       const respawned = {
         ...player,
         ...spawn,
-        hp: 100,
+        team, pendingTeam:'', hp: 100,
         wastedUntil: 0,
         lastHitAt: 0,
         regenAt: 0,
-        weapon: "pistol",
+        weapon: safePrimaryWeapon(player.primaryWeapon),
         ammo: freshAmmo(),
         equipment: freshEquipment(),
         reloadAt: 0,
@@ -1632,7 +1830,7 @@ export class GameRoom {
         verticalVelocity: 0, serverGrounded: true, lastVerticalAt: now,
         flashUntil: 0, flashPower: 0, flashDurationMs: 0,
         lastStateAt: now,
-        moveCredit: settings.movement.runSpeed * 0.04,
+        knockVelocityX: 0, knockVelocityZ: 0,
       };
       socket.serializeAttachment(respawned);
       this.broadcast({ t: "respawn", player: publicPlayer(respawned) });
@@ -1764,14 +1962,15 @@ export class GameRoom {
     }
   }
 
-  stepThrowables(now,dt,settings){
+  stepThrowables(now,settings){
     for(const [id,g] of this.throwables){
       if(g.stuckTo){const a=this.findActorState(g.stuckTo);if(a){g.x=a.x;g.y=a.y+1.0;g.z=a.z;}else g.stuckTo='';}
       if(!g.stuck){
-        // Integrate the throwable against its own authoritative timestamp. The
-        // previous implementation capped this to 120 ms and literally dropped
-        // time whenever the room was only receiving idle client updates.
-        const elapsed=Math.min(.35,Math.max(0,(now-g.lastAt)/1000));g.lastAt=now;const steps=Math.max(1,Math.ceil(elapsed/.012));
+        // Integrate only up to the fuse time, but never discard elapsed time.
+        // A late room tick therefore detonates at the physically correct point
+        // on the trajectory instead of exploding wherever the last capped step
+        // happened to leave the grenade.
+        const integrationEnd=Math.min(now,g.fuseAt),elapsed=Math.max(0,(integrationEnd-g.lastAt)/1000);g.lastAt=integrationEnd;const steps=Math.max(1,Math.ceil(elapsed/.012));
         for(let i=0;i<steps&&!g.stuck;i++){
           const st=elapsed/steps;g.vy-=TACTICAL_GRAVITY*st;const px=g.x,py=g.y,pz=g.z;g.x+=g.vx*st;g.y+=g.vy*st;g.z+=g.vz*st;
           const actor=this.findStickyTarget(g);if(g.kind==='sticky'&&actor){g.stuck=true;g.stuckTo=actor;g.vx=g.vy=g.vz=0;break;}
@@ -1794,7 +1993,7 @@ export class GameRoom {
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;
       const ex=p.x,ey=p.y+PLAYER_HEIGHT*.75,ez=p.z,dx=g.x-ex,dy=g.y-ey,dz=g.z-ez,dist=Math.hypot(dx,dy,dz);if(dist>radius)continue;
-      if(segmentHitsObstacle(g.x,g.y,g.z,ex,ey,ez))continue;
+      if(segmentFirstWorldOcclusionT(g.x,g.y,g.z,ex,ey,ez)!=null)continue;
       const cp=Math.cos(p.pitch||0),fx=-Math.sin(p.yaw||0)*cp,fy=Math.sin(p.pitch||0),fz=-Math.cos(p.yaw||0)*cp,n=dist||1,dot=(fx*dx+fy*dy+fz*dz)/n,front=.12+.88*Math.max(0,(dot+1)/2),power=clamp((1-dist/radius)*front,0,1);if(power<.035)continue;
       const durationMs=Math.round(650+power*2850),existingPower=activeFlashPower(p,now);
       if(power>=existingPower){p.flashPower=power;p.flashDurationMs=durationMs;p.flashUntil=now+durationMs;}
@@ -1802,104 +2001,117 @@ export class GameRoom {
       p.ads=false;socket.serializeAttachment(p);
       try{socket.send(JSON.stringify({t:'flashEffect',power,durationMs}));}catch{}
     }
-    for(const b of this.bots){if(b.hp<=0)continue;const dx=b.x-g.x,dy=b.y+1.05-g.y,dz=b.z-g.z,dist=Math.hypot(dx,dy,dz);if(dist>radius||segmentHitsObstacle(g.x,g.y,g.z,b.x,b.y+1.05,b.z))continue;const power=clamp(1-dist/radius,0,1);if(power<.05)continue;b.flashUntil=Math.max(finiteNumber(b.flashUntil,0),now+550+power*2600);b.flashSpin=(Math.random()<.5?-1:1)*(1.5+Math.random()*2.5);}
+    for(const b of this.bots){if(b.hp<=0)continue;const dx=b.x-g.x,dy=b.y+1.05-g.y,dz=b.z-g.z,dist=Math.hypot(dx,dy,dz);if(dist>radius||segmentFirstWorldOcclusionT(g.x,g.y,g.z,b.x,b.y+1.05,b.z)!=null)continue;const power=clamp(1-dist/radius,0,1);if(power<.05)continue;b.flashUntil=Math.max(finiteNumber(b.flashUntil,0),now+550+power*2600);b.flashSpin=(Math.random()<.5?-1:1)*(1.5+Math.random()*2.5);}
   }
   explodeSticky(g,now,settings){
     const radius=STICKY_RADIUS,maxDamage=STICKY_MAX_DAMAGE;
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;const self=p.clientId===g.ownerId;if(!self&&safeTeam(p.team)===g.ownerTeam)continue;
-      const dx=p.x-g.x,dz=p.z-g.z,d=Math.hypot(dx,p.y+1-g.y,dz);if(d>radius||segmentHitsObstacle(g.x,g.y,g.z,p.x,p.y+1,p.z))continue;
+      const dx=p.x-g.x,dz=p.z-g.z,d=Math.hypot(dx,p.y+1-g.y,dz);if(d>radius||segmentFirstWorldOcclusionT(g.x,g.y,g.z,p.x,p.y+1,p.z)!=null)continue;
       let damage=Math.max(12,Math.round(maxDamage*(1-d/radius)));if(self)damage=Math.round(damage*.72);const n=Math.hypot(dx,dz)||1;this.damageHuman(socket,p,g.ownerId,damage,'sticky',{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});
     }
-    for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||safeTeam(b.team)===g.ownerTeam)continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius||segmentHitsObstacle(g.x,g.y,g.z,b.x,b.y+1,b.z))continue;const damage=Math.max(12,Math.round(maxDamage*(1-d/radius))),n=Math.hypot(dx,dz)||1;this.damageBot(b,g.ownerId,damage,'sticky',{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});}
+    for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||safeTeam(b.team)===g.ownerTeam)continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius||segmentFirstWorldOcclusionT(g.x,g.y,g.z,b.x,b.y+1,b.z)!=null)continue;const damage=Math.max(12,Math.round(maxDamage*(1-d/radius))),n=Math.hypot(dx,dz)||1;this.damageBot(b,g.ownerId,damage,'sticky',{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});}
     this.broadcast({t:'explosion',id:g.id,x:g.x,y:g.y,z:g.z,kind:'sticky',radius});
   }
 
   stepBullets(now, settings) {
     const humans = this.ctx.getWebSockets().map((socket) => ({ socket, player: socket.deserializeAttachment() || {} }));
     for (const [id, bullet] of this.bullets) {
-      if (now - bullet.born > bullet.lifetimeMs) {
-        this.endBullet(id, "expired");
+      const lifeEnd = bullet.born + bullet.lifetimeMs;
+      const targetAt = Math.min(now, lifeEnd);
+      if (targetAt <= bullet.lastAt) {
+        if (now >= lifeEnd) this.endBullet(id, "expired");
         continue;
       }
-      const elapsed = Math.max(0, (now - bullet.lastAt) / 1000);
-      let remaining = Math.min(0.22, elapsed);
-      bullet.lastAt += remaining * 1000;
+
+      let remaining = Math.max(0, (targetAt - bullet.lastAt) / 1000);
+      bullet.lastAt = targetAt;
       let ended = false;
       const speed = Math.max(1, Math.hypot(bullet.vx, bullet.vy, bullet.vz));
-      const collisionStep = Math.min(0.01, 0.24 / speed);
-      while (remaining > 0 && !ended) {
-        const step = Math.min(collisionStep, remaining);
+      const maxStepSeconds = BULLET_MAX_SEGMENT_DISTANCE / speed;
+
+      while (remaining > 1e-8 && !ended) {
+        const step = Math.min(maxStepSeconds, remaining);
         remaining -= step;
-        const previousX = bullet.x, previousY = bullet.y, previousZ = bullet.z;
-        const nextX = previousX + bullet.vx * step;
-        const nextY = previousY + bullet.vy * step;
-        const nextZ = previousZ + bullet.vz * step;
-        const segmentDistance = Math.hypot(nextX-previousX,nextY-previousY,nextZ-previousZ);
+        const segmentEndX = bullet.x + bullet.vx * step;
+        const segmentEndY = bullet.y + bullet.vy * step;
+        const segmentEndZ = bullet.z + bullet.vz * step;
 
-        if (Math.abs(nextX) > ARENA_LIMIT + 2 || Math.abs(nextZ) > ARENA_LIMIT + 2) {
-          bullet.x=nextX;bullet.y=nextY;bullet.z=nextZ;bullet.traveledDistance+=segmentDistance;
-          this.endBullet(id, "world"); ended = true; break;
-        }
+        // Swept collision means the server no longer needs the legacy 24 cm
+        // projectile substeps. Within each coarse travel segment, resolve the
+        // nearest player/world hit and let a sniper continue from that exact
+        // impact point when it still has penetration power.
+        let segmentDone = false;
+        while (!segmentDone && !ended) {
+          const previousX = bullet.x, previousY = bullet.y, previousZ = bullet.z;
+          const segmentDistance = Math.hypot(segmentEndX-previousX,segmentEndY-previousY,segmentEndZ-previousZ);
+          if (segmentDistance <= 1e-7) { segmentDone = true; break; }
 
-        const worldT = segmentFirstWorldHitT(previousX,previousY,previousZ,nextX,nextY,nextZ);
-        let nearest = null;
-        const consider = (kind, target, socket = null) => {
-          const hit = projectileSegmentHitZone(target,previousX,previousY,previousZ,nextX,nextY,nextZ);
-          if (!hit || bullet.hitTargets.has(target.clientId || target.id)) return;
-          if (!nearest || hit.t < nearest.hit.t) nearest = { kind, target, socket, hit };
-        };
-        for (const h of humans) {
-          const target = h.player;
-          if (!target.clientId || target.replaced || target.clientId === bullet.ownerId || target.hp <= 0 || now < (target.wastedUntil || 0) || safeTeam(target.team) === bullet.ownerTeam || bullet.hitTargets.has(target.clientId)) continue;
-          consider('human', target, h.socket);
-        }
-        for (const bot of this.bots) {
-          if (bot.id === bullet.ownerId || bot.hp <= 0 || now < bot.wastedUntil || safeTeam(bot.team) === bullet.ownerTeam || bullet.hitTargets.has(bot.id)) continue;
-          consider('bot', bot);
-        }
-
-        const targetFirst = nearest && (worldT == null || nearest.hit.t < worldT - 1e-6);
-        if (!targetFirst) {
-          if (worldT != null) {
-            bullet.x=previousX+(nextX-previousX)*worldT;bullet.y=previousY+(nextY-previousY)*worldT;bullet.z=previousZ+(nextZ-previousZ)*worldT;
-            bullet.traveledDistance+=segmentDistance*worldT;
+          if (Math.abs(previousX) > ARENA_LIMIT + 2 || Math.abs(previousZ) > ARENA_LIMIT + 2) {
             this.endBullet(id, "world"); ended = true; break;
           }
-          bullet.x=nextX;bullet.y=nextY;bullet.z=nextZ;bullet.traveledDistance+=segmentDistance;
-          continue;
-        }
 
-        const impactT=nearest.hit.t;
-        bullet.x=previousX+(nextX-previousX)*impactT;bullet.y=previousY+(nextY-previousY)*impactT;bullet.z=previousZ+(nextZ-previousZ)*impactT;
-        bullet.traveledDistance+=segmentDistance*impactT;
-        const target=nearest.target,targetId=target.clientId||target.id;
-        bullet.hitTargets.add(targetId);
-        const horizontal = Math.hypot(bullet.vx, bullet.vz) || 1;
-        const targetHpBefore = Math.max(1, finiteNumber(target.hp, 100));
-        const baseDamage = bullet.weapon === "sniper" ? Math.max(1, bullet.penetrationPower) : bullet.damage;
-        const headshot = nearest.hit.zone === "head";
-        const hitDamage = headshot ? (bullet.weapon === "assault" ? Math.max(100, baseDamage * HEADSHOT_MULTIPLIER) : bullet.weapon === "shotgun" ? baseDamage*1.25 : baseDamage * HEADSHOT_MULTIPLIER) : baseDamage;
-        const knockback={x:bullet.vx/horizontal*2.4,z:bullet.vz/horizontal*2.4,y:headshot?1.45:1.1};
-        let applied=true;
-        if(nearest.kind==='human')applied=this.damageHuman(nearest.socket,target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,distance:bullet.traveledDistance});
-        else this.damageBot(target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,distance:bullet.traveledDistance});
+          const worldT = segmentFirstWorldHitT(previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
+          let nearest = null;
+          const consider = (kind, target, socket = null) => {
+            const hit = projectileSegmentHitZone(target,previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
+            if (!hit || bullet.hitTargets.has(target.clientId || target.id)) return;
+            if (!nearest || hit.t < nearest.hit.t) nearest = { kind, target, socket, hit };
+          };
+          for (const h of humans) {
+            const target = h.player;
+            if (!target.clientId || target.replaced || target.clientId === bullet.ownerId || target.hp <= 0 || now < (target.wastedUntil || 0) || safeTeam(target.team) === bullet.ownerTeam || bullet.hitTargets.has(target.clientId)) continue;
+            consider('human', target, h.socket);
+          }
+          for (const bot of this.bots) {
+            if (bot.id === bullet.ownerId || bot.hp <= 0 || now < bot.wastedUntil || safeTeam(bot.team) === bullet.ownerTeam || bullet.hitTargets.has(bot.id)) continue;
+            consider('bot', bot);
+          }
 
-        if(!applied || bullet.weapon !== 'sniper'){
-          this.endBullet(id,applied?'hit':'blocked');ended=true;break;
-        }
-        bullet.penetrationPower=Math.max(0,bullet.penetrationPower-targetHpBefore);
-        if(bullet.penetrationPower<=0){this.endBullet(id,'spent');ended=true;break;}
+          const targetFirst = nearest && (worldT == null || nearest.hit.t < worldT - 1e-6);
+          if (!targetFirst) {
+            if (worldT != null) {
+              bullet.x=previousX+(segmentEndX-previousX)*worldT;bullet.y=previousY+(segmentEndY-previousY)*worldT;bullet.z=previousZ+(segmentEndZ-previousZ)*worldT;
+              bullet.traveledDistance+=segmentDistance*worldT;
+              this.endBullet(id, "world"); ended = true; break;
+            }
+            bullet.x=segmentEndX;bullet.y=segmentEndY;bullet.z=segmentEndZ;bullet.traveledDistance+=segmentDistance;
+            segmentDone = true;
+            break;
+          }
 
-        // A penetrating sniper round can pass through the player, but not through
-        // solid cover that lies later in the same simulation segment.
-        if(worldT!=null&&worldT>impactT){
-          bullet.x=previousX+(nextX-previousX)*worldT;bullet.y=previousY+(nextY-previousY)*worldT;bullet.z=previousZ+(nextZ-previousZ)*worldT;
-          bullet.traveledDistance+=segmentDistance*(worldT-impactT);
-          this.endBullet(id,'world');ended=true;break;
+          const impactT=nearest.hit.t;
+          bullet.x=previousX+(segmentEndX-previousX)*impactT;bullet.y=previousY+(segmentEndY-previousY)*impactT;bullet.z=previousZ+(segmentEndZ-previousZ)*impactT;
+          bullet.traveledDistance+=segmentDistance*impactT;
+          const target=nearest.target,targetId=target.clientId||target.id;
+          bullet.hitTargets.add(targetId);
+          const horizontal = Math.hypot(bullet.vx, bullet.vz) || 1;
+          const targetHpBefore = Math.max(1, finiteNumber(target.hp, 100));
+          const baseDamage = bullet.weapon === "sniper" ? Math.max(1, bullet.penetrationPower) : bullet.damage;
+          const headshot = nearest.hit.zone === "head";
+          const hitDamage = headshot ? (bullet.weapon === "assault" ? Math.max(100, baseDamage * HEADSHOT_MULTIPLIER) : bullet.weapon === "shotgun" ? baseDamage*1.25 : baseDamage * HEADSHOT_MULTIPLIER) : baseDamage;
+          const knockback={x:bullet.vx/horizontal*2.4,z:bullet.vz/horizontal*2.4,y:headshot?1.45:1.1};
+          let applied=true;
+          if(nearest.kind==='human')applied=this.damageHuman(nearest.socket,target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,distance:bullet.traveledDistance});
+          else this.damageBot(target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,distance:bullet.traveledDistance});
+
+          if(!applied || bullet.weapon !== 'sniper'){
+            this.endBullet(id,applied?'hit':'blocked');ended=true;break;
+          }
+          bullet.penetrationPower=Math.max(0,bullet.penetrationPower-targetHpBefore);
+          if(bullet.penetrationPower<=0){this.endBullet(id,'spent');ended=true;break;}
+
+          // Advance a couple of millimeters beyond the actor surface before
+          // looking for the next target/world hit in this same coarse segment.
+          const epsilonT=Math.min(1,impactT+Math.min(.002/segmentDistance,.01));
+          const epsilonDistance=segmentDistance*(epsilonT-impactT);
+          bullet.x=previousX+(segmentEndX-previousX)*epsilonT;bullet.y=previousY+(segmentEndY-previousY)*epsilonT;bullet.z=previousZ+(segmentEndZ-previousZ)*epsilonT;
+          bullet.traveledDistance+=epsilonDistance;
+          if(epsilonT>=1)segmentDone=true;
         }
-        bullet.x=nextX;bullet.y=nextY;bullet.z=nextZ;bullet.traveledDistance+=segmentDistance*(1-impactT);
       }
+
+      if (!ended && now >= lifeEnd) this.endBullet(id, "expired");
     }
   }
 
@@ -1917,12 +2129,15 @@ export class GameRoom {
       p.kills = Math.max(0, Math.floor(finiteNumber(p.kills, 0))) + 1;
       const multiKill = updateChain(p);
       socket.serializeAttachment(p);
+      this.recordMatchKill(attackerId, victimId, now);
       return multiKill;
     }
     const bot = this.bots.find((b) => b.id === attackerId);
     if (bot) {
       bot.kills = Math.max(0, Math.floor(finiteNumber(bot.kills, 0))) + 1;
-      return updateChain(bot);
+      const multiKill = updateChain(bot);
+      this.recordMatchKill(attackerId, victimId, now);
+      return multiKill;
     }
     return 0;
   }
@@ -1933,7 +2148,8 @@ export class GameRoom {
       return false;
     }
     target.hp = Math.max(0, target.hp - damage);
-    target.moveCredit = Math.max(finiteNumber(target.moveCredit, 0), Math.hypot(knockback.x || 0, knockback.z || 0) * 0.75);
+    target.knockVelocityX = clamp(finiteNumber(target.knockVelocityX, 0) + finiteNumber(knockback.x, 0), -12, 12);
+    target.knockVelocityZ = clamp(finiteNumber(target.knockVelocityZ, 0) + finiteNumber(knockback.z, 0), -12, 12);
     if (finiteNumber(knockback.y, 0) > 0) {
       target.verticalVelocity = Math.max(finiteNumber(target.verticalVelocity, 0), finiteNumber(knockback.y, 0));
       target.serverGrounded = false;
@@ -1989,14 +2205,14 @@ export class GameRoom {
       const p = socket.deserializeAttachment() || {};
       if (!p.clientId || p.replaced) continue;
       if (p.clientId === id) return {
-        id, name: p.name || "Player", team: safeTeam(p.team), bot: false,
+        id, name: p.name || "Player", team: safeTeam(p.team), bot: false, godMode:!!p.godMode,
         kills: Math.max(0, Math.floor(finiteNumber(p.kills, 0))),
         deaths: Math.max(0, Math.floor(finiteNumber(p.deaths, 0))),
       };
     }
     const bot = this.bots.find((b) => b.id === id);
     if (bot) return {
-      id, name: bot.name || "Bot", team: safeTeam(bot.team), bot: true,
+      id, name: bot.name || "Bot", team: safeTeam(bot.team), bot: true, godMode:false,
       kills: Math.max(0, Math.floor(finiteNumber(bot.kills, 0))),
       deaths: Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))),
     };
@@ -2153,6 +2369,11 @@ export class GameRoom {
           botDifficulty: safeBotDifficulty(meta.botDifficulty),
           blue,
           red,
+          custom: !!meta.custom,
+          matchStatus: normalizeMatchState(meta.match, Date.now(), meta.match || DEFAULT_MATCH_RULES).status,
+          blueScore: normalizeMatchState(meta.match, Date.now(), meta.match || DEFAULT_MATCH_RULES).blueScore,
+          redScore: normalizeMatchState(meta.match, Date.now(), meta.match || DEFAULT_MATCH_RULES).redScore,
+          scoreLimit: normalizeMatchState(meta.match, Date.now(), meta.match || DEFAULT_MATCH_RULES).scoreLimit,
           createdAt: meta.createdAt,
           expiresAt: meta.expiresAt,
         }),
@@ -2182,9 +2403,23 @@ export const __test = Object.freeze({
   makeJoinTicket,
   WEAPON_SWITCH_LOCK_MS,
   JOIN_TICKET_TTL_MS,
+  JOIN_TICKET_RATE_WINDOW_MS,
+  JOIN_TICKET_RATE_MAX_TOTAL,
+  JOIN_TICKET_RATE_MAX_PER_CLIENT,
+  MAX_CLIENT_IDENTITIES,
+  SIM_FIXED_STEP_MS,
+  SIM_MAX_CATCHUP_MS,
+  BULLET_MAX_SEGMENT_DISTANCE,
+  normalizeMatchRules,
+  defaultMatchState,
+  normalizeMatchState,
+  safePrimaryWeapon,
+  playerCanEquip,
   worldBlocked,
   weaponSpreadRadians,
   projectileSegmentHitZone,
   segmentFirstObstacleT,
   segmentFirstWorldHitT,
+  segmentFirstWorldOcclusionT,
+  actorHasLineOfSight,
 });
