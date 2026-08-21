@@ -3,11 +3,11 @@ import {
 } from './world-geometry.js';
 import {
   APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS,
-  WEAPON_ORDER, PRIMARY_WEAPONS, WEAPON_SPECS, WEAPON_ACCURACY, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, DEFAULT_WORLD_SETTINGS,
+  WEAPON_ORDER, PRIMARY_WEAPONS, WEAPON_SPECS, weaponSpreadRadians, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, DEFAULT_WORLD_SETTINGS,
   DEFAULT_MATCH_RULES, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, GROUND_FOLLOW_DROP
 } from './game-config.js';
 import { normalizeMatchRules, defaultMatchState, normalizeMatchState, publicMatchState, matchRulesAreDefault } from './match-model.js';
-import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback } from './movement-model.js';
+import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback, sweepHorizontalMovement, tacticalThrowVelocity } from './movement-model.js';
 import { worldBlocked, projectileSegmentHitZone, segmentFirstWorldHitT, segmentFirstWorldOcclusionT, segmentHitsObstacle, actorHasLineOfSight } from './server-collision.js';
 
 const GAME_VERSION = APP_VERSION;
@@ -22,7 +22,7 @@ const SIM_MIN_STEP_MS = 16;
 const SIM_FIXED_STEP_MS = 1000 / 30;
 const SIM_MAX_CATCHUP_MS = 400;
 const MOVE_BUDGET_INITIAL_SEC = 0.04;
-const MOVE_BUDGET_MAX_SEC = 0.18;
+const MOVE_BUDGET_MAX_SEC = 0.26;
 const BOT_PERSIST_INTERVAL_MS = 10 * 1000;
 const BULLET_MAX_SEGMENT_DISTANCE = 6;
 const THROWABLE_BROADCAST_MS = 33;
@@ -40,20 +40,12 @@ const JOIN_TICKET_RATE_WINDOW_MS = 60 * 1000;
 const JOIN_TICKET_RATE_MAX_TOTAL = 80;
 const JOIN_TICKET_RATE_MAX_PER_CLIENT = 10;
 const MAX_CLIENT_IDENTITIES = 64;
-const WEAPONS = Object.freeze(Object.fromEntries(WEAPON_ORDER.map((name) => [name, Object.freeze({
-  mag: WEAPON_SPECS[name].mag,
-  lifetimeMs: WEAPON_SPECS[name].lifetimeMs,
-})])));
-const PLAYER_COLORS = [
-  "#4cc9f0", "#f72585", "#80ed99", "#ffd166",
-  "#b388ff", "#ff8c42", "#90e0ef", "#f28482",
-];
-const BOT_DIFFICULTIES = Object.freeze({
-  easy: Object.freeze({ moveRun: .44, moveWalk: .58, strafe: .08, preferredRange: 9.5, range: 19, fireScale: 1.48, reactionBase: 480, reactionJitter: 430, spreadBase: .098, spreadDistance: .0028 }),
-  normal: Object.freeze({ moveRun: .72, moveWalk: .86, strafe: .38, preferredRange: 8.0, range: 30, fireScale: .82, reactionBase: 105, reactionJitter: 160, spreadBase: .022, spreadDistance: .00105 }),
-  hard: Object.freeze({ moveRun: .94, moveWalk: 1.02, strafe: .72, preferredRange: 7.0, range: 38, fireScale: .56, reactionBase: 42, reactionJitter: 70, spreadBase: .0085, spreadDistance: .00048 }),
-  elite: Object.freeze({ moveRun: 1.06, moveWalk: 1.10, strafe: .96, preferredRange: 6.3, range: 46, fireScale: .42, reactionBase: 12, reactionJitter: 28, spreadBase: .0038, spreadDistance: .00022 }),
-});
+const BOT_DIFFICULTIES = {
+  easy: { moveRun:.44, moveWalk:.58, strafe:.08, preferredRange:9.5, range:19, fireScale:1.48, reactionBase:480, reactionJitter:430, spreadBase:.098, spreadDistance:.0028 },
+  normal: { moveRun:.72, moveWalk:.86, strafe:.38, preferredRange:8, range:30, fireScale:.82, reactionBase:105, reactionJitter:160, spreadBase:.022, spreadDistance:.00105 },
+  hard: { moveRun:.94, moveWalk:1.02, strafe:.72, preferredRange:7, range:38, fireScale:.56, reactionBase:42, reactionJitter:70, spreadBase:.0085, spreadDistance:.00048 },
+  elite: { moveRun:1.06, moveWalk:1.10, strafe:.96, preferredRange:6.3, range:46, fireScale:.42, reactionBase:12, reactionJitter:28, spreadBase:.0038, spreadDistance:.00022 },
+};
 function safeBotDifficulty(value) {
   const key = String(value || "normal").toLowerCase();
   return Object.prototype.hasOwnProperty.call(BOT_DIFFICULTIES, key) ? key : "normal";
@@ -99,6 +91,8 @@ function json(request, env, data, status = 200) {
     },
   });
 }
+
+function sendJson(socket, data) { try { socket.send(JSON.stringify(data)); return true; } catch { return false; } }
 
 function parseJson(text) {
   try {
@@ -191,13 +185,10 @@ function normalizeAdminIds(meta) {
   }
   return out;
 }
-function isRoomAdmin(meta, clientId) {
-  const id = safeClientId(clientId);
-  return !!id && normalizeAdminIds(meta).includes(id);
-}
+function isRoomAdmin(meta, clientId) { return !!clientId && meta.adminClientIds.includes(clientId); }
 
 function safeWeapon(value) {
-  return Object.prototype.hasOwnProperty.call(WEAPONS, value) ? value : "pistol";
+  return Object.prototype.hasOwnProperty.call(WEAPON_SPECS, value) ? value : "pistol";
 }
 function safePrimaryWeapon(value) {
   const weapon = safeWeapon(value);
@@ -209,10 +200,11 @@ function playerCanEquip(player, weapon) {
 }
 
 function safeEquipmentKind(value){return Object.prototype.hasOwnProperty.call(EQUIPMENT_CAPS,value)?value:'flash';}
-function freshAmmo(){return Object.fromEntries(Object.entries(WEAPONS).map(([name,spec])=>[name,spec.mag]));}
+function freshAmmo(){return Object.fromEntries(WEAPON_ORDER.map(name=>[name,WEAPON_SPECS[name].mag]));}
+function normalizeFireReady(value){const v=value&&typeof value==='object'?value:{};return Object.fromEntries(WEAPON_ORDER.map(name=>[name,Math.max(0,finiteNumber(v[name],0))]));}
 function normalizeAmmo(value){
   const v=value&&typeof value==="object"?value:{};
-  return Object.fromEntries(Object.entries(WEAPONS).map(([name,spec])=>[name,clamp(Math.floor(finiteNumber(v[name],spec.mag)),0,spec.mag)]));
+  return Object.fromEntries(WEAPON_ORDER.map(name=>{const mag=WEAPON_SPECS[name].mag;return[name,clamp(Math.floor(finiteNumber(v[name],mag)),0,mag)]}));
 }
 function freshEquipment(){return {...EQUIPMENT_CAPS};}
 function normalizeEquipment(v){v=v&&typeof v==="object"?v:{};return Object.fromEntries(Object.entries(EQUIPMENT_CAPS).map(([name,cap])=>[name,clamp(Math.floor(finiteNumber(v[name],cap)),0,cap)]));}
@@ -231,50 +223,6 @@ function activeFlashPower(player, now = Date.now()) {
   const duration = Math.max(1, finiteNumber(player?.flashDurationMs, until - now));
   const remaining = clamp((until - now) / duration, 0, 1);
   return clamp(finiteNumber(player?.flashPower, 0), 0, 1) * remaining;
-}
-
-function normalizeWorldSettings(value) {
-  const v = value && typeof value === "object" ? value : {};
-  const mv = v.movement && typeof v.movement === "object" ? v.movement : {};
-  const cv = v.combat && typeof v.combat === "object" ? v.combat : {};
-  const wv = v.weapons && typeof v.weapons === "object" ? v.weapons : {};
-  const weapon = (name) => {
-    const src = wv[name] && typeof wv[name] === "object" ? wv[name] : {};
-    const def = DEFAULT_WORLD_SETTINGS.weapons[name];
-    return {
-      damage: clamp(finiteNumber(src.damage, def.damage), 1, 400),
-      speed: clamp(finiteNumber(src.speed, def.speed), 10, 400),
-      reloadMs: clamp(Math.round(finiteNumber(src.reloadMs, def.reloadMs)), 100, 5000),
-      cooldownMs: clamp(Math.round(finiteNumber(src.cooldownMs, def.cooldownMs)), 50, 2500),
-    };
-  };
-  return {
-    movement: (() => {
-      const runSpeed = clamp(finiteNumber(mv.runSpeed, DEFAULT_WORLD_SETTINGS.movement.runSpeed), 3, 16);
-      const walkSpeed = Math.min(runSpeed, clamp(finiteNumber(mv.walkSpeed, DEFAULT_WORLD_SETTINGS.movement.walkSpeed), 1.5, 9));
-      return {
-        runSpeed,
-        walkSpeed,
-        jumpHeight: clamp(finiteNumber(mv.jumpHeight, DEFAULT_WORLD_SETTINGS.movement.jumpHeight), 0.4, 5),
-        gravity: clamp(finiteNumber(mv.gravity, DEFAULT_WORLD_SETTINGS.movement.gravity), 8, 40),
-      };
-    })(),
-    combat: {
-      regenDelayMs: clamp(Math.round(finiteNumber(cv.regenDelayMs, DEFAULT_WORLD_SETTINGS.combat.regenDelayMs)), 0, 15000),
-      regenPerSecond: clamp(finiteNumber(cv.regenPerSecond, DEFAULT_WORLD_SETTINGS.combat.regenPerSecond), 0, 30),
-      respawnMs: clamp(Math.round(finiteNumber(cv.respawnMs, DEFAULT_WORLD_SETTINGS.combat.respawnMs)), 1000, 10000),
-    },
-    weapons: { pistol: weapon("pistol"), assault: weapon("assault"), shotgun: weapon("shotgun"), sniper: weapon("sniper") },
-  };
-}
-
-
-function weaponSpreadRadians(player, weapon, settings) {
-  const accuracy = WEAPON_ACCURACY[weapon] || WEAPON_ACCURACY.pistol;
-  const moveRatio = clamp(finiteNumber(player?.moveSpeed, 0) / Math.max(0.1, settings.movement.runSpeed), 0, 1);
-  let degrees = (player?.ads ? accuracy.adsDeg : accuracy.hipDeg) + accuracy.moveDeg * moveRatio * (player?.ads ? 0.35 : 1);
-  if (player?.crouched) degrees *= 0.82;
-  return degrees * Math.PI / 180;
 }
 
 function spreadShotAngles(yaw, pitch, radius) {
@@ -308,11 +256,11 @@ function publicPlayer(attachment) {
     weapon: safeWeapon(attachment.weapon),
     primaryWeapon: safePrimaryWeapon(attachment.primaryWeapon),
     pendingTeam: attachment.pendingTeam ? safeTeam(attachment.pendingTeam) : '',
-    ammo: normalizeAmmo(attachment.ammo),
-    equipment: normalizeEquipment(attachment.equipment),
+    ammo: attachment.ammo,
+    equipment: attachment.equipment,
     reloadAt: attachment.reloadAt || 0,
     reloadWeapon: attachment.reloadWeapon || "",
-    combatRev: Math.max(0, Math.floor(finiteNumber(attachment.combatRev, 0))),
+    combatRev: 0,
     kills: Math.max(0, Math.floor(finiteNumber(attachment.kills, 0))),
     deaths: Math.max(0, Math.floor(finiteNumber(attachment.deaths, 0))),
     godMode: !!attachment.godMode,
@@ -347,9 +295,7 @@ function publicBot(bot) {
   };
 }
 
-function sendLoadout(socket, me, extra = {}) {
-  try { socket.send(JSON.stringify({ t:'loadout', weapon:safeWeapon(me.weapon), primaryWeapon:safePrimaryWeapon(me.primaryWeapon), ammo:normalizeAmmo(me.ammo), reloadAt:me.reloadAt||0, reloadWeapon:me.reloadWeapon||'', rev:Math.max(0,Math.floor(finiteNumber(me.combatRev,0))), ...extra })); } catch {}
-}
+function sendLoadout(socket, me, extra = {}) { sendJson(socket,{t:'loadout',weapon:safeWeapon(me.weapon),primaryWeapon:safePrimaryWeapon(me.primaryWeapon),ammo:me.ammo,reloadAt:me.reloadAt||0,reloadWeapon:me.reloadWeapon||'',rev:0,...extra}); }
 
 const TEAM_SPAWNS = {
   blue: [[-92,-82],[-98,74],[-104,0],[-66,24],[-28,-96],[-76,-48]],
@@ -359,7 +305,18 @@ function spawnForTeam(team,index){
   team=safeTeam(team);const points=TEAM_SPAWNS[team],p=points[Math.abs(index)%points.length];
   return {x:p[0],y:terrainHeight(p[0],p[1]),z:p[1]};
 }
-function makeBot(index, team, teamIndex) {
+function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
+  const next={
+    ...player,...spawn,team,pendingTeam:'',hp:100,wastedUntil:0,regenAt:0,
+    weapon:safePrimaryWeapon(player.primaryWeapon),ammo:freshAmmo(),equipment:freshEquipment(),reloadAt:0,reloadWeapon:'',
+    fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,ads:false,crouched:false,moveSpeed:0,
+    verticalVelocity:0,serverGrounded:true,lastVerticalAt:now,lastStateAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
+    flashUntil:0,flashPower:0,flashDurationMs:0,knockVelocityX:0,knockVelocityZ:0,
+  };
+  if(resetStats)Object.assign(next,{kills:0,deaths:0,multiKillCount:0,lastKillAt:0});
+  return next;
+}
+function makeBot(team, teamIndex) {
   team = safeTeam(team);
   const spawn = spawnForTeam(team, teamIndex);
   const label = team === "red" ? "Red" : "Blue";
@@ -367,19 +324,16 @@ function makeBot(index, team, teamIndex) {
     id: `bot-${team}-${teamIndex + 1}`,
     name: `${label} Bot ${teamIndex + 1}`,
     team,
-    color: TEAM_COLORS[team],
     ...spawn,
     yaw: 0,
     hp: 100,
     wastedUntil: 0,
-    lastShot: 0,
-    nextShotDelay: 800 + Math.floor(Math.random() * 450),
+    nextShotAt: 0,
     ammo: freshAmmo(),
     reloadAt: 0,
     reloadWeapon: "",
     weapon: "assault",
     primaryWeapon: 'assault',
-    lastHitAt: 0,
     regenAt: 0,
     kills: 0,
     deaths: 0,
@@ -389,8 +343,8 @@ function makeBots(blueBots, redBots) {
   blueBots = clamp(Math.floor(finiteNumber(blueBots, 0)), 0, MAX_BOTS);
   redBots = clamp(Math.floor(finiteNumber(redBots, 0)), 0, MAX_BOTS);
   const bots = [];
-  for (let i = 0; i < blueBots; i += 1) bots.push(makeBot(bots.length, "blue", i));
-  for (let i = 0; i < redBots; i += 1) bots.push(makeBot(bots.length, "red", i));
+  for (let i = 0; i < blueBots; i += 1) bots.push(makeBot("blue", i));
+  for (let i = 0; i < redBots; i += 1) bots.push(makeBot("red", i));
   return bots;
 }
 function reconcileBots(existing, blueBots, redBots) {
@@ -404,7 +358,6 @@ function reconcileBots(existing, blueBots, redBots) {
       id: fresh.id,
       name: fresh.name,
       team: fresh.team,
-      color: fresh.color,
       x: clamp(finiteNumber(old.x, fresh.x), -ARENA_LIMIT, ARENA_LIMIT),
       z: clamp(finiteNumber(old.z, fresh.z), -ARENA_LIMIT, ARENA_LIMIT),
       y: terrainHeight(clamp(finiteNumber(old.x, fresh.x), -ARENA_LIMIT, ARENA_LIMIT), clamp(finiteNumber(old.z, fresh.z), -ARENA_LIMIT, ARENA_LIMIT)),
@@ -649,6 +602,8 @@ export class GameRoom {
     if (meta) {
       meta.adminClientIds = normalizeAdminIds(meta);
       meta.clientAuthHashes = normalizeClientAuthHashes(meta);
+      meta.settings = normalizeWorldSettings(meta.settings);
+      meta.match = normalizeMatchState(meta.match, Date.now(), meta.match || DEFAULT_MATCH_RULES);
       this.metaCache = meta;
     }
     return meta || null;
@@ -675,7 +630,7 @@ export class GameRoom {
       : type === 'simTick' ? { rate: 40, burst: 60 }
       : type === 'fire' ? { rate: 24, burst: 30 }
       : ['throw','reload','weapon','team','god','adminPlayer','adminSettings','adminMatch','adminBots'].includes(type) ? { rate: 14, burst: 22 }
-      : ['ping','combatSync'].includes(type) ? { rate: 8, burst: 12 }
+      : type === 'ping' ? { rate: 8, burst: 12 }
       : { rate: 30, burst: 45 };
     let state = this.socketRate.get(socket);
     if (!state) {
@@ -736,14 +691,13 @@ export class GameRoom {
       this.bots = makeBots(counts.blueBots, counts.redBots);
       await this.ctx.storage.put("bots", this.bots);
     }
-    meta.match = normalizeMatchState(meta.match, Date.now(), meta.match || DEFAULT_MATCH_RULES);
     this.lastSimAt = Date.now();
     this.simAccumulatorMs = 0;
   }
 
   startWarmupIfWaiting(meta, now = Date.now()) {
-    const match = normalizeMatchState(meta.match, now, meta.match || DEFAULT_MATCH_RULES);
-    if (match.status !== 'waiting') { meta.match = match; return false; }
+    const match = meta.match;
+    if (match.status !== 'waiting') return false;
     Object.assign(match, { status:'warmup', warmupEndsAt:now + MATCH_WARMUP_MS, startedAt:0, endsAt:0, endedAt:0, restartAt:0, winner:'', reason:'', updatedAt:now });
     meta.match = match; this.matchDirty = true;
     return true;
@@ -754,7 +708,7 @@ export class GameRoom {
   }
 
   finishMatch(meta, winner, reason, now = Date.now()) {
-    const match = normalizeMatchState(meta.match, now, meta.match || DEFAULT_MATCH_RULES);
+    const match = meta.match;
     if (match.status === 'ended') return false;
     Object.assign(match, { status:'ended', endedAt:now, restartAt:now + MATCH_END_MS, winner: winner || 'draw', reason:String(reason||'').slice(0,24), updatedAt:now });
     this.bullets.clear(); this.throwables.clear();
@@ -763,7 +717,7 @@ export class GameRoom {
   }
 
   resetRound(meta, now = Date.now()) {
-    const old = normalizeMatchState(meta.match, now, meta.match || DEFAULT_MATCH_RULES);
+    const old = meta.match;
     meta.match = { ...defaultMatchState(now, old), round:old.round + 1, status:'warmup', warmupEndsAt:now + MATCH_WARMUP_MS, scoreLimit:old.scoreLimit, timeLimitMs:old.timeLimitMs };
     this.bullets.clear(); this.throwables.clear();
     const players=[];
@@ -772,10 +726,8 @@ export class GameRoom {
       const p = socket.deserializeAttachment() || {};
       if (!p.clientId || p.replaced) continue;
       const team = p.pendingTeam ? safeTeam(p.pendingTeam) : safeTeam(p.team);
-      const spawn = spawnForTeam(team, index++);
-      const reset = { ...p, ...spawn, team, pendingTeam:'', hp:100, wastedUntil:0, lastHitAt:0, regenAt:0, kills:0, deaths:0, multiKillCount:0, lastKillAt:0, weapon:safePrimaryWeapon(p.primaryWeapon), ammo:freshAmmo(), equipment:freshEquipment(), reloadAt:0, reloadWeapon:'', weaponReadyAt:0, combatRev:Math.max(0,finiteNumber(p.combatRev,0))+1, ads:false, crouched:false, moveSpeed:0, verticalVelocity:0, serverGrounded:true, lastVerticalAt:now, lastStateAt:now, moveBudgetSec:MOVE_BUDGET_INITIAL_SEC, flashUntil:0, flashPower:0, flashDurationMs:0, knockVelocityX:0, knockVelocityZ:0 };
-      if (reset.godMode) refreshUnlimitedResources(reset);
-      socket.serializeAttachment(reset); players.push(publicPlayer(reset));
+      const reset=spawnedPlayerState(p,spawnForTeam(team,index++),team,now,{resetStats:true});
+      socket.serializeAttachment(reset);players.push(publicPlayer(reset));
     }
     this.bots = makeBots(meta.blueBots || 0, meta.redBots || 0);
     this.matchDirty = true;
@@ -783,8 +735,7 @@ export class GameRoom {
   }
 
   stepMatch(now, meta) {
-    const match = normalizeMatchState(meta.match, now, meta.match || DEFAULT_MATCH_RULES);
-    meta.match = match;
+    const match = meta.match;
     if (match.status === 'waiting') return;
     if (match.status === 'warmup' && match.warmupEndsAt && now >= match.warmupEndsAt) {
       Object.assign(match, { status:'active', startedAt:now, endsAt:now + match.timeLimitMs, warmupEndsAt:0, winner:'', reason:'', updatedAt:now });
@@ -799,7 +750,7 @@ export class GameRoom {
 
   recordMatchKill(attackerId, victimId, now = Date.now()) {
     const meta = this.metaCache; if (!meta) return;
-    const match = normalizeMatchState(meta.match, now, meta.match || DEFAULT_MATCH_RULES);
+    const match = meta.match;
     if (match.status !== 'active' || !attackerId || attackerId === victimId) return;
     const attacker = this.findCombatant(attackerId), victim = this.findCombatant(victimId);
     if (!attacker?.id || !victim?.id || attacker.team === victim.team || attacker.godMode) return;
@@ -849,7 +800,7 @@ export class GameRoom {
     if (clientAuth.length < 32) return { status: 401, data: { error: "Missing client credential." } };
     if (!this.allowJoinTicketRequest(clientId, now)) return { status: 429, data: { error: "Too many join attempts. Try again shortly." } };
     const clientAuthHash = await sha256Hex(clientAuth);
-    const expected = normalizeClientAuthHashes(meta)[clientId] || "";
+    const expected = meta.clientAuthHashes[clientId] || "";
     if (expected && expected !== clientAuthHash) return { status: 403, data: { error: "Client credential rejected." } };
     const tickets = await this.loadJoinTickets(now);
     const ticket = makeJoinTicket();
@@ -953,7 +904,7 @@ export class GameRoom {
     const name = safeName(join.name);
     const requestedTeam = safeTeam(join.team);
     const requestedPrimary = safePrimaryWeapon(join.primaryWeapon);
-    const authHashes = normalizeClientAuthHashes(meta);
+    const authHashes = meta.clientAuthHashes;
     const expectedAuthHash = authHashes[clientId] || '';
     if (expectedAuthHash && expectedAuthHash !== clientAuthHash) return json(request, this.env, { error: "Client credential rejected." }, 403);
 
@@ -983,7 +934,6 @@ export class GameRoom {
 
     const requestedTeamCount = liveMembers.filter(({attachment:a}) => safeTeam(a.team) === requestedTeam).length;
     const spawn = preserved || spawnForTeam(requestedTeam, requestedTeamCount);
-    const colorIndex = preserved?.colorIndex ?? (liveMembers.length % PLAYER_COLORS.length);
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -991,8 +941,6 @@ export class GameRoom {
       clientId,
       name,
       team: preserved?.team || requestedTeam,
-      colorIndex,
-      color: TEAM_COLORS[preserved?.team || requestedTeam],
       connectedAt: Date.now(),
       replaced: false,
       x: clamp(finiteNumber(spawn.x, 0), -ARENA_LIMIT, ARENA_LIMIT),
@@ -1002,8 +950,7 @@ export class GameRoom {
       pitch: clamp(finiteNumber(spawn.pitch, 0), -1.4, 1.4),
       hp: clamp(Math.floor(finiteNumber(spawn.hp, 100)), 0, 100),
       wastedUntil: finiteNumber(spawn.wastedUntil, 0),
-      lastShot: 0,
-      lastHitAt: finiteNumber(spawn.lastHitAt, 0),
+      fireReadyAt: normalizeFireReady(spawn.fireReadyAt),
       regenAt: finiteNumber(spawn.regenAt, 0),
       primaryWeapon: safePrimaryWeapon(preserved?.primaryWeapon || requestedPrimary),
       weapon: preserved && playerCanEquip({ primaryWeapon: preserved?.primaryWeapon || requestedPrimary }, preserved.weapon)
@@ -1014,7 +961,7 @@ export class GameRoom {
       reloadAt: finiteNumber(spawn.reloadAt, 0),
       reloadWeapon: safeWeapon(spawn.reloadWeapon || spawn.weapon),
       weaponReadyAt: Math.max(0, finiteNumber(spawn.weaponReadyAt, 0)),
-      combatRev: Math.max(0, Math.floor(finiteNumber(spawn.combatRev, 0))),
+      equipmentReadyAt: Math.max(0, finiteNumber(spawn.equipmentReadyAt, 0)),
       kills: Math.max(0, Math.floor(finiteNumber(spawn.kills, 0))),
       deaths: Math.max(0, Math.floor(finiteNumber(spawn.deaths, 0))),
       godMode: preserved ? !!preserved.godMode : (clientId === meta.ownerClientId && !!meta.creatorGod),
@@ -1044,7 +991,7 @@ export class GameRoom {
     const currentPlayers = liveMembers.map(({ attachment: a }) => publicPlayer(a));
     if (this.startWarmupIfWaiting(meta, Date.now())) await this.putMeta(meta);
 
-    server.send(JSON.stringify({
+    sendJson(server,{
       t: "welcome",
       self: publicPlayer(attachment),
       players: currentPlayers,
@@ -1054,13 +1001,13 @@ export class GameRoom {
       botConfig: { blueBots: meta.blueBots || 0, redBots: meta.redBots || 0, difficulty: safeBotDifficulty(meta.botDifficulty) },
       isAdmin: isRoomAdmin(meta, clientId),
       ownerClientId: meta.ownerClientId,
-      settings: normalizeWorldSettings(meta.settings),
+      settings: meta.settings,
       match: publicMatchState(meta.match, Date.now()),
       custom: !!meta.custom,
       serverTime: Date.now(),
       protocol: PROTOCOL_VERSION,
       gameVersion: GAME_VERSION,
-    }));
+    });
 
     this.broadcast({ t: "join", player: publicPlayer(attachment) }, server);
     await this.updateDirectory(liveMembers.length + 1, meta);
@@ -1091,9 +1038,8 @@ export class GameRoom {
     let me = socket.deserializeAttachment() || {};
     if (!me.clientId || me.replaced) return;
     const now = receivedAt;
-    const settings = normalizeWorldSettings(meta.settings);
+    const settings = meta.settings;
 
-    if(me.godMode)refreshUnlimitedResources(me);
     me = this.advanceReloadForSocket(socket, me, now, settings);
 
     if (payload.t === "state") {
@@ -1103,12 +1049,10 @@ export class GameRoom {
         socket.serializeAttachment(me);
         const state = { t: "state", id: me.clientId, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched };
         this.broadcast(state, socket);
-        if (next.corrected) {
-          try { socket.send(JSON.stringify({
-            t: "correction", x: me.x, y: me.y, z: me.z, vertical: next.verticalCorrected,
-            verticalVelocity: finiteNumber(me.verticalVelocity, 0), grounded: me.serverGrounded !== false, crouched: !!me.crouched,
-          })); } catch {}
-        }
+        if (next.corrected) sendJson(socket,{
+          t:"correction",x:me.x,y:me.y,z:me.z,vertical:next.verticalCorrected,
+          verticalVelocity:finiteNumber(me.verticalVelocity,0),grounded:me.serverGrounded!==false,crouched:!!me.crouched,
+        });
       }
       await this.stepSimulation(now, meta);
       return;
@@ -1117,101 +1061,94 @@ export class GameRoom {
 
     if (payload.t === "simTick") { await this.stepSimulation(now, meta); return; }
 
-    if (payload.t === "combatSync") { sendLoadout(socket, me, { action:'sync', accepted:true }); return; }
-
     if (payload.t === "fire") {
-      const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));
-      const liveMatch=normalizeMatchState(meta.match,now,meta.match||DEFAULT_MATCH_RULES);
-      if(liveMatch.status!=='active'){sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'match_inactive'});return;}
+      if(meta.match.status!=='active'){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'match_inactive'});return;}
       const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
-      if(requestedWeapon!==me.weapon){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'weapon_mismatch'});return;}
-      if(now<finiteNumber(me.weaponReadyAt,0)){const retryAfterMs=Math.max(1,Math.ceil(finiteNumber(me.weaponReadyAt,0)-now));socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'weapon_switch',retryAfterMs});return;}
+      if(requestedWeapon!==me.weapon){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'weapon_mismatch'});return;}
+      const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon],unlimited=!!me.godMode;
+      if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'dead'});return;}
+      if(!unlimited&&me.reloadAt){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'reloading'});return;}
+      const switchReadyAt=finiteNumber(me.weaponReadyAt,0),shotReadyAt=finiteNumber(me.fireReadyAt[weapon],0),readyAt=Math.max(switchReadyAt,shotReadyAt);
+      if(now<readyAt){const retryAfterMs=Math.max(1,Math.ceil(readyAt-now)),reason=switchReadyAt>=shotReadyAt?'weapon_switch':'cooldown';sendLoadout(socket,me,{action:'fire',accepted:false,reason,retryAfterMs});return;}
+      if(!unlimited&&me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
+
       me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4);
       const flashPower=activeFlashPower(me,now);let shotYaw=me.yaw,shotPitch=me.pitch;
       if(flashPower>.02){const flashSpread=.035+flashPower*.22;shotYaw+=(Math.random()-.5)*2*flashSpread;shotPitch=clamp(shotPitch+(Math.random()-.5)*1.5*flashSpread,-1.4,1.4);me.ads=false;}
-      const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon],unlimited=!!me.godMode;me.ammo=normalizeAmmo(me.ammo);
-      if(unlimited)refreshUnlimitedResources(me);
-      if(me.hp<=0||now<me.wastedUntil){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'dead'});return;}
-      if(!unlimited&&me.reloadAt){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'reloading'});return;}
-      if(now-me.lastShot<spec.cooldownMs){const retryAfterMs=Math.max(1,Math.ceil(spec.cooldownMs-(now-me.lastShot)));socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'cooldown',retryAfterMs});return;}
-      if(!unlimited&&me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',seq,accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
-      me.lastShot=now;if(!unlimited)me.ammo[weapon]-=1;const autoReloadStarted=!unlimited&&me.ammo[weapon]===0;if(autoReloadStarted){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;}me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);
-      const spreadRadius=weaponSpreadRadians(me,weapon,settings),pellets=weapon==='shotgun'?8:1,eyeHeight=(me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.08;
-      for(let i=0;i<pellets;i++){const a=spreadShotAngles(shotYaw,shotPitch,spreadRadius),cp=Math.cos(a.pitch),sp=Math.sin(a.pitch),sx=-Math.sin(a.yaw)*cp,sy=sp,sz=-Math.cos(a.yaw)*cp;this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage,weapon,lifetimeMs:WEAPONS[weapon].lifetimeMs,x:me.x+sx*.20,y:me.y+eyeHeight+sy*.05,z:me.z+sz*.20,vx:sx*spec.speed,vy:sy*spec.speed,vz:sz*spec.speed,now,consumeAmmo:i===0&&!unlimited});}
-      sendLoadout(socket,me,{action:'fire',seq,accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
+      me.fireReadyAt[weapon]=now+spec.cooldownMs;if(!unlimited)me.ammo[weapon]-=1;
+      const autoReloadStarted=!unlimited&&me.ammo[weapon]===0;if(autoReloadStarted){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;}
+      socket.serializeAttachment(me);
+      const spreadRadius=weaponSpreadRadians(weapon,me.moveSpeed,settings.movement.runSpeed,!!me.ads,!!me.crouched),pellets=weapon==='shotgun'?8:1,eyeHeight=(me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.08;
+      for(let i=0;i<pellets;i++){const a=spreadShotAngles(shotYaw,shotPitch,spreadRadius),cp=Math.cos(a.pitch),sp=Math.sin(a.pitch),sx=-Math.sin(a.yaw)*cp,sy=sp,sz=-Math.cos(a.yaw)*cp;this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage,weapon,lifetimeMs:WEAPON_SPECS[weapon].lifetimeMs,x:me.x+sx*.20,y:me.y+eyeHeight+sy*.05,z:me.z+sz*.20,vx:sx*spec.speed,vy:sy*spec.speed,vz:sz*spec.speed,now,consumeAmmo:i===0&&!unlimited});}
+      sendLoadout(socket,me,{action:'fire',accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
     }
 
     if(payload.t==='throw'){
-      const liveMatch=normalizeMatchState(meta.match,now,meta.match||DEFAULT_MATCH_RULES);
-      if(liveMatch.status!=='active'){try{socket.send(JSON.stringify({t:'throwAck',id:safeClientId(payload.id).slice(0,24),accepted:false,reason:'match_inactive'}));}catch{}return;}
-      const kind=safeEquipmentKind(payload.kind),unlimited=!!me.godMode;me.equipment=normalizeEquipment(me.equipment);if(unlimited)refreshUnlimitedResources(me);
+      if(meta.match.status!=='active'){sendJson(socket,{t:'throwAck',id:safeClientId(payload.id).slice(0,24),accepted:false,reason:'match_inactive'});return;}
+      const kind=safeEquipmentKind(payload.kind),unlimited=!!me.godMode;
       const requestedId=safeClientId(payload.id).slice(0,24),id=requestedId&&!this.throwables.has(requestedId)?requestedId:crypto.randomUUID().replace(/-/g,'').slice(0,16);
-      if(me.hp<=0||now<me.wastedUntil||now-finiteNumber(me.lastThrow,0)<360||(!unlimited&&me.equipment[kind]<=0)){try{socket.send(JSON.stringify({t:'throwAck',id:requestedId||id,accepted:false}));}catch{}return;}
+      if(me.hp<=0||now<me.wastedUntil||now<finiteNumber(me.equipmentReadyAt,0)||(!unlimited&&me.equipment[kind]<=0)){sendJson(socket,{t:'throwAck',id:requestedId||id,accepted:false});return;}
       me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.25,1.15);
       const flashPower=activeFlashPower(me,now);let throwYaw=me.yaw,throwPitch=me.pitch;
       if(flashPower>.02){const flashSpread=.025+flashPower*.16;throwYaw+=(Math.random()-.5)*2*flashSpread;throwPitch=clamp(throwPitch+(Math.random()-.5)*1.4*flashSpread,-1.25,1.15);me.ads=false;}
-      const throwSpeed=TACTICAL_THROW_SPEED,loft=TACTICAL_THROW_LOFT;
-      me.lastThrow=now;if(!unlimited)me.equipment[kind]-=1;socket.serializeAttachment(me);try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment,unlimited}));socket.send(JSON.stringify({t:'throwAck',id,accepted:true}));}catch{}
-      const cp=Math.cos(throwPitch),fx=-Math.sin(throwYaw)*cp,fy=Math.sin(throwPitch),fz=-Math.cos(throwYaw)*cp;
-      const g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+fx*.82,y:me.y+(me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.22,z:me.z+fz*.82,vx:fx*throwSpeed,vy:fy*throwSpeed+loft,vz:fz*throwSpeed,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:1650),stuck:false,lastBroadcast:now};
+      const throwVelocity=tacticalThrowVelocity(throwYaw,throwPitch,TACTICAL_THROW_SPEED,TACTICAL_THROW_LOFT);
+      me.equipmentReadyAt=now+360;if(!unlimited)me.equipment[kind]-=1;socket.serializeAttachment(me);sendJson(socket,{t:'equipment',equipment:me.equipment,unlimited});sendJson(socket,{t:'throwAck',id,accepted:true});
+      const g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+throwVelocity.fx*.82,y:me.y+(me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.22,z:me.z+throwVelocity.fz*.82,vx:throwVelocity.vx,vy:throwVelocity.vy,vz:throwVelocity.vz,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:1650),stuck:false,lastBroadcast:now};
       this.throwables.set(id,g);this.broadcast({t:'throwable',...g,at:now});await this.stepSimulation(now,meta);return;
     }
 
     if (payload.t === "reload") {
-      const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
-      if(requestedWeapon!==me.weapon){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:false,reason:'weapon_mismatch'});return;}
-      const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon];me.ammo=normalizeAmmo(me.ammo);
-      if(me.hp<=0||now<me.wastedUntil){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:false,reason:'dead'});return;}
-      if(me.godMode){refreshUnlimitedResources(me);socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:true,reason:'unlimited',unlimited:true});return;}
-      if(me.reloadAt){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:true,reason:'already'});return;}
-      if(me.ammo[weapon]>=WEAPONS[weapon].mag){socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:false,reason:'full'});return;}
-      me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',seq,accepted:true});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;
+      const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
+      if(requestedWeapon!==me.weapon){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'weapon_mismatch'});return;}
+      const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon];
+      if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'dead'});return;}
+      if(me.godMode){sendLoadout(socket,me,{action:'reload',accepted:true,reason:'unlimited',unlimited:true});return;}
+      if(me.reloadAt){sendLoadout(socket,me,{action:'reload',accepted:true,reason:'already'});return;}
+      if(me.ammo[weapon]>=WEAPON_SPECS[weapon].mag){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'full'});return;}
+      me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'reload',accepted:true});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;
     }
 
     if (payload.t === "weapon") {
-      if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'weapon',seq:Math.max(0,Math.floor(finiteNumber(payload.seq,0))),accepted:false,reason:'dead'});return;}
-      const weapon=safeWeapon(payload.weapon),seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));
-      if(!playerCanEquip(me,weapon)){sendLoadout(socket,me,{action:'weapon',seq,accepted:false,reason:'loadout'});return;}
-      if(weapon!==me.weapon){me.weapon=weapon;me.reloadAt=0;me.reloadWeapon="";me.weaponReadyAt=now+WEAPON_SWITCH_LOCK_MS;me.ammo=normalizeAmmo(me.ammo);me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;socket.serializeAttachment(me);this.broadcast({t:'weapon',id:me.clientId,weapon},socket);}
-      sendLoadout(socket,me,{action:'weapon',seq,accepted:true,retryAfterMs:Math.max(0,Math.ceil(finiteNumber(me.weaponReadyAt,0)-now))});return;
+      if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'weapon',accepted:false,reason:'dead'});return;}
+      const weapon=safeWeapon(payload.weapon);
+      if(!playerCanEquip(me,weapon)){sendLoadout(socket,me,{action:'weapon',accepted:false,reason:'loadout'});return;}
+      if(weapon!==me.weapon){me.weapon=weapon;me.reloadAt=0;me.reloadWeapon="";me.weaponReadyAt=now+WEAPON_SWITCH_LOCK_MS;socket.serializeAttachment(me);this.broadcast({t:'weapon',id:me.clientId,weapon},socket);}
+      sendLoadout(socket,me,{action:'weapon',accepted:true,retryAfterMs:Math.max(0,Math.ceil(finiteNumber(me.weaponReadyAt,0)-now))});return;
     }
 
     if (payload.t === "god") {
       if (!isRoomAdmin(meta, me.clientId)) {
-        try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "Admin access required for God Mode." })); } catch {}
-        try { socket.send(JSON.stringify({ t: "god", id: me.clientId, enabled: !!me.godMode })); } catch {}
+        sendJson(socket,{t:"notice",tone:"error",text:"Admin access required for God Mode."});
+        sendJson(socket,{t:"god",id:me.clientId,enabled:!!me.godMode});
         return;
       }
       me.godMode = !!payload.enabled;
       if(me.godMode){refreshUnlimitedResources(me);meta.custom=true;await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);}
-
-      me.combatRev=Math.max(0,finiteNumber(me.combatRev,0))+1;
       socket.serializeAttachment(me);
       this.broadcast({ t: "god", id: me.clientId, enabled: me.godMode });
-      if(me.godMode){try{socket.send(JSON.stringify({t:'equipment',equipment:me.equipment,unlimited:true}));}catch{}}
+      if(me.godMode)sendJson(socket,{t:'equipment',equipment:me.equipment,unlimited:true});
       sendLoadout(socket,me,{action:'god',accepted:true,unlimited:!!me.godMode});
       return;
     }
 
     if (payload.t === "team") {
       const nextTeam = safeTeam(payload.team);
-      const seq = Math.max(0, Math.floor(finiteNumber(payload.seq, 0)));
       const currentTeam = safeTeam(me.team);
       if (nextTeam === currentTeam) {
         me.pendingTeam = ''; socket.serializeAttachment(me);
-        sendLoadout(socket, me, { action:'team', seq, accepted:true, pendingTeam:'' });
-        try { socket.send(JSON.stringify({ t:'teamQueued', id:me.clientId, team:currentTeam, pendingTeam:'' })); } catch {}
+        sendLoadout(socket, me, { action:'team', accepted:true, pendingTeam:'' });
+        sendJson(socket,{t:'teamQueued',id:me.clientId,team:currentTeam,pendingTeam:''});
         return;
       }
       me.pendingTeam = nextTeam; socket.serializeAttachment(me);
-      sendLoadout(socket, me, { action:'team', seq, accepted:true, pendingTeam:nextTeam });
-      try { socket.send(JSON.stringify({ t:'teamQueued', id:me.clientId, team:currentTeam, pendingTeam:nextTeam })); } catch {}
+      sendLoadout(socket, me, { action:'team', accepted:true, pendingTeam:nextTeam });
+      sendJson(socket,{t:'teamQueued',id:me.clientId,team:currentTeam,pendingTeam:nextTeam});
       return;
     }
 
     if (payload.t === "adminPlayer") {
       if (!isRoomAdmin(meta, me.clientId)) {
-        try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "Admin access required." })); } catch {}
+        sendJson(socket,{t:"notice",tone:"error",text:"Admin access required."});
         return;
       }
       const targetId = safeClientId(payload.targetId);
@@ -1220,7 +1157,7 @@ export class GameRoom {
         return p.clientId === targetId && !p.replaced;
       });
       if (!targetSocket) {
-        try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "Player is no longer connected." })); } catch {}
+        sendJson(socket,{t:"notice",tone:"error",text:"Player is no longer connected."});
         return;
       }
       let target = targetSocket.deserializeAttachment() || {};
@@ -1228,11 +1165,10 @@ export class GameRoom {
       if (action === "god") {
         target.godMode = !!payload.enabled;
         if (target.godMode) { refreshUnlimitedResources(target); meta.custom = true; await this.putMeta(meta); await this.updateDirectory(this.liveSockets().length, meta); }
-        target.combatRev = Math.max(0, finiteNumber(target.combatRev, 0)) + 1;
         targetSocket.serializeAttachment(target);
         this.broadcast({ t: "god", id: target.clientId, enabled: target.godMode });
         if (target.godMode) {
-          try { targetSocket.send(JSON.stringify({ t: "equipment", equipment: target.equipment, unlimited: true })); } catch {}
+          sendJson(targetSocket,{t:"equipment",equipment:target.equipment,unlimited:true});
         }
         sendLoadout(targetSocket, target, { action: "god", accepted: true, unlimited: !!target.godMode });
         return;
@@ -1240,10 +1176,10 @@ export class GameRoom {
       if (action === "admin") {
         const enabled = !!payload.enabled;
         if (targetId === meta.ownerClientId && !enabled) {
-          try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "The match owner cannot be demoted." })); } catch {}
+          sendJson(socket,{t:"notice",tone:"error",text:"The match owner cannot be demoted."});
           return;
         }
-        const admins = new Set(normalizeAdminIds(meta));
+        const admins = new Set(meta.adminClientIds);
         if (enabled) admins.add(targetId); else admins.delete(targetId);
         admins.add(meta.ownerClientId);
         meta.adminClientIds = [...admins];
@@ -1251,7 +1187,6 @@ export class GameRoom {
         target.admin = isRoomAdmin(meta, targetId);
         if (!target.admin && target.godMode) {
           target.godMode = false;
-          target.combatRev = Math.max(0, finiteNumber(target.combatRev, 0)) + 1;
           this.broadcast({ t: "god", id: targetId, enabled: false });
           sendLoadout(targetSocket, target, { action: "god", accepted: true, unlimited: false });
         }
@@ -1264,7 +1199,7 @@ export class GameRoom {
 
     if (payload.t === "adminSettings") {
       if (!isRoomAdmin(meta, me.clientId)) {
-        try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "Admin access required." })); } catch {}
+        sendJson(socket,{t:"notice",tone:"error",text:"Admin access required."});
         return;
       }
       const nextSettings = normalizeWorldSettings(payload.settings);
@@ -1278,7 +1213,7 @@ export class GameRoom {
 
     if (payload.t === "adminMatch") {
       if (!isRoomAdmin(meta, me.clientId)) {
-        try { socket.send(JSON.stringify({ t:"notice", tone:"error", text:"Admin access required." })); } catch {}
+        sendJson(socket,{t:"notice",tone:"error",text:"Admin access required."});
         return;
       }
       const rules = normalizeMatchRules(payload.rules);
@@ -1299,13 +1234,13 @@ export class GameRoom {
 
     if (payload.t === "adminBots") {
       if (!isRoomAdmin(meta, me.clientId)) {
-        try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: "Admin access required." })); } catch {}
+        sendJson(socket,{t:"notice",tone:"error",text:"Admin access required."});
         return;
       }
       const blueBots = clamp(Math.floor(finiteNumber(payload.blueBots, meta.blueBots || 0)), 0, MAX_BOTS);
       const redBots = clamp(Math.floor(finiteNumber(payload.redBots, meta.redBots || 0)), 0, MAX_BOTS);
       if (blueBots + redBots > MAX_BOTS) {
-        try { socket.send(JSON.stringify({ t: "notice", tone: "error", text: `Maximum ${MAX_BOTS} bots per match.` })); } catch {}
+        sendJson(socket,{t:"notice",tone:"error",text:`Maximum ${MAX_BOTS} bots per match.`});
         return;
       }
       meta.blueBots = blueBots;
@@ -1326,7 +1261,7 @@ export class GameRoom {
     }
 
     if (payload.t === "ping") {
-      try { socket.send(JSON.stringify({ t: "pong", at: now, clientAt: finiteNumber(payload.clientAt, 0) })); } catch {}
+      sendJson(socket,{t:"pong",at:now,clientAt:finiteNumber(payload.clientAt,0)});
       await this.stepSimulation(now, meta);
     }
   }
@@ -1365,7 +1300,13 @@ export class GameRoom {
     if (!crouched && me.crouched && worldBlocked(me.x, me.z, PLAYER_RADIUS, me.y, PLAYER_HEIGHT)) crouched = true;
     const playerHeight = crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
     const baseSpeed = ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
-    const allowedSpeed = baseSpeed * (crouched ? CROUCH_SPEED_MULTIPLIER : 1);
+    const currentAllowedSpeed = baseSpeed * (crouched ? CROUCH_SPEED_MULTIPLIER : 1);
+    const previousBaseSpeed = me.ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
+    const previousAllowedSpeed = previousBaseSpeed * (me.crouched ? CROUCH_SPEED_MULTIPLIER : 1);
+    // A packet that changes ADS/crouch also contains movement from the previous
+    // stance. Validate that interval against the faster of the two legitimate
+    // states so pressing ADS/crouch cannot pull the player backward.
+    const allowedSpeed = Math.max(currentAllowedSpeed, previousAllowedSpeed);
 
     let inputX = clamp(finiteNumber(payload.moveX, 0), -1, 1);
     let inputZ = clamp(finiteNumber(payload.moveZ, 0), -1, 1);
@@ -1373,9 +1314,6 @@ export class GameRoom {
     if (rawInputLength > 1) { inputX /= rawInputLength; inputZ /= rawInputLength; }
     const inputMagnitude = Math.min(1, rawInputLength);
     const nextYaw = finiteNumber(payload.yaw, me.yaw);
-    const sin = Math.sin(nextYaw), cos = Math.cos(nextYaw);
-    const worldInputX = inputX * cos + inputZ * sin;
-    const worldInputZ = -inputX * sin + inputZ * cos;
 
     const knock = advanceKnockback(finiteNumber(me.knockVelocityX, 0), finiteNumber(me.knockVelocityZ, 0), elapsed);
     const knockDx = knock.dx;
@@ -1395,59 +1333,36 @@ export class GameRoom {
     // movement speed remains server-authoritative and idle time cannot accumulate
     // an unlimited burst.
     let moveBudgetSec = clamp(finiteNumber(me.moveBudgetSec, MOVE_BUDGET_INITIAL_SEC) + elapsed, 0, MOVE_BUDGET_MAX_SEC);
-    const movementRate = allowedSpeed * inputMagnitude;
+    if(inputMagnitude<.05&&reportedUserDistance<.005)moveBudgetSec=Math.min(moveBudgetSec,MOVE_BUDGET_INITIAL_SEC);
+    // Validate the displacement the client actually simulated, not the final
+    // input sample in this packet. A release/turn packet can legitimately have
+    // movement since the previous packet even though moveX/moveZ now changed or
+    // reached zero. Reconstructing the whole interval from only that final input
+    // was the main source of stop/turn rubber-banding. Speed, arena, world and
+    // actor collision remain server-authoritative.
+    const movementRate = allowedSpeed;
     const maxUserDistance = movementRate * moveBudgetSec;
     const userDistance = Math.min(maxUserDistance, reportedUserDistance);
     if (movementRate > 1e-6) moveBudgetSec = Math.max(0, moveBudgetSec - userDistance / movementRate);
-    const inputNorm = inputMagnitude > 1e-6 ? Math.hypot(worldInputX, worldInputZ) || 1 : 1;
-    const moveDx = inputMagnitude > 1e-6 ? worldInputX / inputNorm * userDistance : 0;
-    const moveDz = inputMagnitude > 1e-6 ? worldInputZ / inputNorm * userDistance : 0;
+    const reportedNorm = reportedUserDistance > 1e-6 ? reportedUserDistance : 1;
+    const moveDx = reportedUserDistance > 1e-6 ? reportedUserDx / reportedNorm * userDistance : 0;
+    const moveDz = reportedUserDistance > 1e-6 ? reportedUserDz / reportedNorm * userDistance : 0;
 
     const dx = moveDx + knockDx;
     const dz = moveDz + knockDz;
-    let corrected = reportedUserDistance > maxUserDistance + 0.08;
+    const speedViolation = reportedUserDistance > maxUserDistance + 0.08;
 
     const startSupport = worldSupportHeight(me.x, me.z, me.y);
     const currentVerticalVelocity = finiteNumber(me.verticalVelocity, 0);
     let serverGrounded = me.serverGrounded !== false && Math.abs(me.y - startSupport) <= 0.28;
     if (!serverGrounded && currentVerticalVelocity <= 0 && Math.abs(me.y - startSupport) <= 0.08) serverGrounded = true;
-    let followsSupport = serverGrounded;
-    let x = me.x;
-    let z = me.z;
-    let walkY = me.y;
-    const travel = Math.hypot(dx, dz);
     const solidActors = this.solidActors(me.clientId, now);
-    const steps = Math.max(1, Math.ceil(travel / 0.16));
-    const sx = dx / steps;
-    const sz = dz / steps;
-    const followSupport = () => {
-      if (!followsSupport) return;
-      const support = worldSupportHeight(x, z, walkY, crouched);
-      if (support >= walkY - GROUND_FOLLOW_DROP) walkY = support;
-      else followsSupport = false;
-    };
-    const stepUpY = (nextX, nextZ) => {
-      if (!followsSupport) return walkY;
-      const support = worldSupportHeight(nextX, nextZ, walkY, crouched);
-      return support > walkY ? support : walkY;
-    };
-    for (let i = 0; i < steps; i += 1) {
-      const fromX = x;
-      const fromZ = z;
-      const tryX = clamp(x + sx, -ARENA_LIMIT, ARENA_LIMIT);
-      const tryXY = stepUpY(tryX, z);
-      if (!worldBlocked(tryX, z, PLAYER_RADIUS, tryXY, playerHeight) && !this.actorBlocksAt(tryX, z, tryXY, fromX, fromZ, solidActors, playerHeight)) { x = tryX; walkY = tryXY; }
-      else corrected = true;
-      followSupport();
-
-      const beforeZx = x;
-      const beforeZz = z;
-      const tryZ = clamp(z + sz, -ARENA_LIMIT, ARENA_LIMIT);
-      const tryZY = stepUpY(x, tryZ);
-      if (!worldBlocked(x, tryZ, PLAYER_RADIUS, tryZY, playerHeight) && !this.actorBlocksAt(x, tryZ, tryZY, beforeZx, beforeZz, solidActors, playerHeight)) { z = tryZ; walkY = tryZY; }
-      else corrected = true;
-      followSupport();
-    }
+    const horizontal = sweepHorizontalMovement({
+      x:me.x,y:me.y,z:me.z,dx,dz,grounded:serverGrounded,arenaLimit:ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,
+      supportHeight:(x,z,y)=>worldSupportHeight(x,z,y,crouched),
+      blockedAt:(x,z,y,fromX,fromZ)=>worldBlocked(x,z,PLAYER_RADIUS,y,playerHeight)||this.actorBlocksAt(x,z,y,fromX,fromZ,solidActors,playerHeight),
+    });
+    let x=horizontal.x,z=horizontal.z,walkY=horizontal.y,followsSupport=horizontal.grounded;
 
     const rawRequestedY = finiteNumber(payload.y, me.y);
     const incomingJumpSeq = Math.max(0, Math.floor(finiteNumber(payload.jumpSeq, 0)));
@@ -1490,7 +1405,11 @@ export class GameRoom {
 
     const verticalError = Math.abs(y - rawRequestedY);
     const verticalCorrected = ceilingHit || verticalError > 0.28;
-    if (verticalCorrected || Math.hypot(x - desiredX, z - desiredZ) > 0.12) corrected = true;
+    const horizontalError = Math.hypot(x - desiredX, z - desiredZ);
+    // Do not emit a correction merely because an internal sweep touched a wall.
+    // If the client independently stopped at the same surface there is nothing
+    // to reconcile. Only real position divergence is sent back.
+    const corrected = speedViolation || verticalCorrected || horizontalError > 0.10;
     const actualTravel = Math.hypot(x - me.x, z - me.z);
 
     return {
@@ -1519,30 +1438,24 @@ export class GameRoom {
   }
 
   advanceReloadState(me, now, settings) {
-    if (!me?.reloadAt || now < me.reloadAt) return { player: me, completed: false, shellLoaded: false, continues: false };
-    const weapon = safeWeapon(me.reloadWeapon || me.weapon);
-    me.ammo = normalizeAmmo(me.ammo);
-    if (weapon === "shotgun") {
-      me.ammo.shotgun = Math.min(WEAPONS.shotgun.mag, me.ammo.shotgun + 1);
-      const continues = me.ammo.shotgun < WEAPONS.shotgun.mag;
-      me.reloadAt = continues ? now + settings.weapons.shotgun.reloadMs : 0;
-      me.reloadWeapon = continues ? "shotgun" : "";
-      me.combatRev = Math.max(0, finiteNumber(me.combatRev, 0)) + 1;
-      return { player: me, completed: !continues, shellLoaded: true, continues };
+    if (!me?.reloadAt || now < me.reloadAt) return '';
+    const weapon=safeWeapon(me.reloadWeapon||me.weapon);
+    if (weapon === 'shotgun') {
+      me.ammo.shotgun=Math.min(WEAPON_SPECS.shotgun.mag,me.ammo.shotgun+1);
+      const continues=me.ammo.shotgun<WEAPON_SPECS.shotgun.mag;
+      me.reloadAt=continues?now+settings.weapons.shotgun.reloadMs:0;
+      me.reloadWeapon=continues?'shotgun':'';
+      return 'reloadShell';
     }
-    me.ammo[weapon] = WEAPONS[weapon].mag;
-    me.reloadAt = 0;
-    me.reloadWeapon = "";
-    me.combatRev = Math.max(0, finiteNumber(me.combatRev, 0)) + 1;
-    return { player: me, completed: true, shellLoaded: false, continues: false };
+    me.ammo[weapon]=WEAPON_SPECS[weapon].mag;me.reloadAt=0;me.reloadWeapon='';
+    return 'reloadComplete';
   }
 
   advanceReloadForSocket(socket, me, now, settings) {
-    const result = this.advanceReloadState(me, now, settings);
-    if (!result.completed && !result.shellLoaded) return me;
-    socket.serializeAttachment(me);
-    sendLoadout(socket, me, { action: result.shellLoaded ? 'reloadShell' : 'reloadComplete', accepted: true });
-    if (result.shellLoaded && result.continues) this.broadcast({ t:'reload', id:me.clientId, weapon:'shotgun', reloadAt:me.reloadAt }, socket);
+    const action=this.advanceReloadState(me,now,settings);
+    if(!action)return me;
+    socket.serializeAttachment(me);sendLoadout(socket,me,{action,accepted:true});
+    if(action==='reloadShell'&&me.reloadAt)this.broadcast({t:'reload',id:me.clientId,weapon:'shotgun',reloadAt:me.reloadAt},socket);
     return me;
   }
 
@@ -1562,7 +1475,7 @@ export class GameRoom {
       penetrationPower: safe === "sniper" ? Math.max(1, damage) : 0,
       hitTargets: new Set(),
       traveledDistance: 0,
-      lifetimeMs: lifetimeMs || WEAPONS[safe].lifetimeMs, x, y, z, vx, vy, vz, born: now, lastAt: now,
+      lifetimeMs: lifetimeMs || WEAPON_SPECS[safe].lifetimeMs, x, y, z, vx, vy, vz, born: now, lastAt: now,
     };
     this.bullets.set(id, bullet);
     this.broadcast({ t: "shot", id, ownerId, ownerTeam: bullet.ownerTeam, damage, weapon: safe, lifetimeMs: bullet.lifetimeMs, x, y, z, vx, vy, vz, consumeAmmo, at: now });
@@ -1573,10 +1486,10 @@ export class GameRoom {
     // 30 Hz accumulator so idle clients no longer slow the match, while a
     // bounded catch-up window prevents a long-suspended room from creating a
     // large CPU spike on the first packet back.
-    const settings = normalizeWorldSettings(meta.settings);
+    const settings = meta.settings;
     this.stepMatch(now, meta);
-    const match = normalizeMatchState(meta.match, now, meta.match || DEFAULT_MATCH_RULES);
-    if (match.status === 'active') this.respawnExpiredHumans(now, settings);
+    const match = meta.match;
+    if (match.status === 'active') this.respawnExpiredHumans(now);
     if (this.matchDirty) { await this.putMeta(meta); this.matchDirty = false; }
 
     if (!this.lastSimAt) { this.lastSimAt = now; this.simAccumulatorMs = 0; return; }
@@ -1607,7 +1520,7 @@ export class GameRoom {
       void this.updateDirectory(this.liveSockets().length, meta).catch(()=>{});
     }
 
-    if (now - this.lastBotBroadcastAt >= 100) {
+    if (now - this.lastBotBroadcastAt >= 50) {
       this.lastBotBroadcastAt = now;
       if (this.bots.length) this.broadcast({ t: "botState", bots: this.bots.map(publicBot) });
     }
@@ -1626,38 +1539,15 @@ export class GameRoom {
     }
   }
 
-  respawnExpiredHumans(now, settings = normalizeWorldSettings()) {
+  respawnExpiredHumans(now) {
     for (const socket of this.ctx.getWebSockets()) {
       const player = socket.deserializeAttachment() || {};
       if (!player.clientId || player.replaced || player.hp > 0) continue;
       if (!player.wastedUntil || now < player.wastedUntil) continue;
 
       const team = player.pendingTeam ? safeTeam(player.pendingTeam) : safeTeam(player.team);
-      const spawn = spawnForTeam(
-        team,
-        Math.floor(Math.random() * TEAM_SPAWNS[team].length),
-      );
-      const respawned = {
-        ...player,
-        ...spawn,
-        team, pendingTeam:'', hp: 100,
-        wastedUntil: 0,
-        lastHitAt: 0,
-        regenAt: 0,
-        weapon: safePrimaryWeapon(player.primaryWeapon),
-        ammo: freshAmmo(),
-        equipment: freshEquipment(),
-        reloadAt: 0,
-        reloadWeapon: "",
-        weaponReadyAt: 0,
-        combatRev: Math.max(0, finiteNumber(player.combatRev, 0)) + 1,
-        ads: false, crouched: false, moveSpeed: 0,
-        verticalVelocity: 0, serverGrounded: true, lastVerticalAt: now,
-        flashUntil: 0, flashPower: 0, flashDurationMs: 0,
-        lastStateAt: now,
-        moveBudgetSec: MOVE_BUDGET_INITIAL_SEC,
-        knockVelocityX: 0, knockVelocityZ: 0,
-      };
+      const spawn=spawnForTeam(team,Math.floor(Math.random()*TEAM_SPAWNS[team].length));
+      const respawned=spawnedPlayerState(player,spawn,team,now);
       socket.serializeAttachment(respawned);
       this.broadcast({ t: "respawn", player: publicPlayer(respawned) });
     }
@@ -1668,7 +1558,7 @@ export class GameRoom {
     for (const socket of this.ctx.getWebSockets()) {
       const player = socket.deserializeAttachment() || {};
       if (!player.clientId || player.replaced || player.hp <= 0 || player.hp >= 100 || now < (player.wastedUntil || 0)) continue;
-      if (!player.regenAt) player.regenAt = (player.lastHitAt || now) + settings.combat.regenDelayMs;
+      if (!player.regenAt) player.regenAt = now + settings.combat.regenDelayMs;
       if (now < player.regenAt) continue;
       const ticks = 1 + Math.floor((now - player.regenAt) / HEALTH_REGEN_TICK_MS);
       player.hp = Math.min(100, player.hp + ticks * settings.combat.regenPerSecond * (HEALTH_REGEN_TICK_MS / 1000));
@@ -1679,7 +1569,7 @@ export class GameRoom {
 
     for (const bot of this.bots) {
       if (bot.hp <= 0 || bot.hp >= 100 || now < (bot.wastedUntil || 0)) continue;
-      if (!bot.regenAt) bot.regenAt = (bot.lastHitAt || now) + settings.combat.regenDelayMs;
+      if (!bot.regenAt) bot.regenAt = now + settings.combat.regenDelayMs;
       if (now < bot.regenAt) continue;
       const ticks = 1 + Math.floor((now - bot.regenAt) / HEALTH_REGEN_TICK_MS);
       bot.hp = Math.min(100, bot.hp + ticks * settings.combat.regenPerSecond * (HEALTH_REGEN_TICK_MS / 1000));
@@ -1698,7 +1588,7 @@ export class GameRoom {
       if (bot.hp <= 0) {
         if (now >= bot.wastedUntil) {
           const spawn = spawnForTeam(bot.team, i + Math.floor(Math.random() * TEAM_SPAWNS[safeTeam(bot.team)].length));
-          Object.assign(bot, spawn, { hp: 100, wastedUntil: 0, regenAt: 0, weapon: "assault", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "", lastHitAt: 0, flashUntil: 0, flashSpin: 0 });
+          Object.assign(bot, spawn, { hp: 100, wastedUntil: 0, regenAt: 0, weapon: "assault", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "", flashUntil: 0, flashSpin: 0 });
           this.broadcast({ t: "respawn", player: publicBot(bot) });
         }
         continue;
@@ -1706,8 +1596,7 @@ export class GameRoom {
       if (bot.reloadAt && now >= bot.reloadAt) {
         bot.reloadAt = 0;
         bot.reloadWeapon = "";
-        bot.ammo = normalizeAmmo(bot.ammo);
-        bot.ammo.assault = WEAPONS.assault.mag;
+        bot.ammo.assault = WEAPON_SPECS.assault.mag;
       }
       if(now<finiteNumber(bot.flashUntil,0)){
         bot.yaw+=dt*(bot.flashSpin||2.2);
@@ -1759,14 +1648,12 @@ export class GameRoom {
 
       const target = nearest.target;
       const botFireDelay = Math.max(settings.weapons.assault.cooldownMs * profile.fireScale, 70);
-      if (d <= profile.range && now - bot.lastShot >= Math.max(bot.nextShotDelay || 0, botFireDelay)) {
-        bot.ammo = normalizeAmmo(bot.ammo);
+      if (d <= profile.range && now >= finiteNumber(bot.nextShotAt,0)) {
         if (bot.ammo.assault <= 0) {
           if (!bot.reloadAt) { bot.reloadAt = now + settings.weapons.assault.reloadMs; bot.reloadWeapon = "assault"; }
           continue;
         }
-        bot.lastShot = now;
-        bot.nextShotDelay = botFireDelay + profile.reactionBase + Math.floor(Math.random() * profile.reactionJitter);
+        bot.nextShotAt = now + botFireDelay + profile.reactionBase + Math.floor(Math.random() * profile.reactionJitter);
         bot.ammo.assault -= 1;
         if (bot.ammo.assault === 0) { bot.reloadAt = now + settings.weapons.assault.reloadMs; bot.reloadWeapon = "assault"; }
         const tx = finiteNumber(target.x, 0) - bot.x;
@@ -1780,7 +1667,7 @@ export class GameRoom {
         const norm = Math.hypot(fx, fy, fz) || 1;
         this.spawnBullet({
           ownerId: bot.id, ownerTeam: safeTeam(bot.team), damage: settings.weapons.assault.damage, weapon: "assault",
-          lifetimeMs: WEAPONS.assault.lifetimeMs,
+          lifetimeMs: WEAPON_SPECS.assault.lifetimeMs,
           x: bot.x + (fx / norm) * 0.55, y: bot.y + 1.25, z: bot.z + (fz / norm) * 0.55,
           vx: (fx / norm) * settings.weapons.assault.speed, vy: (fy / norm) * settings.weapons.assault.speed, vz: (fz / norm) * settings.weapons.assault.speed, now,
         });
@@ -1825,7 +1712,7 @@ export class GameRoom {
       if(power>=existingPower){p.flashPower=power;p.flashDurationMs=durationMs;p.flashUntil=now+durationMs;}
       else p.flashUntil=Math.max(finiteNumber(p.flashUntil,0),now+durationMs);
       p.ads=false;socket.serializeAttachment(p);
-      try{socket.send(JSON.stringify({t:'flashEffect',power,durationMs}));}catch{}
+      sendJson(socket,{t:'flashEffect',power,durationMs});
     }
     for(const b of this.bots){if(b.hp<=0)continue;const dx=b.x-g.x,dy=b.y+1.05-g.y,dz=b.z-g.z,dist=Math.hypot(dx,dy,dz);if(dist>radius||segmentFirstWorldOcclusionT(g.x,g.y,g.z,b.x,b.y+1.05,b.z)!=null)continue;const power=clamp(1-dist/radius,0,1);if(power<.05)continue;b.flashUntil=Math.max(finiteNumber(b.flashUntil,0),now+550+power*2600);b.flashSpin=(Math.random()<.5?-1:1)*(1.5+Math.random()*2.5);}
   }
@@ -1968,7 +1855,7 @@ export class GameRoom {
     return 0;
   }
 
-  damageHuman(socket, target, attackerId, damage, weapon, knockback, now, bulletId = "", settings = normalizeWorldSettings(), hitMeta = {}) {
+  damageHuman(socket, target, attackerId, damage, weapon, knockback, now, bulletId = "", settings = DEFAULT_WORLD_SETTINGS, hitMeta = {}) {
     if (target.godMode) {
       this.broadcast({ t: "blocked", attacker: attackerId, target: target.clientId, weapon, bulletId, godMode: true });
       return false;
@@ -1981,7 +1868,6 @@ export class GameRoom {
       target.serverGrounded = false;
       target.lastVerticalAt = now;
     }
-    target.lastHitAt = now;
     target.regenAt = now + settings.combat.regenDelayMs;
     const wasted = target.hp <= 0;
     let multiKill = 0;
@@ -2004,9 +1890,8 @@ export class GameRoom {
     return true;
   }
 
-  damageBot(bot, attackerId, damage, weapon, knockback, now, bulletId = "", settings = normalizeWorldSettings(), hitMeta = {}) {
+  damageBot(bot, attackerId, damage, weapon, knockback, now, bulletId = "", settings = DEFAULT_WORLD_SETTINGS, hitMeta = {}) {
     bot.hp = Math.max(0, bot.hp - damage);
-    bot.lastHitAt = now;
     bot.regenAt = now + settings.combat.regenDelayMs;
     const wasted = bot.hp <= 0;
     let multiKill = 0;
@@ -2181,7 +2066,7 @@ export class GameRoom {
     for (const bot of this.bots || []) {
       if (safeTeam(bot.team) === "red") red += 1; else blue += 1;
     }
-    const match = normalizeMatchState(meta.match, Date.now(), meta.match || DEFAULT_MATCH_RULES);
+    const match = meta.match;
     try {
       const directory = await directoryStub(this.env);
       await directory.fetch("https://directory.internal/upsert", {

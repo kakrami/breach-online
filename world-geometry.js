@@ -155,23 +155,7 @@ export function buildingPlan(b){
 
 function addBox(parts,role,x,z,w,d,bottomY,topY,flags={}){
   if(w<=0||d<=0||topY-bottomY<=0)return;
-  parts.push({role,x,z,w,d,bottomY,topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:!!flags.crouchStep,decorative:!!flags.decorative});
-}
-
-function addFrameX(parts,b,z,base,level,opening){
-  const y=base+level*b.floorH,bars=.095,depth=.07,h=opening.top-opening.bottom;
-  addBox(parts,'trim',b.x+opening.u-opening.w/2,z,bars,depth,y+opening.bottom,y+opening.bottom+h,{playerSolid:false,projectileSolid:false,decorative:true});
-  addBox(parts,'trim',b.x+opening.u+opening.w/2,z,bars,depth,y+opening.bottom,y+opening.bottom+h,{playerSolid:false,projectileSolid:false,decorative:true});
-  addBox(parts,'trim',b.x+opening.u,z,opening.w,depth,y+opening.top-bars,y+opening.top,{playerSolid:false,projectileSolid:false,decorative:true});
-  if(opening.kind==='window')addBox(parts,'trim',b.x+opening.u,z,opening.w,depth,y+opening.bottom,y+opening.bottom+bars,{playerSolid:false,projectileSolid:false,decorative:true});
-}
-
-function addFrameZ(parts,b,x,base,level,opening){
-  const y=base+level*b.floorH,bars=.095,depth=.07,h=opening.top-opening.bottom;
-  addBox(parts,'trim',x,b.z+opening.u-opening.w/2,depth,bars,y+opening.bottom,y+opening.bottom+h,{playerSolid:false,projectileSolid:false,decorative:true});
-  addBox(parts,'trim',x,b.z+opening.u+opening.w/2,depth,bars,y+opening.bottom,y+opening.bottom+h,{playerSolid:false,projectileSolid:false,decorative:true});
-  addBox(parts,'trim',x,b.z+opening.u,depth,opening.w,y+opening.top-bars,y+opening.top,{playerSolid:false,projectileSolid:false,decorative:true});
-  if(opening.kind==='window')addBox(parts,'trim',x,b.z+opening.u,depth,opening.w,y+opening.bottom,y+opening.bottom+bars,{playerSolid:false,projectileSolid:false,decorative:true});
+  parts.push({role,x,z,w,d,bottomY,topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:!!flags.crouchStep});
 }
 
 export function makeBuildingGeometry(b){
@@ -184,7 +168,6 @@ export function makeBuildingGeometry(b){
       addBox(parts,'wall',x,z,cell.w+.015,t,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep});
       if(cell.crouchStep)supports.push({type:'rect',x,z,w:cell.w+.015+PLAYER_RADIUS*2,d:t+PLAYER_RADIUS*2,y:topY,role:'windowSill',crouchStep:true});
     }
-    for(const opening of openings)addFrameX(parts,b,z+(side==='front'?-.012:.012),base,level,opening);
   };
   const addWallZ=(x,level,side)=>{
     const openings=buildingWallOpenings(b,level,side);
@@ -193,7 +176,6 @@ export function makeBuildingGeometry(b){
       addBox(parts,'wall',x,z,t,cell.w+.015,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep});
       if(cell.crouchStep)supports.push({type:'rect',x,z,w:t+PLAYER_RADIUS*2,d:cell.w+.015+PLAYER_RADIUS*2,y:topY,role:'windowSill',crouchStep:true});
     }
-    for(const opening of openings)addFrameZ(parts,b,x+(side==='left'?-.012:.012),base,level,opening);
   };
   for(let level=0;level<levels;level++){
     addWallX(b.z-b.d/2+t/2,level,'front');addWallX(b.z+b.d/2-t/2,level,'back');
@@ -232,18 +214,18 @@ export function makeBuildingGeometry(b){
     addBox(parts,'rail',b.x-b.w/2+.10,b.z,.20,b.d,py,py+.55);addBox(parts,'rail',b.x+b.w/2-.10,b.z,.20,b.d,py,py+.55);
   }
 
-  // The visible stair treads are also the authoritative walkable surfaces.
-  // There is no hidden ramp underneath them. Keeping rendering and support on
-  // the same geometry prevents the player from visually sinking/jumping through
-  // stairs when frame time or network updates are uneven.
+  // Visible treads stay discrete, but player support uses one continuous
+  // ramp per flight. This is the conventional FPS stair collider: the rendered
+  // steps keep their shape while feet/camera move continuously instead of
+  // climbing fourteen 23 cm ledges and producing a repeated vertical hitch.
   const steps=14,stepLen=plan.runLen/steps;
   for(let story=0;story<levels-1;story++){
     const floorY=base+story*b.floorH,nextY=floorY+b.floorH,laneZ=plan.stairZs[story],x0=plan.lowX,x1=plan.highX;
+    supports.push({type:'ramp',x1:x0,x2:x1,z:laneZ,w:plan.stairW,y0:floorY,y1:nextY,role:'stairRamp'});
     for(let i=0;i<steps;i++){
       const p0=i/steps,p1=(i+1)/steps,mid=(p0+p1)/2,tread=floorY+(nextY-floorY)*p1,x=x0+(x1-x0)*mid;
       const treadW=stepLen+.055;
       addBox(parts,'stairStep',x,laneZ,treadW,plan.stairW,tread-.18,tread,{playerSolid:false,projectileSolid:true,supportTop:false});
-      supports.push({type:'rect',x,z:laneZ,w:treadW,d:plan.stairW,y:tread,role:'stairStep'});
       horizontalSolids.push({x,z:laneZ,w:treadW,d:plan.stairW,bottomY:tread-.18,topY:tread,role:'stairStep'});
       // Side rails sit just outside the tread width. They stop side entry while
       // leaving both ends of the straight flight completely open.
@@ -257,12 +239,15 @@ export function makeBuildingGeometry(b){
   return{levels,base,plan,parts,supports,horizontalSolids};
 }
 
-export function makeAllBuildingGeometry(){return BUILDINGS.map(makeBuildingGeometry);}
-
-export const BUILDING_GEOMETRY = makeAllBuildingGeometry();
-export const BUILDING_SUPPORTS = BUILDING_GEOMETRY.flatMap(g=>g.supports);
-export const BUILDING_HORIZONTAL_SOLIDS = BUILDING_GEOMETRY.flatMap(g=>g.horizontalSolids);
-export const BUILDING_PARTS = BUILDING_GEOMETRY.flatMap(g=>g.parts);
+export const BUILDING_SUPPORTS=[];
+export const BUILDING_HORIZONTAL_SOLIDS=[];
+export const BUILDING_PARTS=[];
+for(const building of BUILDINGS){
+  const geometry=makeBuildingGeometry(building);
+  BUILDING_SUPPORTS.push(...geometry.supports);
+  BUILDING_HORIZONTAL_SOLIDS.push(...geometry.horizontalSolids);
+  BUILDING_PARTS.push(...geometry.parts);
+}
 
 export const STATIC_SUPPORTS = STATIC_BOXES.map(o=>({type:'rect',x:o.x,z:o.z,w:o.w,d:o.d,y:terrainHeight(o.x,o.z)+o.h}));
 
