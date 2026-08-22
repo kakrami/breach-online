@@ -83,16 +83,14 @@ export function worldBlockedAt(x,z,y,height=PLAYER_HEIGHT,radius=PLAYER_RADIUS){
   return worldBlockerAt(x,z,y,height,radius)!==null;
 }
 
-function horizontalSignedDistance(collider,x,z){
+function horizontalSignedDistance(collider,b,x,z){
   if(collider.type==='round')return Math.hypot(x-collider.x,z-collider.z)-collider.r;
-  const b=collider.type==='ramp'?boundsFor(collider):{minX:collider.minX,maxX:collider.maxX,minZ:collider.minZ,maxZ:collider.maxZ};
   const dx=Math.max(b.minX-x,0,x-b.maxX),dz=Math.max(b.minZ-z,0,z-b.maxZ);
   if(dx||dz)return Math.hypot(dx,dz);
   return -Math.min(x-b.minX,b.maxX-x,z-b.minZ,b.maxZ-z);
 }
 
-function colliderBlocksAt(collider,x,z,y,height,effectiveRadius){
-  const b=boundsFor(collider);
+function colliderBlocksAt(collider,b,x,z,y,height,effectiveRadius){
   if(collider.type==='ramp'){
     if(!circleTouchesBox(x,z,effectiveRadius,b.minX,b.maxX,b.minZ,b.maxZ))return false;
     return verticalOverlap(y,height,collider.bottomY,rampTopAt(collider,x));
@@ -118,10 +116,10 @@ export function worldMoveBlockedAt(x,z,y,fromX,fromZ,height=PLAYER_HEIGHT,radius
     const list=grid.get(keyFor(cx,cy,cz));if(!list)continue;
     for(const entry of list){
       if(entry.visit===stamp)continue;entry.visit=stamp;const c=entry.collider;
-      if(!colliderBlocksAt(c,px,pz,py,h,effectiveRadius))continue;
-      const wasBlocked=colliderBlocksAt(c,fx,fz,py,h,effectiveRadius);
+      const b=entry.bounds;if(!colliderBlocksAt(c,b,px,pz,py,h,effectiveRadius))continue;
+      const wasBlocked=colliderBlocksAt(c,b,fx,fz,py,h,effectiveRadius);
       if(!wasBlocked)return true;
-      const before=horizontalSignedDistance(c,fx,fz),after=horizontalSignedDistance(c,px,pz);
+      const before=horizontalSignedDistance(c,b,fx,fz),after=horizontalSignedDistance(c,b,px,pz);
       if(!(after>before+.0005))return true;
     }
   }
