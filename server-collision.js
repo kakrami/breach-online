@@ -7,14 +7,12 @@ import { segmentAabbFirstT, segmentCylinderFirstT, segmentPyramidFirstT, segment
 
 const CELL_SIZE = 8;
 const CELL_HEIGHT = 3;
-const WORLD_OBSTACLES = [
-  ...STATIC_BOXES.map((o) => ({ type: 'box', ...o, playerSolid: true, projectileSolid: true, supportTop: true })),
-  ...PYRAMIDS.map((o) => ({ type: 'pyramid', ...o, playerSolid: false, projectileSolid: true })),
-  ...NATURAL_OBSTACLES.map((o) => ({ ...o, playerSolid: true, projectileSolid: true })),
-  ...BUILDING_PARTS.filter((p) => p.playerSolid || p.projectileSolid).map((p) => ({
-    type: 'box', x: p.x, z: p.z, w: p.w, d: p.d, minY: p.bottomY, maxY: p.topY,
-    playerSolid: p.playerSolid, projectileSolid: p.projectileSolid, supportTop: p.supportTop,
-    crouchStep: !!p.crouchStep, role: p.role,
+const WORLD_PROJECTILE_OBSTACLES = [
+  ...STATIC_BOXES.map((o) => ({ type:'box', ...o })),
+  ...PYRAMIDS.map((o) => ({ type:'pyramid', ...o })),
+  ...NATURAL_OBSTACLES.map((o) => ({ ...o })),
+  ...BUILDING_PARTS.filter((p) => p.projectileSolid).map((p) => ({
+    type:'box', x:p.x, z:p.z, w:p.w, d:p.d, minY:p.bottomY, maxY:p.topY, role:p.role,
   })),
 ];
 
@@ -33,7 +31,7 @@ function obstacleBaseY(obstacle) {
 function ensureCollisionIndex() {
   if (collisionIndex) return collisionIndex;
   const grid = new Map();
-  for (const obstacle of WORLD_OBSTACLES) {
+  for (const obstacle of WORLD_PROJECTILE_OBSTACLES) {
     const baseY = obstacleBaseY(obstacle);
     let minX, maxX, minZ, maxZ;
     if (obstacle.type === 'box') {
@@ -78,19 +76,6 @@ function collisionCandidates(minX, maxX, minY, maxY, minZ, maxZ) {
   return results;
 }
 
-export function worldBlocked(x, z, radius = 0.38, y = terrainHeight(x, z), playerHeight = PLAYER_HEIGHT) {
-  if (Math.abs(x) > ARENA_LIMIT || Math.abs(z) > ARENA_LIMIT) return true;
-  for (const entry of collisionCandidates(x - radius, x + radius, y, y + playerHeight * 0.92, z - radius, z + radius)) {
-    const obstacle = entry.obstacle;
-    if (obstacle.playerSolid === false || obstacle.type === 'pyramid') continue;
-    if (y + playerHeight * 0.92 <= entry.baseY || y >= entry.maxY - 0.04) continue;
-    if (obstacle.type === 'box') {
-      if (x > entry.minX - radius && x < entry.maxX + radius && z > entry.minZ - radius && z < entry.maxZ + radius) return true;
-    } else if (Math.hypot(x - obstacle.x, z - obstacle.z) < obstacle.r + radius) return true;
-  }
-  return false;
-}
-
 export function projectileSegmentHitZone(target, x1, y1, z1, x2, y2, z2) {
   const tx = finite(target?.x), tz = finite(target?.z);
   const ty = finite(target?.y, terrainHeight(tx, tz));
@@ -111,7 +96,6 @@ export function segmentFirstObstacleT(x1, y1, z1, x2, y2, z2) {
   let best = null;
   for (const entry of collisionCandidates(minX, maxX, minY, maxY, minZ, maxZ)) {
     const obstacle = entry.obstacle;
-    if (obstacle.projectileSolid === false) continue;
     let t = null;
     if (obstacle.type === 'box') t = segmentAabbFirstT(x1, y1, z1, x2, y2, z2, entry.minX, entry.maxX, entry.baseY, entry.maxY, entry.minZ, entry.maxZ);
     else if (obstacle.type === 'pyramid') t = segmentPyramidFirstT(x1, y1, z1, x2, y2, z2, obstacle.x, obstacle.z, obstacle.base, obstacle.h, entry.baseY, entry.maxY);

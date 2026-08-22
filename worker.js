@@ -8,7 +8,8 @@ import {
 } from './game-config.js';
 import { normalizeMatchRules, defaultMatchState, normalizeMatchState, publicMatchState, matchRulesAreDefault } from './match-model.js';
 import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback, sweepHorizontalMovement, tacticalThrowVelocity } from './movement-model.js';
-import { worldBlocked, projectileSegmentHitZone, segmentFirstWorldHitT, segmentFirstWorldOcclusionT, segmentHitsObstacle, actorHasLineOfSight } from './server-collision.js';
+import { projectileSegmentHitZone, segmentFirstWorldHitT, segmentFirstWorldOcclusionT, segmentHitsObstacle, actorHasLineOfSight } from './server-collision.js';
+import { worldBlockedAt } from './world-collision.js';
 
 const GAME_VERSION = APP_VERSION;
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -1297,7 +1298,7 @@ export class GameRoom {
     const flashPower = activeFlashPower(me, now);
     const ads = flashPower > 0.12 ? false : !!payload.ads;
     let crouched = !!payload.crouched;
-    if (!crouched && me.crouched && worldBlocked(me.x, me.z, PLAYER_RADIUS, me.y, PLAYER_HEIGHT)) crouched = true;
+    if (!crouched && me.crouched && worldBlockedAt(me.x, me.z, me.y, PLAYER_HEIGHT, PLAYER_RADIUS)) crouched = true;
     const playerHeight = crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
     const baseSpeed = ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
     const currentAllowedSpeed = baseSpeed * (crouched ? CROUCH_SPEED_MULTIPLIER : 1);
@@ -1360,7 +1361,7 @@ export class GameRoom {
     const horizontal = sweepHorizontalMovement({
       x:me.x,y:me.y,z:me.z,dx,dz,grounded:serverGrounded,arenaLimit:ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,
       supportHeight:(x,z,y)=>worldSupportHeight(x,z,y,crouched),
-      blockedAt:(x,z,y,fromX,fromZ)=>worldBlocked(x,z,PLAYER_RADIUS,y,playerHeight)||this.actorBlocksAt(x,z,y,fromX,fromZ,solidActors,playerHeight),
+      blockedAt:(x,z,y,fromX,fromZ)=>worldBlockedAt(x,z,y,playerHeight,PLAYER_RADIUS)||this.actorBlocksAt(x,z,y,fromX,fromZ,solidActors,playerHeight),
     });
     let x=horizontal.x,z=horizontal.z,walkY=horizontal.y,followsSupport=horizontal.grounded;
 
@@ -1601,7 +1602,7 @@ export class GameRoom {
       if(now<finiteNumber(bot.flashUntil,0)){
         bot.yaw+=dt*(bot.flashSpin||2.2);
         const step=settings.movement.walkSpeed*.22*dt,dx=Math.sin(bot.yaw)*step,dz=Math.cos(bot.yaw)*step;
-        if(!worldBlocked(bot.x+dx,bot.z+dz,.34)){bot.x+=dx;bot.z+=dz;bot.y=worldSupportHeight(bot.x,bot.z,bot.y);}
+        if(!worldBlockedAt(bot.x+dx,bot.z+dz,bot.y,PLAYER_HEIGHT,.34)){bot.x+=dx;bot.z+=dz;bot.y=worldSupportHeight(bot.x,bot.z,bot.y);}
         continue;
       }
 
@@ -1630,8 +1631,8 @@ export class GameRoom {
         const ux = nearest.dx / d, uz = nearest.dz / d, solidActors=this.solidActors(bot.id,now);
         const tryMove=(ax,az,step)=>{
           const fromX=bot.x,fromZ=bot.z,nx=bot.x+ax*step,nz=bot.z+az*step;
-          if(!worldBlocked(nx,bot.z,.34)&&!this.actorBlocksAt(nx,bot.z,bot.y,fromX,fromZ,solidActors)&&!worldBlocked(nx,nz,.34)&&!this.actorBlocksAt(nx,nz,bot.y,fromX,fromZ,solidActors)){bot.x=nx;bot.z=nz;return true;}
-          if(!worldBlocked(bot.x,nz,.34)&&!this.actorBlocksAt(bot.x,nz,bot.y,fromX,fromZ,solidActors)){bot.z=nz;return true;}
+          if(!worldBlockedAt(nx,bot.z,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(nx,bot.z,bot.y,fromX,fromZ,solidActors)&&!worldBlockedAt(nx,nz,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(nx,nz,bot.y,fromX,fromZ,solidActors)){bot.x=nx;bot.z=nz;return true;}
+          if(!worldBlockedAt(bot.x,nz,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(bot.x,nz,bot.y,fromX,fromZ,solidActors)){bot.z=nz;return true;}
           return false;
         };
         if(d>profile.preferredRange){

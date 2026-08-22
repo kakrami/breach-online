@@ -50,7 +50,12 @@ const foundations = [
   ...BUILDINGS.map(b=>({x:b.x,z:b.z,halfX:b.w/2+.55,halfZ:b.d/2+.55,blend:4.5}))
 ];
 
-export function terrainHeight(x,z){
+export const TERRAIN_SIZE = 244;
+export const TERRAIN_SEGMENTS = 128;
+const TERRAIN_HALF = TERRAIN_SIZE / 2;
+const TERRAIN_STEP = TERRAIN_SIZE / TERRAIN_SEGMENTS;
+
+function sourceTerrainHeight(x,z){
   let h=rawTerrainHeight(x,z);
   for(const f of foundations){
     const ox=Math.max(Math.abs(x-f.x)-f.halfX,0),oz=Math.max(Math.abs(z-f.z)-f.halfZ,0),d=Math.hypot(ox,oz);
@@ -61,6 +66,34 @@ export function terrainHeight(x,z){
     h=center*(1-s)+h*s;
   }
   return h;
+}
+
+// The rendered terrain mesh is the physical terrain. Heights are sampled once
+// at the exact PlaneGeometry vertices and every physics query interpolates the
+// same two triangles Three.js renders. This removes the old split where the
+// camera/player used an analytic surface that could differ from the visible
+// mesh by tens of centimeters around flattened foundations.
+const TERRAIN_HEIGHTFIELD = new Float32Array((TERRAIN_SEGMENTS+1)*(TERRAIN_SEGMENTS+1));
+for(let iz=0;iz<=TERRAIN_SEGMENTS;iz++)for(let ix=0;ix<=TERRAIN_SEGMENTS;ix++){
+  const x=-TERRAIN_HALF+ix*TERRAIN_STEP,z=-TERRAIN_HALF+iz*TERRAIN_STEP;
+  TERRAIN_HEIGHTFIELD[iz*(TERRAIN_SEGMENTS+1)+ix]=sourceTerrainHeight(x,z);
+}
+
+export function terrainVertexHeight(ix,iz){
+  const x=Math.max(0,Math.min(TERRAIN_SEGMENTS,Math.floor(Number(ix)||0)));
+  const z=Math.max(0,Math.min(TERRAIN_SEGMENTS,Math.floor(Number(iz)||0)));
+  return TERRAIN_HEIGHTFIELD[z*(TERRAIN_SEGMENTS+1)+x];
+}
+
+export function terrainHeight(x,z){
+  const gx=clamp((Number(x)+TERRAIN_HALF)/TERRAIN_STEP,0,TERRAIN_SEGMENTS);
+  const gz=clamp((Number(z)+TERRAIN_HALF)/TERRAIN_STEP,0,TERRAIN_SEGMENTS);
+  const ix=Math.min(TERRAIN_SEGMENTS-1,Math.floor(gx)),iz=Math.min(TERRAIN_SEGMENTS-1,Math.floor(gz));
+  const fx=gx-ix,fz=gz-iz,row=TERRAIN_SEGMENTS+1;
+  const a=TERRAIN_HEIGHTFIELD[iz*row+ix],b=TERRAIN_HEIGHTFIELD[iz*row+ix+1];
+  const c=TERRAIN_HEIGHTFIELD[(iz+1)*row+ix],d=TERRAIN_HEIGHTFIELD[(iz+1)*row+ix+1];
+  if(fx+fz<=1)return a+fx*(b-a)+fz*(c-a);
+  return d+(1-fx)*(c-d)+(1-fz)*(b-d);
 }
 
 export function terrainMinAround(x,z,r){
@@ -150,7 +183,11 @@ export function buildingPlan(b){
   // support gap at the top edge that could make a player fall or fail to climb.
   const holes=stairZs.map(z=>({left:lowX,right:highX,minZ:z-stairW/2-.06,maxZ:z+stairW/2+.06}));
   const front=b.z-b.d/2,balconyOverlap=.92,balconyD=b.balcony+balconyOverlap,balconyZ=front-b.balcony/2+balconyOverlap/2,balconyOutsideZ=front-b.balcony/2;
-  return{wallT,stairW,runLen,lowX,highX,backLane,frontLane,stairZs,holes,front,balconyOverlap,balconyD,balconyZ,balconyOutsideZ};
+  // Front windows sit near +/-28.5% of building width. The old 56%-wide
+  // balcony put its side rails directly through those window openings. The
+  // balcony now spans the openings with real player clearance on both sides.
+  const balconyW=b.w*.80;
+  return{wallT,stairW,runLen,lowX,highX,backLane,frontLane,stairZs,holes,front,balconyOverlap,balconyD,balconyZ,balconyOutsideZ,balconyW};
 }
 
 function addBox(parts,role,x,z,w,d,bottomY,topY,flags={}){
@@ -159,14 +196,14 @@ function addBox(parts,role,x,z,w,d,bottomY,topY,flags={}){
 }
 
 export function makeBuildingGeometry(b){
-  const levels=Math.max(2,Math.min(6,Math.floor(b.levels||2))),base=terrainHeight(b.x,b.z),plan=buildingPlan(b),parts=[],supports=[],horizontalSolids=[];
+  const levels=Math.max(2,Math.min(6,Math.floor(b.levels||2))),base=terrainHeight(b.x,b.z),plan=buildingPlan(b),parts=[],supports=[],horizontalSolids=[],playerRamps=[];
   const t=plan.wallT;
   const addWallX=(z,level,side)=>{
     const openings=buildingWallOpenings(b,level,side);
     for(const cell of splitWall(b.w,b.floorH,openings)){
       const x=b.x+cell.u,bottomY=base+level*b.floorH+cell.y,topY=bottomY+cell.h+.015;
       addBox(parts,'wall',x,z,cell.w+.015,t,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep});
-      if(cell.crouchStep)supports.push({type:'rect',x,z,w:cell.w+.015+PLAYER_RADIUS*2,d:t+PLAYER_RADIUS*2,y:topY,role:'windowSill',crouchStep:true});
+      if(cell.crouchStep)supports.push({type:'rect',x,z,w:cell.w+.015,d:t,y:topY,role:'windowSill',crouchStep:true});
     }
   };
   const addWallZ=(x,level,side)=>{
@@ -174,7 +211,7 @@ export function makeBuildingGeometry(b){
     for(const cell of splitWall(b.d,b.floorH,openings)){
       const z=b.z+cell.u,bottomY=base+level*b.floorH+cell.y,topY=bottomY+cell.h+.015;
       addBox(parts,'wall',x,z,t,cell.w+.015,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep});
-      if(cell.crouchStep)supports.push({type:'rect',x,z,w:t+PLAYER_RADIUS*2,d:cell.w+.015+PLAYER_RADIUS*2,y:topY,role:'windowSill',crouchStep:true});
+      if(cell.crouchStep)supports.push({type:'rect',x,z,w:t,d:cell.w+.015,y:topY,role:'windowSill',crouchStep:true});
     }
   };
   for(let level=0;level<levels;level++){
@@ -189,13 +226,13 @@ export function makeBuildingGeometry(b){
       supports.push({type:'rect',x:panel.x,z:panel.z,w:panel.w,d:panel.d,y:floorY});
       horizontalSolids.push({x:panel.x,z:panel.z,w:panel.w,d:panel.d,bottomY:floorY-.18,topY:floorY});
     }
-    addBox(parts,'floor',b.x,plan.balconyZ,b.w*.56,plan.balconyD,floorY-.18,floorY,{supportTop:true});
-    supports.push({type:'rect',x:b.x,z:plan.balconyZ,w:b.w*.56,d:plan.balconyD,y:floorY});
-    horizontalSolids.push({x:b.x,z:plan.balconyZ,w:b.w*.56,d:plan.balconyD,bottomY:floorY-.18,topY:floorY});
+    addBox(parts,'floor',b.x,plan.balconyZ,plan.balconyW,plan.balconyD,floorY-.18,floorY,{supportTop:true});
+    supports.push({type:'rect',x:b.x,z:plan.balconyZ,w:plan.balconyW,d:plan.balconyD,y:floorY});
+    horizontalSolids.push({x:b.x,z:plan.balconyZ,w:plan.balconyW,d:plan.balconyD,bottomY:floorY-.18,topY:floorY});
     const railBottom=floorY+.08,outerZ=plan.front-b.balcony+.06;
-    addBox(parts,'rail',b.x,outerZ,b.w*.56,.14,railBottom,railBottom+.82);
-    addBox(parts,'rail',b.x-b.w*.28,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82);
-    addBox(parts,'rail',b.x+b.w*.28,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82);
+    addBox(parts,'rail',b.x,outerZ,plan.balconyW,.14,railBottom,railBottom+.82);
+    addBox(parts,'rail',b.x-plan.balconyW/2,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82);
+    addBox(parts,'rail',b.x+plan.balconyW/2,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82);
 
     const guardY=floorY+.05,guardH=.76;
     // Guard the long edges only. The bottom and top of every straight flight
@@ -222,65 +259,104 @@ export function makeBuildingGeometry(b){
   for(let story=0;story<levels-1;story++){
     const floorY=base+story*b.floorH,nextY=floorY+b.floorH,laneZ=plan.stairZs[story],x0=plan.lowX,x1=plan.highX;
     supports.push({type:'ramp',x1:x0,x2:x1,z:laneZ,w:plan.stairW,y0:floorY,y1:nextY,role:'stairRamp'});
+    playerRamps.push({type:'ramp',x1:x0,x2:x1,z:laneZ,w:plan.stairW,bottomY:floorY,y0:floorY,y1:nextY,role:'stairRamp'});
     for(let i=0;i<steps;i++){
       const p0=i/steps,p1=(i+1)/steps,mid=(p0+p1)/2,tread=floorY+(nextY-floorY)*p1,x=x0+(x1-x0)*mid;
       const treadW=stepLen+.055;
-      addBox(parts,'stairStep',x,laneZ,treadW,plan.stairW,tread-.18,tread,{playerSolid:false,projectileSolid:true,supportTop:false});
-      horizontalSolids.push({x,z:laneZ,w:treadW,d:plan.stairW,bottomY:tread-.18,topY:tread,role:'stairStep'});
-      // Side rails sit just outside the tread width. They stop side entry while
-      // leaving both ends of the straight flight completely open.
-      for(const side of [-1,1]){
-        const sideZ=laneZ+side*(plan.stairW/2+.07);
-        addBox(parts,'stairSide',x,sideZ,stepLen+.085,.14,tread-.20,tread+.74,{playerSolid:true,projectileSolid:true});
-      }
+      // The visual staircase is a solid stepped volume. Player movement uses
+      // the matching continuous ramp top, so the camera stays smooth without
+      // allowing the player to pass through an open/non-physical stair model.
+      addBox(parts,'stairStep',x,laneZ,treadW,plan.stairW,floorY,tread,{playerSolid:false,projectileSolid:true,supportTop:false});
+      horizontalSolids.push({x,z:laneZ,w:treadW,d:plan.stairW,bottomY:floorY,topY:tread,role:'stairStep'});
     }
   }
 
-  return{levels,base,plan,parts,supports,horizontalSolids};
+  return{levels,base,plan,parts,supports,horizontalSolids,playerRamps};
 }
 
 export const BUILDING_SUPPORTS=[];
 export const BUILDING_HORIZONTAL_SOLIDS=[];
+export const BUILDING_PLAYER_RAMPS=[];
 export const BUILDING_PARTS=[];
 for(const building of BUILDINGS){
   const geometry=makeBuildingGeometry(building);
   BUILDING_SUPPORTS.push(...geometry.supports);
   BUILDING_HORIZONTAL_SOLIDS.push(...geometry.horizontalSolids);
+  BUILDING_PLAYER_RAMPS.push(...geometry.playerRamps);
   BUILDING_PARTS.push(...geometry.parts);
 }
 
 export const STATIC_SUPPORTS = STATIC_BOXES.map(o=>({type:'rect',x:o.x,z:o.z,w:o.w,d:o.d,y:terrainHeight(o.x,o.z)+o.h}));
 
 
-function surfaceHeightAt(surface,x,z){
-  if(surface.type==='rect')return Math.abs(x-surface.x)<=surface.w/2&&Math.abs(z-surface.z)<=surface.d/2?surface.y:null;
-  if(surface.type==='ramp'&&Math.abs(z-surface.z)<=surface.w/2){
-    const lo=Math.min(surface.x1,surface.x2),hi=Math.max(surface.x1,surface.x2);
-    if(x>=lo&&x<=hi){const t=(x-surface.x1)/(surface.x2-surface.x1);return surface.y0+(surface.y1-surface.y0)*t;}
+// Canonical player collision proxies. Both the client predictor and the server
+// authority consume these exact shapes; rendering never creates a second set of
+// ad-hoc collision bounds.
+export const STATIC_PLAYER_COLLIDERS = STATIC_BOXES.map(o=>{
+  const minY=terrainHeight(o.x,o.z);
+  return {type:'box',x:o.x,z:o.z,w:o.w,d:o.d,minX:o.x-o.w/2,maxX:o.x+o.w/2,minZ:o.z-o.d/2,maxZ:o.z+o.d/2,minY,maxY:minY+o.h,role:'static'};
+});
+
+export const NATURAL_PLAYER_COLLIDERS = NATURAL_OBSTACLES.map(o=>{
+  const minY=naturalGroundBase(o.type,o.x,o.z,o.r);
+  // Match the ground-level rendered mass instead of the old generic radius.
+  // Tree collision is the trunk, bushes use their visible clump footprint, and
+  // rocks use a close circular proxy for the rotated low-poly mesh.
+  const radius=o.type==='tree'?o.r*.72:o.type==='bush'?o.r*.78:o.r*.90;
+  const maxY=minY+(o.type==='tree'?o.h*.64:o.h);
+  return {type:'round',x:o.x,z:o.z,r:radius,minY,maxY,role:o.type};
+});
+
+export const BUILDING_PLAYER_COLLIDERS = [
+  ...BUILDING_PARTS.filter(p=>p.playerSolid).map(p=>({type:'box',x:p.x,z:p.z,w:p.w,d:p.d,minX:p.x-p.w/2,maxX:p.x+p.w/2,minZ:p.z-p.d/2,maxZ:p.z+p.d/2,minY:p.bottomY,maxY:p.topY,role:p.role,crouchStep:!!p.crouchStep})),
+  ...BUILDING_PLAYER_RAMPS.map(r=>({...r})),
+];
+
+export const WORLD_PLAYER_COLLIDERS = [...STATIC_PLAYER_COLLIDERS,...NATURAL_PLAYER_COLLIDERS,...BUILDING_PLAYER_COLLIDERS];
+
+
+function circleTouchesRect(x,z,r,minX,maxX,minZ,maxZ){
+  const qx=clamp(x,minX,maxX),qz=clamp(z,minZ,maxZ),dx=x-qx,dz=z-qz;
+  return dx*dx+dz*dz<=r*r;
+}
+
+function surfaceHeightAt(surface,x,z,radius=PLAYER_RADIUS){
+  const r=Math.max(0,Number(radius)||0);
+  if(surface.type==='rect'){
+    const minX=surface.x-surface.w/2,maxX=surface.x+surface.w/2,minZ=surface.z-surface.d/2,maxZ=surface.z+surface.d/2;
+    return circleTouchesRect(x,z,r,minX,maxX,minZ,maxZ)?surface.y:null;
+  }
+  if(surface.type==='ramp'){
+    const lo=Math.min(surface.x1,surface.x2),hi=Math.max(surface.x1,surface.x2),minZ=surface.z-surface.w/2,maxZ=surface.z+surface.w/2;
+    if(!circleTouchesRect(x,z,r,lo,hi,minZ,maxZ))return null;
+    const sx=clamp(x,lo,hi),span=surface.x2-surface.x1,t=Math.abs(span)>1e-9?(sx-surface.x1)/span:0;
+    return surface.y0+(surface.y1-surface.y0)*t;
   }
   return null;
 }
 
-export function worldSupportHeight(x,z,currentY=terrainHeight(x,z),allowCrouchStep=false){
+export function worldSupportHeight(x,z,currentY=terrainHeight(x,z),allowCrouchStep=false,playerRadius=PLAYER_RADIUS){
   let best=terrainHeight(x,z),limit=currentY+MAX_STEP_HEIGHT;
   for(const p of PYRAMIDS){
     const dx=Math.abs(x-p.x),dz=Math.abs(z-p.z),half=p.base/2;
     if(dx<=half&&dz<=half){const y=terrainHeight(p.x,p.z)+p.h*(1-Math.max(dx,dz)/half);if(y<=limit&&y>best)best=y;}
   }
-  for(const surface of STATIC_SUPPORTS){const y=surfaceHeightAt(surface,x,z);if(y!=null&&y<=limit&&y>best)best=y;}
+  for(const surface of STATIC_SUPPORTS){const y=surfaceHeightAt(surface,x,z,playerRadius);if(y!=null&&y<=limit&&y>best)best=y;}
   for(const surface of BUILDING_SUPPORTS){
-    const y=surfaceHeightAt(surface,x,z);if(y==null)continue;
+    const y=surfaceHeightAt(surface,x,z,playerRadius);if(y==null)continue;
     const surfaceLimit=currentY+(surface.crouchStep&&allowCrouchStep?CROUCH_WINDOW_STEP_HEIGHT:MAX_STEP_HEIGHT);
     if(y<=surfaceLimit&&y>best)best=y;
   }
   return best;
 }
 
-export function resolveCeilingCollision(previousY,nextY,x,z,playerHeight=PLAYER_HEIGHT){
+export function resolveCeilingCollision(previousY,nextY,x,z,playerHeight=PLAYER_HEIGHT,playerRadius=PLAYER_RADIUS){
   if(nextY<=previousY)return{y:nextY,hit:false};
-  const oldHead=previousY+playerHeight,newHead=nextY+playerHeight;let resolved=nextY,hit=false;
+  const oldHead=previousY+playerHeight,newHead=nextY+playerHeight,r=Math.max(0,playerRadius-.015);let resolved=nextY,hit=false;
   for(const s of BUILDING_HORIZONTAL_SOLIDS){
-    if(Math.abs(x-s.x)>s.w/2+PLAYER_RADIUS*.35||Math.abs(z-s.z)>s.d/2+PLAYER_RADIUS*.35)continue;
+    const minX=s.x-s.w/2,maxX=s.x+s.w/2,minZ=s.z-s.d/2,maxZ=s.z+s.d/2;
+    const qx=clamp(x,minX,maxX),qz=clamp(z,minZ,maxZ),dx=x-qx,dz=z-qz;
+    if(dx*dx+dz*dz>=r*r)continue;
     if(oldHead<=s.bottomY+.025&&newHead>=s.bottomY-.025){resolved=Math.min(resolved,s.bottomY-playerHeight-.012);hit=true;}
   }
   return{y:resolved,hit};
