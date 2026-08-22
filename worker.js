@@ -9,7 +9,7 @@ import {
 import { normalizeMatchRules, defaultMatchState, normalizeMatchState, publicMatchState, matchRulesAreDefault } from './match-model.js';
 import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback, sweepHorizontalMovement, createTraversalPlan, traversalPose, tacticalThrowVelocity } from './movement-model.js';
 import { projectileSegmentHitZone, segmentFirstWorldHitT, segmentFirstWorldOcclusionT, segmentHitsObstacle, actorHasLineOfSight } from './server-collision.js';
-import { worldBlockedAt, worldMoveBlockedAt, findTraversalCandidate } from './world-collision.js';
+import { worldBlockedAt, findTraversalCandidate } from './world-collision.js';
 
 const GAME_VERSION = APP_VERSION;
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -55,10 +55,6 @@ const BOT_DIFFICULTIES = {
 function safeBotDifficulty(value) {
   const key = String(value || "normal").toLowerCase();
   return Object.prototype.hasOwnProperty.call(BOT_DIFFICULTIES, key) ? key : "normal";
-}
-
-function worldSettingsAreDefault(value) {
-  return JSON.stringify(normalizeWorldSettings(value)) === JSON.stringify(normalizeWorldSettings(DEFAULT_WORLD_SETTINGS));
 }
 
 function configuredOrigins(env) {
@@ -437,8 +433,16 @@ export default {
       const clientAuth = safeClientAuth(body.auth);
       const protocol = Math.floor(finiteNumber(body.protocol, 0));
       if (protocol !== PROTOCOL_VERSION) return json(request, env, { error: `Client protocol ${protocol || "missing"} is incompatible. Update the game client.`, protocol: PROTOCOL_VERSION }, 409);
+      const name = safeName(body.name);
+      const blueBots = clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS);
+      const redBots = clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS);
+      const botCount = blueBots + redBots;
+      const botDifficulty = safeBotDifficulty(body.botDifficulty);
+      const mode = normalizeGameMode(body.mode);
+      const creatorGod = !!body.creatorGod;
       if (!clientId) return json(request, env, { error: "Missing client ID." }, 400);
       if (clientAuth.length < 32) return json(request, env, { error: "Missing client credential." }, 400);
+      if (botCount > MAX_BOTS) return json(request, env, { error: `Maximum ${MAX_BOTS} bots per match.` }, 400);
 
       const directory = await directoryStub(env);
       const networkId = request.headers.get('CF-Connecting-IP') || request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
@@ -461,7 +465,7 @@ export default {
         const created = await room.fetch('https://room.internal/create', {
           method: "POST",
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ code, ownerClientId: clientId, ownerAuthHash }),
+          body: JSON.stringify({ code, ownerClientId: clientId, ownerAuthHash, blueBots, redBots, botDifficulty, mode, creatorGod }),
         });
         if (created.status === 201) {
           return json(request, env, { code }, 201);
@@ -623,9 +627,7 @@ export class GameRoom {
       meta.adminClientIds = normalizeAdminIds(meta);
       meta.clientAuthHashes = normalizeClientAuthHashes(meta);
       meta.settings = normalizeWorldSettings(meta.settings);
-      const legacyRules=meta.match||{...DEFAULT_MATCH_RULES,mode:normalizeGameMode(meta.mode)};
-      meta.match=normalizeMatchState(meta.match,Date.now(),legacyRules);
-      delete meta.mode;delete meta.custom;
+      meta.match=normalizeMatchState(meta.match,Date.now(),meta.match||DEFAULT_MATCH_RULES);meta.mode=matchMode(meta.match);
       this.metaCache=meta;
     }
     return meta || null;
@@ -633,7 +635,7 @@ export class GameRoom {
 
   async putMeta(meta) {
     meta.adminClientIds = normalizeAdminIds(meta);
-    meta.clientAuthHashes=normalizeClientAuthHashes(meta);delete meta.mode;delete meta.custom;
+    meta.clientAuthHashes=normalizeClientAuthHashes(meta);meta.mode=matchMode(meta.match||meta.mode);
     this.metaCache=meta;
     await this.ctx.storage.put("meta", meta);
   }
@@ -644,12 +646,6 @@ export class GameRoom {
       const attachment = socket.deserializeAttachment() || {};
       return !!attachment.clientId && !attachment.replaced;
     });
-  }
-
-  isCustomMatch(meta) {
-    if (!meta) return false;
-    if (!worldSettingsAreDefault(meta.settings) || !matchRulesAreDefault(meta.match)) return true;
-    return this.liveSockets().some((socket) => !!(socket.deserializeAttachment() || {}).godMode);
   }
 
   allowSocketMessage(socket, type, now = Date.now()) {
@@ -723,7 +719,7 @@ export class GameRoom {
     this.simAccumulatorMs = 0;
   }
 
-  broadcastMatch(meta,now=Date.now(),extra={}){this.broadcast({t:'match',match:publicMatchState(meta.match,now),custom:this.isCustomMatch(meta),...extra});}
+  broadcastMatch(meta,now=Date.now()){this.broadcast({t:'match',match:publicMatchState(meta.match,now),custom:!!meta.custom});}
 
   finishMatch(meta,winner,reason,now=Date.now()){
     const match=meta.match;if(match.status==='ended')return false;
@@ -749,7 +745,7 @@ export class GameRoom {
       const reset=spawnedPlayerState(p,spawnForMode(mode,team,index++),team,now,{resetStats:true});socket.serializeAttachment(reset);players.push(publicPlayer(reset));
     }
     this.bots=makeBots(meta.blueBots||0,meta.redBots||0,mode);this.matchDirty=true;
-    this.broadcast({t:'matchReset',match:publicMatchState(meta.match,now),players,bots:this.bots.map(publicBot),custom:this.isCustomMatch(meta)});
+    this.broadcast({t:'matchReset',match:publicMatchState(meta.match,now),players,bots:this.bots.map(publicBot),custom:!!meta.custom});
     return true;
   }
 
@@ -867,10 +863,13 @@ export class GameRoom {
       const ownerClientId = safeClientId(body.ownerClientId);
       const ownerAuthHash = String(body.ownerAuthHash || '').toLowerCase().replace(/[^a-f0-9]/g, '').slice(0, 64);
       if (!code || !ownerClientId || ownerAuthHash.length !== 64) return json(request, this.env, { error: "Invalid match owner credentials." }, 400);
-      const blueBots = 0;
-      const redBots = 0;
-      const botDifficulty = 'normal';
-      const mode = normalizeGameMode();
+      const blueBots = clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS);
+      const redBots = clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS);
+      const botCount = blueBots + redBots;
+      const botDifficulty = safeBotDifficulty(body.botDifficulty);
+      const mode = normalizeGameMode(body.mode);
+      const creatorGod = !!body.creatorGod;
+      if (botCount > MAX_BOTS) return json(request, this.env, { error: `Maximum ${MAX_BOTS} bots per match.` }, 400);
       const now = Date.now();
       const match = defaultMatchState(now, {mode,...gameModeSpec(mode)});
       const meta = {
@@ -882,8 +881,11 @@ export class GameRoom {
         blueBots,
         redBots,
         botDifficulty,
+        mode,
+        creatorGod,
         settings: normalizeWorldSettings(),
         match,
+        custom: creatorGod,
         createdAt: now,
         expiresAt: now + ROOM_MAX_LIFETIME_MS,
       };
@@ -990,7 +992,7 @@ export class GameRoom {
       equipmentReadyAt: Math.max(0, finiteNumber(spawn.equipmentReadyAt, 0)),
       kills: Math.max(0, Math.floor(finiteNumber(spawn.kills, 0))),
       deaths: Math.max(0, Math.floor(finiteNumber(spawn.deaths, 0))),
-      godMode: preserved ? !!preserved.godMode : false,
+      godMode: preserved ? !!preserved.godMode : (clientId === meta.ownerClientId && !!meta.creatorGod),
       pendingTeam: preserved?.pendingTeam ? safeTeam(preserved.pendingTeam) : '',
       admin: isRoomAdmin(meta, clientId),
       ads: false,
@@ -1029,7 +1031,7 @@ export class GameRoom {
       ownerClientId: meta.ownerClientId,
       settings: meta.settings,
       match: publicMatchState(meta.match, Date.now()),
-      custom: this.isCustomMatch(meta),
+      custom: !!meta.custom,
       serverTime: Date.now(),
       protocol: PROTOCOL_VERSION,
       gameVersion: GAME_VERSION,
@@ -1171,10 +1173,9 @@ export class GameRoom {
     if(payload.t==='lobbyMode'){
       if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Admin access required.'});return;}
       if(meta.match.status!=='waiting'){sendJson(socket,{t:'notice',tone:'error',text:'Game mode can only be changed in the lobby.'});return;}
-      const mode=normalizeGameMode(payload.mode),spec=gameModeSpec(mode);meta.match={...meta.match,mode,blueScore:0,redScore:0,scoreLimit:spec.scoreLimit,timeLimitMs:spec.timeLimitMs,winner:'',winnerId:'',winnerName:'',reason:'',updatedAt:now};
+      const mode=normalizeGameMode(payload.mode),spec=gameModeSpec(mode);meta.mode=mode;meta.match={...meta.match,mode,blueScore:0,redScore:0,scoreLimit:spec.scoreLimit,timeLimitMs:spec.timeLimitMs,winner:'',winnerId:'',winnerName:'',reason:'',updatedAt:now};
       for(const s of this.ctx.getWebSockets()){const p=s.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;p.pendingTeam='';s.serializeAttachment(p);}
-      this.bots=reconcileBots(this.bots,meta.blueBots||0,meta.redBots||0,mode);await this.ctx.storage.put('bots',this.bots);
-      await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);this.broadcastMatch(meta,now,{rulesUpdated:true,by:me.clientId});this.broadcast({t:'bots',config:{blueBots:meta.blueBots||0,redBots:meta.redBots||0,difficulty:safeBotDifficulty(meta.botDifficulty)},bots:this.bots.map(publicBot)});return;
+      await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);this.broadcastMatch(meta,now);return;
     }
 
     if(payload.t==='startMatch'){
@@ -1190,10 +1191,9 @@ export class GameRoom {
         return;
       }
       me.godMode = !!payload.enabled;
-      if(me.godMode)refreshUnlimitedResources(me);
+      if(me.godMode){refreshUnlimitedResources(me);meta.custom=true;await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);}
       socket.serializeAttachment(me);
-      await this.updateDirectory(this.liveSockets().length,meta);
-      this.broadcast({ t: "god", id: me.clientId, enabled: me.godMode, custom:this.isCustomMatch(meta) });
+      this.broadcast({ t: "god", id: me.clientId, enabled: me.godMode });
       if(me.godMode)sendJson(socket,{t:'equipment',equipment:me.equipment,unlimited:true});
       sendLoadout(socket,me,{action:'god',accepted:true,unlimited:!!me.godMode});
       return;
@@ -1228,10 +1228,9 @@ export class GameRoom {
       const action = String(payload.action || "");
       if (action === "god") {
         target.godMode = !!payload.enabled;
-        if (target.godMode) refreshUnlimitedResources(target);
+        if (target.godMode) { refreshUnlimitedResources(target); meta.custom = true; await this.putMeta(meta); await this.updateDirectory(this.liveSockets().length, meta); }
         targetSocket.serializeAttachment(target);
-        await this.updateDirectory(this.liveSockets().length, meta);
-        this.broadcast({ t: "god", id: target.clientId, enabled: target.godMode, custom:this.isCustomMatch(meta) });
+        this.broadcast({ t: "god", id: target.clientId, enabled: target.godMode });
         if (target.godMode) {
           sendJson(targetSocket,{t:"equipment",equipment:target.equipment,unlimited:true});
         }
@@ -1240,10 +1239,6 @@ export class GameRoom {
       }
       if (action === "admin") {
         const enabled = !!payload.enabled;
-        if (targetId === me.clientId) {
-          sendJson(socket,{t:"notice",tone:"error",text:"You cannot change your own admin role."});
-          return;
-        }
         if (targetId === meta.ownerClientId && !enabled) {
           sendJson(socket,{t:"notice",tone:"error",text:"The match owner cannot be demoted."});
           return;
@@ -1254,11 +1249,12 @@ export class GameRoom {
         meta.adminClientIds = [...admins];
         await this.putMeta(meta);
         target.admin = isRoomAdmin(meta, targetId);
-        const godDisabled=!target.admin&&target.godMode;
-        if (godDisabled) target.godMode = false;
+        if (!target.admin && target.godMode) {
+          target.godMode = false;
+          this.broadcast({ t: "god", id: targetId, enabled: false });
+          sendLoadout(targetSocket, target, { action: "god", accepted: true, unlimited: false });
+        }
         targetSocket.serializeAttachment(target);
-        await this.updateDirectory(this.liveSockets().length, meta);
-        if(godDisabled){this.broadcast({ t: "god", id: targetId, enabled: false, custom:this.isCustomMatch(meta) });sendLoadout(targetSocket, target, { action: "god", accepted: true, unlimited: false });}
         this.broadcast({ t: "adminRole", id: targetId, enabled: target.admin, owner: targetId === meta.ownerClientId });
         return;
       }
@@ -1270,16 +1266,11 @@ export class GameRoom {
         sendJson(socket,{t:"notice",tone:"error",text:"Admin access required."});
         return;
       }
-      const section = payload.section === 'advanced' ? 'advanced' : 'gameplay';
-      const patch = payload.patch && typeof payload.patch === 'object' ? payload.patch : payload.settings && typeof payload.settings === 'object' ? payload.settings : {};
-      const current = normalizeWorldSettings(meta.settings);
-      const merged = section === 'advanced'
-        ? { ...current, weapons:Object.fromEntries(WEAPON_ORDER.map(name=>[name,{...current.weapons[name],...(patch.weapons?.[name]||{})}])) }
-        : { ...current, movement:{...current.movement,...(patch.movement||{})}, combat:{...current.combat,...(patch.combat||{})} };
-      const nextSettings = normalizeWorldSettings(merged);
+      const nextSettings = normalizeWorldSettings(payload.settings);
       meta.settings = nextSettings;
+      if (!worldSettingsAreDefault(nextSettings)) meta.custom = true;
       await this.putMeta(meta);
-      this.broadcast({ t: "settings", settings: nextSettings, section, by: me.clientId, custom:this.isCustomMatch(meta) });
+      this.broadcast({ t: "settings", settings: nextSettings, by: me.clientId, custom:!!meta.custom });
       await this.updateDirectory(this.liveSockets().length, meta);
       return;
     }
@@ -1294,8 +1285,9 @@ export class GameRoom {
       match.scoreLimit=rules.scoreLimit;match.timeLimitMs=rules.timeLimitMs;
       if(match.status==='active'&&match.startedAt)match.endsAt=match.timeLimitMs>0?match.startedAt+match.timeLimitMs:0;
       match.updatedAt = now; meta.match = match;
+      if (!matchRulesAreDefault(match)) meta.custom = true;
       this.matchDirty = true; await this.putMeta(meta); this.matchDirty = false;
-      this.broadcastMatch(meta, now, {rulesUpdated:true,by:me.clientId}); await this.updateDirectory(this.liveSockets().length, meta);
+      this.broadcastMatch(meta, now); await this.updateDirectory(this.liveSockets().length, meta);
       if(match.status==='active'&&gameModeSpec(match.mode).scoreType==='team'&&(match.blueScore>=match.scoreLimit||match.redScore>=match.scoreLimit)){
         const winner=match.blueScore===match.redScore?'draw':match.blueScore>match.redScore?'blue':'red';this.finishMatch(meta,winner,'score',now);
       }else if(match.status==='active'&&gameModeSpec(match.mode).scoreType==='player'){
@@ -1446,7 +1438,7 @@ export class GameRoom {
     const horizontal = sweepHorizontalMovement({
       x:me.x,y:me.y,z:me.z,dx,dz,grounded:serverGrounded,arenaLimit:ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,
       supportHeight:(x,z,y)=>worldSupportHeight(x,z,y,crouched),
-      blockedAt:(x,z,y,fromX,fromZ)=>worldMoveBlockedAt(x,z,y,fromX,fromZ,playerHeight,PLAYER_RADIUS)||this.actorBlocksAt(x,z,y,fromX,fromZ,solidActors,playerHeight),
+      blockedAt:(x,z,y,fromX,fromZ)=>worldBlockedAt(x,z,y,playerHeight,PLAYER_RADIUS)||this.actorBlocksAt(x,z,y,fromX,fromZ,solidActors,playerHeight),
     });
     let x=horizontal.x,z=horizontal.z,walkY=horizontal.y,followsSupport=horizontal.grounded;
 
@@ -2113,7 +2105,6 @@ export class GameRoom {
     }
     await this.scheduleRoomAlarm(expiresAt);
     await this.updateDirectory(live.length, meta, attachment.replaced ? "" : (attachment.clientId || ""));
-    if(!attachment.replaced&&attachment.godMode)this.broadcastMatch(meta,now);
   }
 
   async webSocketError(socket) {
@@ -2209,7 +2200,7 @@ export class GameRoom {
           mode: matchMode(match),
           blue,
           red,
-          custom: this.isCustomMatch(meta),
+          custom: !!meta.custom,
           matchStatus: match.status,
           blueScore: match.blueScore,
           redScore: match.redScore,
