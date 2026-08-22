@@ -324,6 +324,29 @@ export const BUILDING_HORIZONTAL_SOLIDS = BUILDING_GEOMETRY.flatMap(g=>g.horizon
 export const BUILDING_PLAYER_RAMPS = BUILDING_GEOMETRY.flatMap(g=>g.playerRamps);
 export const BUILDING_PARTS = BUILDING_GEOMETRY.flatMap(g=>g.parts);
 
+export const BUILDING_WINDOW_PORTALS = Object.freeze(BUILDINGS.flatMap((b,buildingIndex)=>{
+  const base=terrainHeight(b.x,b.z),plan=buildingPlan(b),levels=Math.max(2,Math.min(6,Math.floor(b.levels||2))),portals=[];
+  const sides=[
+    {side:'front',nx:0,nz:-1,tx:1,tz:0,x:b.x,z:b.z-b.d/2+plan.wallT/2},
+    {side:'back',nx:0,nz:1,tx:1,tz:0,x:b.x,z:b.z+b.d/2-plan.wallT/2},
+    {side:'left',nx:-1,nz:0,tx:0,tz:1,x:b.x-b.w/2+plan.wallT/2,z:b.z},
+    {side:'right',nx:1,nz:0,tx:0,tz:1,x:b.x+b.w/2-plan.wallT/2,z:b.z},
+  ];
+  for(let level=0;level<levels;level++)for(const face of sides){
+    for(const opening of buildingWallOpenings(b,level,face.side)){
+      if(opening.kind!=='window')continue;
+      const cx=face.x+face.tx*opening.u,cz=face.z+face.tz*opening.u,floorY=base+level*b.floorH;
+      portals.push(Object.freeze({
+        id:`b${buildingIndex}-l${level}-${face.side}-${Math.round(opening.u*1000)}`,
+        buildingIndex,level,side:face.side,cx,cz,nx:face.nx,nz:face.nz,tx:face.tx,tz:face.tz,
+        width:opening.w,halfWidth:opening.w/2,wallThickness:plan.wallT,floorY,
+        bottomY:floorY+opening.bottom,topY:floorY+opening.top,
+      }));
+    }
+  }
+  return portals;
+}));
+
 export const STATIC_SUPPORTS = STATIC_BOXES.map(o=>({type:'rect',x:o.x,z:o.z,w:o.w,d:o.d,y:terrainHeight(o.x,o.z)+o.h}));
 
 

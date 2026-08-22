@@ -282,7 +282,7 @@ function publicPlayer(attachment) {
     grounded: attachment.serverGrounded !== false,
     verticalVelocity: finiteNumber(attachment.verticalVelocity, 0),
     jumpSeq: Math.max(0, Math.floor(finiteNumber(attachment.lastJumpSeq, 0))),
-    traversal: attachment.traversal ? {mode:attachment.traversal.mode,role:attachment.traversal.role||'',seq:attachment.traversal.seq,startX:attachment.traversal.startX,startY:attachment.traversal.startY,startZ:attachment.traversal.startZ,endX:attachment.traversal.endX,endY:attachment.traversal.endY,endZ:attachment.traversal.endZ,peakY:attachment.traversal.peakY,startedAt:attachment.traversal.startedAt,durationMs:attachment.traversal.durationMs} : null,
+    traversal: attachment.traversal ? {mode:attachment.traversal.mode,role:attachment.traversal.role||'',seq:attachment.traversal.seq,startX:attachment.traversal.startX,startY:attachment.traversal.startY,startZ:attachment.traversal.startZ,endX:attachment.traversal.endX,endY:attachment.traversal.endY,endZ:attachment.traversal.endZ,peakY:attachment.traversal.peakY,startedAt:attachment.traversal.startedAt,durationMs:attachment.traversal.durationMs,endGrounded:attachment.traversal.endGrounded!==false,exitVelocityY:Number(attachment.traversal.exitVelocityY)||0,portalId:String(attachment.traversal.portalId||'')} : null,
   };
 }
 
@@ -307,7 +307,7 @@ function publicBot(bot) {
     reloadWeapon: bot.reloadWeapon || "",
     kills: Math.max(0, Math.floor(finiteNumber(bot.kills, 0))),
     deaths: Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))),
-    traversal: bot.traversal ? {mode:bot.traversal.mode,role:bot.traversal.role||'',seq:bot.traversal.seq,startX:bot.traversal.startX,startY:bot.traversal.startY,startZ:bot.traversal.startZ,endX:bot.traversal.endX,endY:bot.traversal.endY,endZ:bot.traversal.endZ,peakY:bot.traversal.peakY,startedAt:bot.traversal.startedAt,durationMs:bot.traversal.durationMs} : null,
+    traversal: bot.traversal ? {mode:bot.traversal.mode,role:bot.traversal.role||'',seq:bot.traversal.seq,startX:bot.traversal.startX,startY:bot.traversal.startY,startZ:bot.traversal.startZ,endX:bot.traversal.endX,endY:bot.traversal.endY,endZ:bot.traversal.endZ,peakY:bot.traversal.peakY,startedAt:bot.traversal.startedAt,durationMs:bot.traversal.durationMs,endGrounded:bot.traversal.endGrounded!==false,exitVelocityY:Number(bot.traversal.exitVelocityY)||0,portalId:String(bot.traversal.portalId||'')} : null,
   };
 }
 
@@ -1423,7 +1423,7 @@ export class GameRoom {
     if(!me?.traversal)return me;
     const pose=traversalPose(me.traversal,now);if(!pose){return {...me,traversal:null};}
     const next={...me,x:pose.x,y:pose.y,z:pose.z,verticalVelocity:0,serverGrounded:false,moveSpeed:0,lastVerticalAt:now};
-    if(pose.done){next.x=me.traversal.endX;next.y=me.traversal.endY;next.z=me.traversal.endZ;next.traversal=null;next.serverGrounded=true;next.lastGroundedAt=now;next.moveBudgetSec=MOVE_BUDGET_INITIAL_SEC;}
+    if(pose.done){const finished=me.traversal;next.x=finished.endX;next.y=finished.endY;next.z=finished.endZ;next.traversal=null;next.serverGrounded=finished.endGrounded!==false;next.verticalVelocity=next.serverGrounded?0:(Number.isFinite(Number(finished.exitVelocityY))?Number(finished.exitVelocityY):-1.15);if(next.serverGrounded)next.lastGroundedAt=now;next.moveBudgetSec=MOVE_BUDGET_INITIAL_SEC;}
     return next;
   }
 
@@ -1759,7 +1759,7 @@ export class GameRoom {
       const tryTraverse=(ax,az)=>{
         const len=Math.hypot(ax,az);if(len<.2||bot.traversal)return false;
         const dirX=ax/len,dirZ=az/len,candidate=findTraversalCandidate({x:bot.x,y:bot.y,z:bot.z,dirX,dirZ,height:PLAYER_HEIGHT,radius:PLAYER_RADIUS,airborne:false});
-        if(!candidate||this.actorBlocksAt(candidate.endX,candidate.endZ,candidate.endY,bot.x,bot.z,solidActors,PLAYER_HEIGHT))return false;
+        if(!candidate||candidate.endGrounded===false||this.actorBlocksAt(candidate.endX,candidate.endZ,candidate.endY,bot.x,bot.z,solidActors,PLAYER_HEIGHT))return false;
         const plan=createTraversalPlan(candidate,bot.x,bot.y,bot.z,now,++bot.traverseSeq);if(!plan)return false;
         bot.traversal=plan;this.broadcast({t:'traverse',id:bot.id,accepted:true,...plan});return true;
       };

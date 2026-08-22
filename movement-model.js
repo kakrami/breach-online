@@ -126,9 +126,10 @@ export function createTraversalPlan(candidate, startX, startY, startZ, startedAt
   const distance=Math.hypot(ex-sx,ez-sz),rise=Math.max(0,ey-sy);
   const durationMs=mode==='vault'?Math.round(Math.max(300,Math.min(430,300+distance*34))):Math.round(Math.max(380,Math.min(540,390+rise*72+distance*24)));
   return {
-    seq:Math.max(0,Math.floor(Number(seq)||0)),mode,role:String(candidate.role||''),
+    seq:Math.max(0,Math.floor(Number(seq)||0)),mode,role:String(candidate.role||''),portalId:String(candidate.portalId||''),
     startX:sx,startY:sy,startZ:sz,endX:ex,endY:ey,endZ:ez,
     peakY:Math.max(Number(candidate.peakY)||ey,ey+.08),startedAt:Number(startedAt)||0,durationMs,
+    endGrounded:candidate.endGrounded!==false,exitVelocityY:Number.isFinite(Number(candidate.exitVelocityY))?Number(candidate.exitVelocityY):0,
   };
 }
 
@@ -139,7 +140,11 @@ export function traversalPose(plan, now) {
   const duration=Math.max(1,Number(plan.durationMs)||1),raw=(Number(now)-Number(plan.startedAt))/duration,p=Math.max(0,Math.min(1,raw));
   const eased=smooth01(p),sx=Number(plan.startX)||0,sy=Number(plan.startY)||0,sz=Number(plan.startZ)||0,ex=Number(plan.endX)||0,ey=Number(plan.endY)||0,ez=Number(plan.endZ)||0;
   let x,z,y;
-  if(plan.mode==='vault'){
+  if(plan.mode==='vault'&&plan.role==='window'){
+    const lift=smooth01(Math.min(1,p/.34)),cross=smooth01(Math.max(0,Math.min(1,(p-.18)/.64))),settle=smooth01(Math.max(0,(p-.72)/.28));
+    const clearanceY=Math.max(Number(plan.peakY)||sy,sy,ey);
+    x=sx+(ex-sx)*cross;z=sz+(ez-sz)*cross;y=sy+(clearanceY-sy)*lift+(ey-clearanceY)*settle;
+  }else if(plan.mode==='vault'){
     x=sx+(ex-sx)*eased;z=sz+(ez-sz)*eased;
     const base=sy+(ey-sy)*eased,peak=Math.max(Number(plan.peakY)||base,sy,ey);
     y=base+Math.sin(Math.PI*p)*Math.max(0,peak-(sy+ey)*.5);
