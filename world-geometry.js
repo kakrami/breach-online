@@ -240,7 +240,7 @@ export function makeBuildingGeometry(b){
     const openings=buildingWallOpenings(b,level,side);
     for(const cell of splitWall(b.w,b.floorH,openings)){
       const x=b.x+cell.u,bottomY=base+level*b.floorH+cell.y,topY=bottomY+cell.h+.015;
-      addBox(parts,'wall',x,z,cell.w+.015,t,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep,traversal:cell.crouchStep?'vault':''});
+      addBox(parts,'wall',x,z,cell.w+.015,t,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep,traversal:cell.crouchStep?'vault':'mantle'});
       if(cell.crouchStep)supports.push({type:'rect',x,z,w:cell.w+.015,d:t,y:topY,role:'windowSill',crouchStep:true});
     }
     for(const opening of openings)addFrameX(parts,b,z+(side==='front'?-.012:.012),base,level,opening);
@@ -249,7 +249,7 @@ export function makeBuildingGeometry(b){
     const openings=buildingWallOpenings(b,level,side);
     for(const cell of splitWall(b.d,b.floorH,openings)){
       const z=b.z+cell.u,bottomY=base+level*b.floorH+cell.y,topY=bottomY+cell.h+.015;
-      addBox(parts,'wall',x,z,t,cell.w+.015,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep,traversal:cell.crouchStep?'vault':''});
+      addBox(parts,'wall',x,z,t,cell.w+.015,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep,traversal:cell.crouchStep?'vault':'mantle'});
       if(cell.crouchStep)supports.push({type:'rect',x,z,w:t,d:cell.w+.015,y:topY,role:'windowSill',crouchStep:true});
     }
     for(const opening of openings)addFrameZ(parts,b,x+(side==='left'?-.012:.012),base,level,opening);
@@ -363,8 +363,8 @@ function circleTouchesRect(x,z,r,minX,maxX,minZ,maxZ){
   return dx*dx+dz*dz<=r*r;
 }
 
-function surfaceHeightAt(surface,x,z,radius=PLAYER_RADIUS){
-  const r=Math.max(0,Number(radius)||0),contact=Math.min(r,SUPPORT_CONTACT_RADIUS);
+function surfaceHeightAt(surface,x,z,radius=PLAYER_RADIUS,contactRadius=SUPPORT_CONTACT_RADIUS){
+  const r=Math.max(0,Number(radius)||0),contact=Math.min(r,Math.max(0,Number(contactRadius)||0));
   if(surface.type==='rect'){
     const minX=surface.x-surface.w/2,maxX=surface.x+surface.w/2,minZ=surface.z-surface.d/2,maxZ=surface.z+surface.d/2;
     // Feet need meaningful contact with a flat surface. Using the whole player
@@ -396,6 +396,25 @@ export function worldSupportHeight(x,z,currentY=terrainHeight(x,z),allowCrouchSt
     const surfaceLimit=currentY+(surface.crouchStep&&allowCrouchStep?CROUCH_WINDOW_STEP_HEIGHT:MAX_STEP_HEIGHT);
     if(y<=surfaceLimit&&y>best)best=y;
   }
+  return best;
+}
+
+// Support query used only after horizontal collision. Unlike ordinary ground
+// support, this uses most of the capsule radius so a walkable landing is found
+// before its vertical edge catches the body. It never raises the player by more
+// than maxStepHeight and therefore cannot auto-climb window sills, rails or walls.
+export function worldStepUpHeight(x,z,currentY,maxStepHeight=MAX_STEP_HEIGHT,playerRadius=PLAYER_RADIUS){
+  const py=Number(currentY),limit=py+Math.max(0,Number(maxStepHeight)||0),contact=Math.max(SUPPORT_CONTACT_RADIUS,Math.max(0,Number(playerRadius)||PLAYER_RADIUS));
+  if(!Number.isFinite(py))return null;
+  let best=null;
+  const consider=(surface,allow=false)=>{
+    const y=surfaceHeightAt(surface,x,z,playerRadius,contact);if(y==null||y<=py+.015||y>limit+.001)return;
+    if(surface.crouchStep&&!allow)return;
+    if(best==null||y>best)best=y;
+  };
+  for(const surface of STATIC_SUPPORTS)consider(surface);
+  for(const surface of NATURAL_SUPPORTS)consider(surface);
+  for(const surface of BUILDING_SUPPORTS)consider(surface,false);
   return best;
 }
 

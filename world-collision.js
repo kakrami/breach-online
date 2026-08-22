@@ -4,9 +4,10 @@ const CELL_SIZE = 8;
 const CELL_HEIGHT = 3;
 const HORIZONTAL_SKIN = 0.015;
 const VERTICAL_SKIN = 0.04;
-const TRAVERSE_PROBE = 1.45;
-const VAULT_MAX_RISE = 1.08;
-const MANTLE_MAX_RISE = 1.25;
+const TRAVERSE_PROBE = 1.65;
+const VAULT_MAX_RISE = 1.10;
+const MANTLE_GROUNDED_MAX_RISE = 1.18;
+const MANTLE_AIR_MAX_RISE = 1.90;
 const grid = new Map();
 const entries = [];
 const keyFor = (cx,cy,cz) => `${cx},${cy},${cz}`;
@@ -130,6 +131,16 @@ function clearStandingAt(x,z,y,height,radius){
   return !worldBlockerAt(x,z,y+.018,height,radius);
 }
 
+// Standing up is a height-expansion test, not a fresh full-body collision test.
+// Checking the entire standing capsule made low sills/steps near the feet report
+// false "clearance" failures even though the extra head space was open.
+export function worldHeightExpansionBlockedAt(x,z,y,fromHeight,toHeight,radius=PLAYER_RADIUS){
+  const low=Math.max(.05,Number(fromHeight)||0),high=Math.max(low,Number(toHeight)||low);
+  if(high<=low+.001)return false;
+  const sliceY=Number(y)+low-.018,sliceHeight=high-low+.036;
+  return worldBlockerAt(x,z,sliceY,sliceHeight,radius)!==null;
+}
+
 function findFrontBlocker(x,y,z,dx,dz,height,radius){
   for(let distance=.08;distance<=TRAVERSE_PROBE;distance+=.07){
     const px=x+dx*distance,pz=z+dz*distance,c=worldBlockerAt(px,pz,y,height,radius);
@@ -167,6 +178,21 @@ function boxMantleLanding(c,x,y,z,dx,dz,height,radius,hit,topY){
   return null;
 }
 
+function barrierMantleLanding(c,x,y,z,dx,dz,height,radius,hit,topY){
+  // Wall faces are too thin to stand on. Search through the face for a real
+  // floor/roof/balcony support. Split wall cells around windows may end below
+  // the actual floor slab, so accept the first support at or above that cell.
+  const start=Math.max(hit.distance+.08,.12),end=hit.distance+2.65;
+  for(let distance=start;distance<=end;distance+=.055){
+    const px=x+dx*distance,pz=z+dz*distance;
+    const support=worldSupportHeight(px,pz,topY,false,radius);
+    if(support<topY-.11)continue;
+    if(!clearStandingAt(px,pz,support,height,radius))continue;
+    return {endX:px,endY:support,endZ:pz,peakY:Math.max(topY,support)+.16};
+  }
+  return null;
+}
+
 function roundMantleLanding(c,x,y,z,dx,dz,height,radius,topY){
   const supportRadius=Math.max(radius+.10,Number(c.supportRadius)||c.r),available=supportRadius-radius-.055;
   if(available<=.05)return null;
@@ -192,20 +218,21 @@ export function findTraversalCandidate({x,y,z,dirX,dirZ,height=PLAYER_HEIGHT,rad
   // Thin overhead slabs are ceilings, not mantle ledges. A ledge must have a
   // face that reaches down near the player's feet.
   const minY=Number.isFinite(c.minY)?c.minY:Number.isFinite(c.bottomY)?c.bottomY:py;
-  if(minY>py+.34)return null;
+  if(minY>py+.34&&c.role!=='wall')return null;
   if(mode==='vault'){
     if(rise>VAULT_MAX_RISE)return null;
     const landing=vaultLanding(px,py,pz,dx,dz,h,r,hit,topY);if(!landing)return null;
     return {mode:'vault',role:c.role||'',rise,topY,...landing,dirX:dx,dirZ:dz};
   }
   if(mode==='mantle'){
-    if(!c.supportTop||rise>MANTLE_MAX_RISE)return null;
-    // Higher ledges require the player to actually jump close enough to grab
-    // them. Low waist-height ledges may mantle directly from a jump press.
-    if(!airborne&&rise>.98)return null;
-    const landing=c.type==='box'?boxMantleLanding(c,px,py,pz,dx,dz,h,r,hit,topY):c.type==='round'?roundMantleLanding(c,px,py,pz,dx,dz,h,r,topY):null;
+    const maxRise=airborne?MANTLE_AIR_MAX_RISE:MANTLE_GROUNDED_MAX_RISE;
+    if(rise>maxRise)return null;
+    const landing=c.supportTop
+      ?(c.type==='box'?boxMantleLanding(c,px,py,pz,dx,dz,h,r,hit,topY):c.type==='round'?roundMantleLanding(c,px,py,pz,dx,dz,h,r,topY):null)
+      :(c.type==='box'?barrierMantleLanding(c,px,py,pz,dx,dz,h,r,hit,topY):null);
     if(!landing)return null;
-    return {mode:'mantle',role:c.role||'',rise,topY,...landing,dirX:dx,dirZ:dz};
+    const landingRise=landing.endY-py;if(landingRise>.12&&landingRise>maxRise+.001)return null;
+    return {mode:'mantle',role:c.role||'',rise:Math.max(rise,landingRise),topY:Math.max(topY,landing.endY),...landing,dirX:dx,dirZ:dz};
   }
   return null;
 }

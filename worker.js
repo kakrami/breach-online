@@ -1,5 +1,5 @@
 import {
-  PLAYER_HEIGHT, PLAYER_RADIUS, ARENA_LIMIT, COMBAT_FLOW_NODES, terrainHeight, worldSupportHeight, resolveCeilingCollision
+  PLAYER_HEIGHT, PLAYER_RADIUS, ARENA_LIMIT, MAX_STEP_HEIGHT, COMBAT_FLOW_NODES, terrainHeight, worldSupportHeight, worldStepUpHeight, resolveCeilingCollision
 } from './world-geometry.js';
 import {
   APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS,
@@ -11,7 +11,7 @@ import { MATCH_STATUS, matchAllowsLobbyEdits, matchAllowsMovement, matchAllowsCo
 import { spawnForMode as directedSpawnForMode, chooseSafeSpawn as directedChooseSafeSpawn, spawnPointCount } from './spawn-director.js';
 import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback, sweepHorizontalMovement, createTraversalPlan, traversalPose, tacticalThrowVelocity } from './movement-model.js';
 import { projectileSegmentHitZone, segmentFirstWorldHitT, segmentFirstWorldOcclusionT, segmentHitsObstacle, actorHasLineOfSight } from './server-collision.js';
-import { worldBlockedAt, worldMoveBlockedAt, findTraversalCandidate } from './world-collision.js';
+import { worldBlockedAt, worldMoveBlockedAt, worldHeightExpansionBlockedAt, findTraversalCandidate } from './world-collision.js';
 
 const GAME_VERSION = APP_VERSION;
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -1438,7 +1438,7 @@ export class GameRoom {
     const flashPower = activeFlashPower(me, now);
     const ads = flashPower > 0.12 ? false : !!payload.ads;
     let crouched = !!payload.crouched;
-    if (!crouched && me.crouched && worldBlockedAt(me.x, me.z, me.y, PLAYER_HEIGHT, PLAYER_RADIUS)) crouched = true;
+    if (!crouched && me.crouched && worldHeightExpansionBlockedAt(me.x, me.z, me.y, CROUCH_HEIGHT, PLAYER_HEIGHT, PLAYER_RADIUS)) crouched = true;
     const playerHeight = crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
     const baseSpeed = ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
     const currentAllowedSpeed = baseSpeed * (crouched ? CROUCH_SPEED_MULTIPLIER : 1);
@@ -1502,6 +1502,7 @@ export class GameRoom {
     const horizontal = sweepHorizontalMovement({
       x:me.x,y:me.y,z:me.z,dx,dz,grounded:serverGrounded,arenaLimit:ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,
       supportHeight:(x,z,y)=>worldSupportHeight(x,z,y,crouched),
+      stepUpHeight:(x,z,y,maxStep)=>worldStepUpHeight(x,z,y,maxStep,PLAYER_RADIUS),maxStepHeight:MAX_STEP_HEIGHT,
       blockedAt:(x,z,y,fromX,fromZ)=>worldMoveBlockedAt(x,z,y,fromX,fromZ,playerHeight,PLAYER_RADIUS)||this.actorBlocksAt(x,z,y,fromX,fromZ,solidActors,playerHeight),
     });
     let x=horizontal.x,z=horizontal.z,walkY=horizontal.y,followsSupport=horizontal.grounded;
@@ -1763,10 +1764,14 @@ export class GameRoom {
         bot.traversal=plan;this.broadcast({t:'traverse',id:bot.id,accepted:true,...plan});return true;
       };
       const tryMove=(ax,az,step)=>{
-        const fromX=bot.x,fromZ=bot.z,nx=bot.x+ax*step,nz=bot.z+az*step;
-        if(!worldBlockedAt(nx,bot.z,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(nx,bot.z,bot.y,fromX,fromZ,solidActors)&&!worldBlockedAt(nx,nz,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(nx,nz,bot.y,fromX,fromZ,solidActors)){bot.x=nx;bot.z=nz;return true;}
-        if(!worldBlockedAt(bot.x,nz,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(bot.x,nz,bot.y,fromX,fromZ,solidActors)){bot.z=nz;return true;}
-        return false;
+        const fromX=bot.x,fromZ=bot.z;
+        const out=sweepHorizontalMovement({
+          x:bot.x,y:bot.y,z:bot.z,dx:ax*step,dz:az*step,grounded:true,arenaLimit:ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,
+          supportHeight:(x,z,y)=>worldSupportHeight(x,z,y,false,.34),
+          stepUpHeight:(x,z,y,maxStep)=>worldStepUpHeight(x,z,y,maxStep,.34),maxStepHeight:MAX_STEP_HEIGHT,
+          blockedAt:(x,z,y,fx,fz)=>worldMoveBlockedAt(x,z,y,fx,fz,PLAYER_HEIGHT,.34)||this.actorBlocksAt(x,z,y,fx,fz,solidActors,PLAYER_HEIGHT),
+        });
+        const moved=Math.hypot(out.x-fromX,out.z-fromZ)>.005;bot.x=out.x;bot.y=out.y;bot.z=out.z;return moved;
       };
 
       const targetCandidates=[];

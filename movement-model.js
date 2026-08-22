@@ -32,7 +32,8 @@ export function advanceKnockback(xVelocity, zVelocity, dt) {
 }
 
 export function sweepHorizontalMovement({
-  x, y, z, dx, dz, grounded, arenaLimit, followDrop, supportHeight, blockedAt, stepDistance = 0.16,
+  x, y, z, dx, dz, grounded, arenaLimit, followDrop, supportHeight, blockedAt,
+  stepUpHeight, maxStepHeight = 0.62, stepDistance = 0.12,
 }) {
   let px = Number.isFinite(Number(x)) ? Number(x) : 0;
   let py = Number.isFinite(Number(y)) ? Number(y) : 0;
@@ -40,49 +41,80 @@ export function sweepHorizontalMovement({
   let followsSupport = !!grounded;
   const limit = Math.max(0, Number(arenaLimit) || 0);
   const drop = Math.max(0, Number(followDrop) || 0);
-  const maxStep = Math.max(0.01, Number(stepDistance) || 0.16);
+  const climb = Math.max(0, Number(maxStepHeight) || 0);
+  const maxStep = Math.max(0.02, Number(stepDistance) || 0.12);
   const sxTotal = Number.isFinite(Number(dx)) ? Number(dx) : 0;
   const szTotal = Number.isFinite(Number(dz)) ? Number(dz) : 0;
   const support = typeof supportHeight === 'function' ? supportHeight : (() => py);
   const blocked = typeof blockedAt === 'function' ? blockedAt : (() => false);
+  const stepUp = typeof stepUpHeight === 'function' ? stepUpHeight : null;
 
   const followGround = () => {
     if (!followsSupport) return;
     const next = support(px, pz, py);
-    if (next >= py - drop) py = next;
-    else followsSupport = false;
+    if (!Number.isFinite(next)) return;
+    if (next >= py - drop && next <= py + climb + 0.001) py = next;
+    else if (next < py - drop) followsSupport = false;
   };
-  const stepY = (nextX, nextZ) => {
+
+  const supportYFor = (nextX, nextZ) => {
     if (!followsSupport) return py;
     const next = support(nextX, nextZ, py);
-    return next > py ? next : py;
+    return Number.isFinite(next) && next > py ? Math.min(next, py + climb) : py;
+  };
+
+  // Conventional FPS character-controller step-up. A floor/landing can touch the
+  // capsule before the feet-center reaches its support polygon. If the obstacle
+  // top is within step height, test the same horizontal move at the elevated feet
+  // position instead of treating the landing's vertical edge as an impassable wall.
+  const tryStepUp = (nextX, nextZ, fromX, fromZ) => {
+    if (!followsSupport || !stepUp || climb <= 0) return null;
+    const candidate = Number(stepUp(nextX, nextZ, py, climb));
+    if (!Number.isFinite(candidate) || candidate <= py + 0.015 || candidate > py + climb + 0.001) return null;
+    if (blocked(nextX, nextZ, candidate, fromX, fromZ)) return null;
+    return candidate;
+  };
+
+  const attempt = (nextX, nextZ, fromX, fromZ) => {
+    nextX = Math.max(-limit, Math.min(limit, nextX));
+    nextZ = Math.max(-limit, Math.min(limit, nextZ));
+    let targetY = supportYFor(nextX, nextZ);
+    if (blocked(nextX, nextZ, targetY, fromX, fromZ)) {
+      const steppedY = tryStepUp(nextX, nextZ, fromX, fromZ);
+      if (steppedY == null) return false;
+      targetY = steppedY;
+    }
+    px = nextX; pz = nextZ; py = targetY;
+    followGround();
+    return true;
   };
 
   const distance = Math.hypot(sxTotal, szTotal);
   const steps = Math.max(1, Math.ceil(distance / maxStep));
   const sx = sxTotal / steps, sz = szTotal / steps;
   let blockedAny = false;
-  for (let i = 0; i < steps; i += 1) {
-    if(Math.abs(sx)>1e-9){
-      const fromX = px, fromZ = pz;
-      const nextX = Math.max(-limit, Math.min(limit, px + sx));
-      const nextXY = stepY(nextX, pz);
-      if (!blocked(nextX, pz, nextXY, fromX, fromZ)) { px = nextX; py = nextXY; } else blockedAny = true;
-      followGround();
-    }
 
-    if(Math.abs(sz)>1e-9){
-      const beforeZx = px, beforeZz = pz;
-      const nextZ = Math.max(-limit, Math.min(limit, pz + sz));
-      const nextZY = stepY(px, nextZ);
-      if (!blocked(px, nextZ, nextZY, beforeZx, beforeZz)) { pz = nextZ; py = nextZY; } else blockedAny = true;
-      followGround();
+  for (let i = 0; i < steps; i += 1) {
+    const fromX = px, fromZ = pz;
+    // Try the intended vector first. If a corner blocks it, fall back to axis
+    // slides so the capsule glides along walls instead of catching on corners.
+    if (attempt(px + sx, pz + sz, fromX, fromZ)) continue;
+
+    blockedAny = true;
+    const xFirst = Math.abs(sx) >= Math.abs(sz);
+    let moved = false;
+    if (xFirst) {
+      if (Math.abs(sx) > 1e-9) moved = attempt(px + sx, pz, px, pz) || moved;
+      if (Math.abs(sz) > 1e-9) moved = attempt(px, pz + sz, px, pz) || moved;
+    } else {
+      if (Math.abs(sz) > 1e-9) moved = attempt(px, pz + sz, px, pz) || moved;
+      if (Math.abs(sx) > 1e-9) moved = attempt(px + sx, pz, px, pz) || moved;
     }
+    if (!moved) followGround();
   }
 
   return { x:px, y:py, z:pz, grounded:followsSupport, blocked:blockedAny };
 }
-
 
 
 export function createTraversalPlan(candidate, startX, startY, startZ, startedAt, seq=0) {
