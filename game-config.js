@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.24.0';
-export const PROTOCOL_VERSION = 44;
+export const APP_VERSION = '1.25.3';
+export const PROTOCOL_VERSION = 45;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -31,7 +31,7 @@ export function weaponSpreadRadians(weapon, moveSpeed, runSpeed, ads=false, crou
 
 export const CROUCH_HEIGHT = 1.08;
 export const CROUCH_SPEED_MULTIPLIER = 0.62;
-export const EQUIPMENT_CAPS = { flash: 2, sticky: 2 };
+export const EQUIPMENT_CAPS = { flash: 1, sticky: 1 };
 
 export const GAME_MODE_ORDER = ['tdm','ffa','sandbox'];
 export const DEFAULT_GAME_MODE = 'tdm';

@@ -27,6 +27,11 @@ const MOVE_BUDGET_MAX_SEC = 0.26;
 const BOT_PERSIST_INTERVAL_MS = 10 * 1000;
 const BULLET_MAX_SEGMENT_DISTANCE = 6;
 const THROWABLE_BROADCAST_MS = 33;
+const SERVER_VERTICAL_MAX_CATCHUP_SEC = .40;
+const SERVER_COYOTE_TIME_MS = 110;
+const BOT_TARGET_MEMORY_MS = 3200;
+const BOT_PATROL_MIN_MS = 1800;
+const BOT_PATROL_MAX_MS = 4200;
 const RECONNECT_GRACE_MS = 45 * 1000;
 const HEALTH_REGEN_TICK_MS = 500;
 const HEADSHOT_MULTIPLIER = 2;
@@ -50,6 +55,10 @@ const BOT_DIFFICULTIES = {
 function safeBotDifficulty(value) {
   const key = String(value || "normal").toLowerCase();
   return Object.prototype.hasOwnProperty.call(BOT_DIFFICULTIES, key) ? key : "normal";
+}
+
+function worldSettingsAreDefault(value) {
+  return JSON.stringify(normalizeWorldSettings(value)) === JSON.stringify(normalizeWorldSettings(DEFAULT_WORLD_SETTINGS));
 }
 
 function configuredOrigins(env) {
@@ -290,8 +299,8 @@ function publicBot(bot) {
     z: bot.z,
     yaw: bot.yaw,
     pitch: 0,
-    weapon: "assault",
-    primaryWeapon: 'assault',
+    weapon: safePrimaryWeapon(bot.weapon||bot.primaryWeapon),
+    primaryWeapon: safePrimaryWeapon(bot.primaryWeapon||bot.weapon),
     ads: false,
     reloadAt: bot.reloadAt || 0,
     reloadWeapon: bot.reloadWeapon || "",
@@ -321,7 +330,7 @@ function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
     ...player,...spawn,team,pendingTeam:'',hp:100,wastedUntil:0,regenAt:0,
     weapon:safePrimaryWeapon(player.primaryWeapon),ammo:freshAmmo(),equipment:freshEquipment(),reloadAt:0,reloadWeapon:'',
     fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,ads:false,crouched:false,moveSpeed:0,
-    verticalVelocity:0,serverGrounded:true,lastVerticalAt:now,lastStateAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
+    verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
     flashUntil:0,flashPower:0,flashDurationMs:0,knockVelocityX:0,knockVelocityZ:0,traversal:null,lastTraverseSeq:0,
   };
   if(resetStats)Object.assign(next,{kills:0,deaths:0,multiKillCount:0,lastKillAt:0});
@@ -329,7 +338,7 @@ function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
 }
 function makeBot(team, teamIndex, mode='tdm', spawnIndex=teamIndex) {
   team = safeTeam(team);
-  const spawn = spawnForMode(mode, team, spawnIndex);
+  const spawn = spawnForMode(mode, team, spawnIndex),primaryWeapon=PRIMARY_WEAPONS[Math.abs(spawnIndex)%PRIMARY_WEAPONS.length]||'assault';
   const label = team === "red" ? "Red" : "Blue",ffa=normalizeGameMode(mode)==='ffa';
   return {
     id: `bot-${team}-${teamIndex + 1}`,
@@ -343,13 +352,14 @@ function makeBot(team, teamIndex, mode='tdm', spawnIndex=teamIndex) {
     ammo: freshAmmo(),
     reloadAt: 0,
     reloadWeapon: "",
-    weapon: "assault",
-    primaryWeapon: 'assault',
+    weapon: primaryWeapon,
+    primaryWeapon,
     regenAt: 0,
     kills: 0,
     deaths: 0,
     traversal: null,
     traverseSeq: 0,
+    lastSeenTargetId:'',lastSeenAt:0,lastKnownX:spawn.x,lastKnownZ:spawn.z,patrolX:spawn.x,patrolZ:spawn.z,patrolUntil:0,
   };
 }
 function makeBots(blueBots, redBots, mode='tdm') {
@@ -365,6 +375,7 @@ function reconcileBots(existing, blueBots, redBots, mode='tdm') {
   return makeBots(blueBots, redBots, mode).map((fresh) => {
     const old = prior.get(fresh.id);
     if (!old) return fresh;
+    const primaryWeapon=safePrimaryWeapon(old.primaryWeapon||old.weapon||fresh.primaryWeapon);
     return {
       ...fresh,
       ...old,
@@ -375,7 +386,8 @@ function reconcileBots(existing, blueBots, redBots, mode='tdm') {
       z: clamp(finiteNumber(old.z, fresh.z), -ARENA_LIMIT, ARENA_LIMIT),
       y: terrainHeight(clamp(finiteNumber(old.x, fresh.x), -ARENA_LIMIT, ARENA_LIMIT), clamp(finiteNumber(old.z, fresh.z), -ARENA_LIMIT, ARENA_LIMIT)),
       ammo: normalizeAmmo(old.ammo),
-      weapon: "assault",
+      weapon: primaryWeapon,
+      primaryWeapon,
     };
   });
 }
@@ -425,16 +437,8 @@ export default {
       const clientAuth = safeClientAuth(body.auth);
       const protocol = Math.floor(finiteNumber(body.protocol, 0));
       if (protocol !== PROTOCOL_VERSION) return json(request, env, { error: `Client protocol ${protocol || "missing"} is incompatible. Update the game client.`, protocol: PROTOCOL_VERSION }, 409);
-      const name = safeName(body.name);
-      const blueBots = clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS);
-      const redBots = clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS);
-      const botCount = blueBots + redBots;
-      const botDifficulty = safeBotDifficulty(body.botDifficulty);
-      const mode = normalizeGameMode(body.mode);
-      const creatorGod = !!body.creatorGod;
       if (!clientId) return json(request, env, { error: "Missing client ID." }, 400);
       if (clientAuth.length < 32) return json(request, env, { error: "Missing client credential." }, 400);
-      if (botCount > MAX_BOTS) return json(request, env, { error: `Maximum ${MAX_BOTS} bots per match.` }, 400);
 
       const directory = await directoryStub(env);
       const networkId = request.headers.get('CF-Connecting-IP') || request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
@@ -457,7 +461,7 @@ export default {
         const created = await room.fetch('https://room.internal/create', {
           method: "POST",
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ code, ownerClientId: clientId, ownerAuthHash, blueBots, redBots, botDifficulty, mode, creatorGod }),
+          body: JSON.stringify({ code, ownerClientId: clientId, ownerAuthHash }),
         });
         if (created.status === 201) {
           return json(request, env, { code }, 201);
@@ -619,7 +623,9 @@ export class GameRoom {
       meta.adminClientIds = normalizeAdminIds(meta);
       meta.clientAuthHashes = normalizeClientAuthHashes(meta);
       meta.settings = normalizeWorldSettings(meta.settings);
-      meta.match=normalizeMatchState(meta.match,Date.now(),meta.match||DEFAULT_MATCH_RULES);meta.mode=matchMode(meta.match);
+      const legacyRules=meta.match||{...DEFAULT_MATCH_RULES,mode:normalizeGameMode(meta.mode)};
+      meta.match=normalizeMatchState(meta.match,Date.now(),legacyRules);
+      delete meta.mode;delete meta.custom;
       this.metaCache=meta;
     }
     return meta || null;
@@ -627,7 +633,7 @@ export class GameRoom {
 
   async putMeta(meta) {
     meta.adminClientIds = normalizeAdminIds(meta);
-    meta.clientAuthHashes=normalizeClientAuthHashes(meta);meta.mode=matchMode(meta.match||meta.mode);
+    meta.clientAuthHashes=normalizeClientAuthHashes(meta);delete meta.mode;delete meta.custom;
     this.metaCache=meta;
     await this.ctx.storage.put("meta", meta);
   }
@@ -638,6 +644,12 @@ export class GameRoom {
       const attachment = socket.deserializeAttachment() || {};
       return !!attachment.clientId && !attachment.replaced;
     });
+  }
+
+  isCustomMatch(meta) {
+    if (!meta) return false;
+    if (!worldSettingsAreDefault(meta.settings) || !matchRulesAreDefault(meta.match)) return true;
+    return this.liveSockets().some((socket) => !!(socket.deserializeAttachment() || {}).godMode);
   }
 
   allowSocketMessage(socket, type, now = Date.now()) {
@@ -711,7 +723,7 @@ export class GameRoom {
     this.simAccumulatorMs = 0;
   }
 
-  broadcastMatch(meta,now=Date.now()){this.broadcast({t:'match',match:publicMatchState(meta.match,now),custom:!!meta.custom});}
+  broadcastMatch(meta,now=Date.now()){this.broadcast({t:'match',match:publicMatchState(meta.match,now),custom:this.isCustomMatch(meta)});}
 
   finishMatch(meta,winner,reason,now=Date.now()){
     const match=meta.match;if(match.status==='ended')return false;
@@ -737,7 +749,7 @@ export class GameRoom {
       const reset=spawnedPlayerState(p,spawnForMode(mode,team,index++),team,now,{resetStats:true});socket.serializeAttachment(reset);players.push(publicPlayer(reset));
     }
     this.bots=makeBots(meta.blueBots||0,meta.redBots||0,mode);this.matchDirty=true;
-    this.broadcast({t:'matchReset',match:publicMatchState(meta.match,now),players,bots:this.bots.map(publicBot),custom:!!meta.custom});
+    this.broadcast({t:'matchReset',match:publicMatchState(meta.match,now),players,bots:this.bots.map(publicBot),custom:this.isCustomMatch(meta)});
     return true;
   }
 
@@ -855,13 +867,10 @@ export class GameRoom {
       const ownerClientId = safeClientId(body.ownerClientId);
       const ownerAuthHash = String(body.ownerAuthHash || '').toLowerCase().replace(/[^a-f0-9]/g, '').slice(0, 64);
       if (!code || !ownerClientId || ownerAuthHash.length !== 64) return json(request, this.env, { error: "Invalid match owner credentials." }, 400);
-      const blueBots = clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS);
-      const redBots = clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS);
-      const botCount = blueBots + redBots;
-      const botDifficulty = safeBotDifficulty(body.botDifficulty);
-      const mode = normalizeGameMode(body.mode);
-      const creatorGod = !!body.creatorGod;
-      if (botCount > MAX_BOTS) return json(request, this.env, { error: `Maximum ${MAX_BOTS} bots per match.` }, 400);
+      const blueBots = 0;
+      const redBots = 0;
+      const botDifficulty = 'normal';
+      const mode = normalizeGameMode();
       const now = Date.now();
       const match = defaultMatchState(now, {mode,...gameModeSpec(mode)});
       const meta = {
@@ -873,11 +882,8 @@ export class GameRoom {
         blueBots,
         redBots,
         botDifficulty,
-        mode,
-        creatorGod,
         settings: normalizeWorldSettings(),
         match,
-        custom: creatorGod,
         createdAt: now,
         expiresAt: now + ROOM_MAX_LIFETIME_MS,
       };
@@ -984,7 +990,7 @@ export class GameRoom {
       equipmentReadyAt: Math.max(0, finiteNumber(spawn.equipmentReadyAt, 0)),
       kills: Math.max(0, Math.floor(finiteNumber(spawn.kills, 0))),
       deaths: Math.max(0, Math.floor(finiteNumber(spawn.deaths, 0))),
-      godMode: preserved ? !!preserved.godMode : (clientId === meta.ownerClientId && !!meta.creatorGod),
+      godMode: preserved ? !!preserved.godMode : false,
       pendingTeam: preserved?.pendingTeam ? safeTeam(preserved.pendingTeam) : '',
       admin: isRoomAdmin(meta, clientId),
       ads: false,
@@ -995,6 +1001,7 @@ export class GameRoom {
       flashDurationMs: Math.max(0, finiteNumber(preserved?.flashDurationMs, 0)),
       verticalVelocity: finiteNumber(preserved?.verticalVelocity, 0),
       serverGrounded: preserved?.serverGrounded !== false,
+      lastGroundedAt: preserved?.serverGrounded !== false ? Date.now() : Math.max(0,finiteNumber(preserved?.lastGroundedAt,0)),
       lastJumpSeq: Math.max(0, Math.floor(finiteNumber(preserved?.lastJumpSeq, 0))),
       traversal:null,lastTraverseSeq:Math.max(0,Math.floor(finiteNumber(preserved?.lastTraverseSeq,0))),
       lastVerticalAt: Date.now(),
@@ -1022,7 +1029,7 @@ export class GameRoom {
       ownerClientId: meta.ownerClientId,
       settings: meta.settings,
       match: publicMatchState(meta.match, Date.now()),
-      custom: !!meta.custom,
+      custom: this.isCustomMatch(meta),
       serverTime: Date.now(),
       protocol: PROTOCOL_VERSION,
       gameVersion: GAME_VERSION,
@@ -1102,7 +1109,9 @@ export class GameRoom {
       const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon],unlimited=!!me.godMode;
       if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'dead'});return;}
       if(me.traversal){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'traversing'});return;}
-      if(!unlimited&&me.reloadAt){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'reloading'});return;}
+      const interruptShotgunReload=!unlimited&&!!me.reloadAt&&weapon==='shotgun'&&me.ammo.shotgun>0;
+      if(!unlimited&&me.reloadAt&&!interruptShotgunReload){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'reloading'});return;}
+      if(interruptShotgunReload){me.reloadAt=0;me.reloadWeapon='';this.broadcast({t:'reload',id:me.clientId,weapon:'shotgun',reloadAt:0},socket);}
       const switchReadyAt=finiteNumber(me.weaponReadyAt,0),shotReadyAt=finiteNumber(me.fireReadyAt[weapon],0),readyAt=Math.max(switchReadyAt,shotReadyAt);
       if(now<readyAt){const retryAfterMs=Math.max(1,Math.ceil(readyAt-now)),reason=switchReadyAt>=shotReadyAt?'weapon_switch':'cooldown';sendLoadout(socket,me,{action:'fire',accepted:false,reason,retryAfterMs});return;}
       if(!unlimited&&me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
@@ -1128,7 +1137,7 @@ export class GameRoom {
       if(flashPower>.02){const flashSpread=.025+flashPower*.16;throwYaw+=(Math.random()-.5)*2*flashSpread;throwPitch=clamp(throwPitch+(Math.random()-.5)*1.4*flashSpread,-1.25,1.15);me.ads=false;}
       const throwVelocity=tacticalThrowVelocity(throwYaw,throwPitch,TACTICAL_THROW_SPEED,TACTICAL_THROW_LOFT);
       me.equipmentReadyAt=now+360;if(!unlimited)me.equipment[kind]-=1;socket.serializeAttachment(me);sendJson(socket,{t:'equipment',equipment:me.equipment,unlimited});sendJson(socket,{t:'throwAck',id,accepted:true});
-      const g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+throwVelocity.fx*.82,y:me.y+(me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.22,z:me.z+throwVelocity.fz*.82,vx:throwVelocity.vx,vy:throwVelocity.vy,vz:throwVelocity.vz,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:1650),stuck:false,lastBroadcast:now};
+      const g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+throwVelocity.fx*.82,y:me.y+(me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.22,z:me.z+throwVelocity.fz*.82,vx:throwVelocity.vx,vy:throwVelocity.vy,vz:throwVelocity.vz,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:1650),stuck:false,rolling:false,lastBroadcast:now};
       this.throwables.set(id,g);this.broadcast({t:'throwable',...g,at:now});await this.stepSimulation(now,meta);return;
     }
 
@@ -1162,9 +1171,10 @@ export class GameRoom {
     if(payload.t==='lobbyMode'){
       if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Admin access required.'});return;}
       if(meta.match.status!=='waiting'){sendJson(socket,{t:'notice',tone:'error',text:'Game mode can only be changed in the lobby.'});return;}
-      const mode=normalizeGameMode(payload.mode),spec=gameModeSpec(mode);meta.mode=mode;meta.match={...meta.match,mode,blueScore:0,redScore:0,scoreLimit:spec.scoreLimit,timeLimitMs:spec.timeLimitMs,winner:'',winnerId:'',winnerName:'',reason:'',updatedAt:now};
+      const mode=normalizeGameMode(payload.mode),spec=gameModeSpec(mode);meta.match={...meta.match,mode,blueScore:0,redScore:0,scoreLimit:spec.scoreLimit,timeLimitMs:spec.timeLimitMs,winner:'',winnerId:'',winnerName:'',reason:'',updatedAt:now};
       for(const s of this.ctx.getWebSockets()){const p=s.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;p.pendingTeam='';s.serializeAttachment(p);}
-      await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);this.broadcastMatch(meta,now);return;
+      this.bots=reconcileBots(this.bots,meta.blueBots||0,meta.redBots||0,mode);await this.ctx.storage.put('bots',this.bots);
+      await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);this.broadcastMatch(meta,now);this.broadcast({t:'bots',config:{blueBots:meta.blueBots||0,redBots:meta.redBots||0,difficulty:safeBotDifficulty(meta.botDifficulty)},bots:this.bots.map(publicBot)});return;
     }
 
     if(payload.t==='startMatch'){
@@ -1180,9 +1190,10 @@ export class GameRoom {
         return;
       }
       me.godMode = !!payload.enabled;
-      if(me.godMode){refreshUnlimitedResources(me);meta.custom=true;await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);}
+      if(me.godMode)refreshUnlimitedResources(me);
       socket.serializeAttachment(me);
-      this.broadcast({ t: "god", id: me.clientId, enabled: me.godMode });
+      await this.updateDirectory(this.liveSockets().length,meta);
+      this.broadcast({ t: "god", id: me.clientId, enabled: me.godMode, custom:this.isCustomMatch(meta) });
       if(me.godMode)sendJson(socket,{t:'equipment',equipment:me.equipment,unlimited:true});
       sendLoadout(socket,me,{action:'god',accepted:true,unlimited:!!me.godMode});
       return;
@@ -1217,9 +1228,10 @@ export class GameRoom {
       const action = String(payload.action || "");
       if (action === "god") {
         target.godMode = !!payload.enabled;
-        if (target.godMode) { refreshUnlimitedResources(target); meta.custom = true; await this.putMeta(meta); await this.updateDirectory(this.liveSockets().length, meta); }
+        if (target.godMode) refreshUnlimitedResources(target);
         targetSocket.serializeAttachment(target);
-        this.broadcast({ t: "god", id: target.clientId, enabled: target.godMode });
+        await this.updateDirectory(this.liveSockets().length, meta);
+        this.broadcast({ t: "god", id: target.clientId, enabled: target.godMode, custom:this.isCustomMatch(meta) });
         if (target.godMode) {
           sendJson(targetSocket,{t:"equipment",equipment:target.equipment,unlimited:true});
         }
@@ -1228,6 +1240,10 @@ export class GameRoom {
       }
       if (action === "admin") {
         const enabled = !!payload.enabled;
+        if (targetId === me.clientId) {
+          sendJson(socket,{t:"notice",tone:"error",text:"You cannot change your own admin role."});
+          return;
+        }
         if (targetId === meta.ownerClientId && !enabled) {
           sendJson(socket,{t:"notice",tone:"error",text:"The match owner cannot be demoted."});
           return;
@@ -1238,12 +1254,11 @@ export class GameRoom {
         meta.adminClientIds = [...admins];
         await this.putMeta(meta);
         target.admin = isRoomAdmin(meta, targetId);
-        if (!target.admin && target.godMode) {
-          target.godMode = false;
-          this.broadcast({ t: "god", id: targetId, enabled: false });
-          sendLoadout(targetSocket, target, { action: "god", accepted: true, unlimited: false });
-        }
+        const godDisabled=!target.admin&&target.godMode;
+        if (godDisabled) target.godMode = false;
         targetSocket.serializeAttachment(target);
+        await this.updateDirectory(this.liveSockets().length, meta);
+        if(godDisabled){this.broadcast({ t: "god", id: targetId, enabled: false, custom:this.isCustomMatch(meta) });sendLoadout(targetSocket, target, { action: "god", accepted: true, unlimited: false });}
         this.broadcast({ t: "adminRole", id: targetId, enabled: target.admin, owner: targetId === meta.ownerClientId });
         return;
       }
@@ -1257,9 +1272,8 @@ export class GameRoom {
       }
       const nextSettings = normalizeWorldSettings(payload.settings);
       meta.settings = nextSettings;
-      if (!worldSettingsAreDefault(nextSettings)) meta.custom = true;
       await this.putMeta(meta);
-      this.broadcast({ t: "settings", settings: nextSettings, by: me.clientId, custom:!!meta.custom });
+      this.broadcast({ t: "settings", settings: nextSettings, by: me.clientId, custom:this.isCustomMatch(meta) });
       await this.updateDirectory(this.liveSockets().length, meta);
       return;
     }
@@ -1274,7 +1288,6 @@ export class GameRoom {
       match.scoreLimit=rules.scoreLimit;match.timeLimitMs=rules.timeLimitMs;
       if(match.status==='active'&&match.startedAt)match.endsAt=match.timeLimitMs>0?match.startedAt+match.timeLimitMs:0;
       match.updatedAt = now; meta.match = match;
-      if (!matchRulesAreDefault(match)) meta.custom = true;
       this.matchDirty = true; await this.putMeta(meta); this.matchDirty = false;
       this.broadcastMatch(meta, now); await this.updateDirectory(this.liveSockets().length, meta);
       if(match.status==='active'&&gameModeSpec(match.mode).scoreType==='team'&&(match.blueScore>=match.scoreLimit||match.redScore>=match.scoreLimit)){
@@ -1348,7 +1361,7 @@ export class GameRoom {
     if(!me?.traversal)return me;
     const pose=traversalPose(me.traversal,now);if(!pose){return {...me,traversal:null};}
     const next={...me,x:pose.x,y:pose.y,z:pose.z,verticalVelocity:0,serverGrounded:false,moveSpeed:0,lastVerticalAt:now};
-    if(pose.done){next.x=me.traversal.endX;next.y=me.traversal.endY;next.z=me.traversal.endZ;next.traversal=null;next.serverGrounded=true;next.moveBudgetSec=MOVE_BUDGET_INITIAL_SEC;}
+    if(pose.done){next.x=me.traversal.endX;next.y=me.traversal.endY;next.z=me.traversal.endZ;next.traversal=null;next.serverGrounded=true;next.lastGroundedAt=now;next.moveBudgetSec=MOVE_BUDGET_INITIAL_SEC;}
     return next;
   }
 
@@ -1422,6 +1435,7 @@ export class GameRoom {
     const currentVerticalVelocity = finiteNumber(me.verticalVelocity, 0);
     let serverGrounded = me.serverGrounded !== false && Math.abs(me.y - startSupport) <= 0.28;
     if (!serverGrounded && currentVerticalVelocity <= 0 && Math.abs(me.y - startSupport) <= 0.08) serverGrounded = true;
+    let lastGroundedAt=Math.max(0,finiteNumber(me.lastGroundedAt,serverGrounded?now:0));if(serverGrounded)lastGroundedAt=now;
     const solidActors = this.solidActors(me.clientId, now);
     const horizontal = sweepHorizontalMovement({
       x:me.x,y:me.y,z:me.z,dx,dz,grounded:serverGrounded,arenaLimit:ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,
@@ -1433,7 +1447,8 @@ export class GameRoom {
     const rawRequestedY = finiteNumber(payload.y, me.y);
     const incomingJumpSeq = Math.max(0, Math.floor(finiteNumber(payload.jumpSeq, 0)));
     const previousJumpSeq = Math.max(0, Math.floor(finiteNumber(me.lastJumpSeq, 0)));
-    const jumpRequested = incomingJumpSeq > previousJumpSeq && serverGrounded && followsSupport;
+    const coyoteEligible=!followsSupport&&currentVerticalVelocity<=0&&now-lastGroundedAt<=SERVER_COYOTE_TIME_MS;
+    const jumpRequested = incomingJumpSeq > previousJumpSeq && ((serverGrounded && followsSupport)||coyoteEligible);
     const gravity = settings.movement.gravity;
     const jumpSpeed = Math.sqrt(2 * gravity * settings.movement.jumpHeight);
     let y = followsSupport ? walkY : me.y;
@@ -1441,31 +1456,25 @@ export class GameRoom {
     let ceilingHit = false;
 
     if (jumpRequested) {
-      y = walkY;
+      y = followsSupport ? walkY : me.y;
       verticalVelocity = jumpSpeed;
       serverGrounded = false;
       followsSupport = false;
     } else if (serverGrounded && followsSupport) {
       y = walkY;
       verticalVelocity = 0;
-      serverGrounded = true;
+      serverGrounded = true;lastGroundedAt=now;
     } else {
       serverGrounded = false;
-      const verticalElapsed = clamp((now - finiteNumber(me.lastVerticalAt, now)) / 1000, 0, MAX_PLAYER_PHYSICS_STEP_SEC);
-      if (verticalElapsed > 0) {
-        const verticalStep = advanceVerticalMotion(y, verticalVelocity, gravity, verticalElapsed);
-        const ceiling = resolveCeilingCollision(y, verticalStep.y, x, z, playerHeight);
-        y = ceiling.y;
-        ceilingHit = ceiling.hit;
-        verticalVelocity = ceilingHit && verticalStep.velocity > 0 ? 0 : verticalStep.velocity;
+      let verticalRemaining=clamp((now-finiteNumber(me.lastVerticalAt,now))/1000,0,SERVER_VERTICAL_MAX_CATCHUP_SEC);
+      while(verticalRemaining>1e-6&&!serverGrounded){
+        const step=Math.min(1/60,verticalRemaining),verticalStep=advanceVerticalMotion(y,verticalVelocity,gravity,step),ceiling=resolveCeilingCollision(y,verticalStep.y,x,z,playerHeight);
+        y=ceiling.y;ceilingHit=ceilingHit||ceiling.hit;verticalVelocity=ceiling.hit&&verticalStep.velocity>0?0:verticalStep.velocity;verticalRemaining-=step;
+        const support=worldSupportHeight(x,z,y);if(y<=support+.025&&verticalVelocity<=0){y=support;verticalVelocity=0;serverGrounded=true;lastGroundedAt=now;break;}
       }
-      const ground = worldSupportHeight(x, z, y);
-      const clientGrounded = payload.grounded === true;
-      const closeEnoughToLand = clientGrounded && verticalVelocity <= 0 && rawRequestedY <= ground + 0.14 && y - ground <= GROUND_FOLLOW_DROP;
-      if ((y <= ground + 0.025 && verticalVelocity <= 0) || closeEnoughToLand) {
-        y = ground;
-        verticalVelocity = 0;
-        serverGrounded = true;
+      if(!serverGrounded){
+        const ground=worldSupportHeight(x,z,y),clientGrounded=payload.grounded===true,closeEnoughToLand=clientGrounded&&verticalVelocity<=0&&rawRequestedY<=ground+.14&&y-ground<=GROUND_FOLLOW_DROP;
+        if(closeEnoughToLand){y=ground;verticalVelocity=0;serverGrounded=true;lastGroundedAt=now;}
       }
     }
 
@@ -1491,6 +1500,7 @@ export class GameRoom {
         moveSpeed: elapsed > 0 ? actualTravel / elapsed : 0,
         moveBudgetSec,
         serverGrounded,
+        lastGroundedAt,
         verticalVelocity,
         knockVelocityX,
         knockVelocityZ,
@@ -1521,7 +1531,7 @@ export class GameRoom {
     const action=this.advanceReloadState(me,now,settings);
     if(!action)return me;
     socket.serializeAttachment(me);sendLoadout(socket,me,{action,accepted:true});
-    if(action==='reloadShell'&&me.reloadAt)this.broadcast({t:'reload',id:me.clientId,weapon:'shotgun',reloadAt:me.reloadAt},socket);
+    if(action==='reloadShell')this.broadcast({t:'reloadShell',id:me.clientId,weapon:'shotgun',reloadAt:me.reloadAt||0},socket);
     return me;
   }
 
@@ -1648,14 +1658,15 @@ export class GameRoom {
     const humans = this.ctx.getWebSockets()
       .map((socket) => ({ kind: "human", socket, target: socket.deserializeAttachment() || {} }))
       .filter(({ target }) => target.clientId && !target.replaced && target.hp > 0 && now >= (target.wastedUntil || 0));
+    const difficulty=safeBotDifficulty(meta?.botDifficulty),profile=BOT_DIFFICULTIES[difficulty];
 
     for (let i = 0; i < this.bots.length; i += 1) {
       const bot = this.bots[i];
       if (bot.hp <= 0) {
         if (now >= bot.wastedUntil) {
-          const mode=matchMode(meta.match);const spawn = spawnForMode(mode,bot.team,i+Math.floor(Math.random()*(mode==='ffa'?FFA_SPAWNS.length:TEAM_SPAWNS[safeTeam(bot.team)].length)));
-          Object.assign(bot, spawn, { hp: 100, wastedUntil: 0, regenAt: 0, weapon: "assault", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "", flashUntil: 0, flashSpin: 0, traversal: null });
-          this.broadcast({ t: "respawn", player: publicBot(bot) });
+          const mode=matchMode(meta.match),spawn=spawnForMode(mode,bot.team,i+Math.floor(Math.random()*(mode==='ffa'?FFA_SPAWNS.length:TEAM_SPAWNS[safeTeam(bot.team)].length))),primary=safePrimaryWeapon(bot.primaryWeapon||bot.weapon);
+          Object.assign(bot,spawn,{hp:100,wastedUntil:0,regenAt:0,weapon:primary,primaryWeapon:primary,ammo:freshAmmo(),reloadAt:0,reloadWeapon:'',flashUntil:0,flashSpin:0,traversal:null,lastSeenTargetId:'',lastSeenAt:0,lastKnownX:spawn.x,lastKnownZ:spawn.z,patrolX:spawn.x,patrolZ:spawn.z,patrolUntil:0});
+          this.broadcast({t:'respawn',player:publicBot(bot)});
         }
         continue;
       }
@@ -1664,10 +1675,14 @@ export class GameRoom {
         if(pose){bot.x=pose.x;bot.y=pose.y;bot.z=pose.z;if(pose.done){bot.x=bot.traversal.endX;bot.y=bot.traversal.endY;bot.z=bot.traversal.endZ;bot.traversal=null;}else continue;}
         else bot.traversal=null;
       }
-      if (bot.reloadAt && now >= bot.reloadAt) {
-        bot.reloadAt = 0;
-        bot.reloadWeapon = "";
-        bot.ammo.assault = WEAPON_SPECS.assault.mag;
+
+      const botWeapon=safePrimaryWeapon(bot.primaryWeapon||bot.weapon);bot.primaryWeapon=botWeapon;bot.weapon=botWeapon;
+      if(bot.reloadAt&&now>=bot.reloadAt){
+        if(botWeapon==='shotgun'){
+          bot.ammo.shotgun=Math.min(WEAPON_SPECS.shotgun.mag,(bot.ammo.shotgun||0)+1);
+          if(bot.ammo.shotgun<WEAPON_SPECS.shotgun.mag){bot.reloadAt=now+settings.weapons.shotgun.reloadMs;bot.reloadWeapon='shotgun';}
+          else{bot.reloadAt=0;bot.reloadWeapon='';}
+        }else{bot.ammo[botWeapon]=WEAPON_SPECS[botWeapon].mag;bot.reloadAt=0;bot.reloadWeapon='';}
       }
       if(now<finiteNumber(bot.flashUntil,0)){
         bot.yaw+=dt*(bot.flashSpin||2.2);
@@ -1676,79 +1691,71 @@ export class GameRoom {
         continue;
       }
 
-      const targetCandidates = [];
-      const consider = (kind, target, socket = null) => {
-        if (!target || target.hp <= 0 || combatantsAreFriendly(matchMode(meta.match),bot.id,bot.team,target.id||target.clientId,target.team) || target.id === bot.id || target.clientId === bot.id) return;
-        const tx = finiteNumber(target.x, 0), tz = finiteNumber(target.z, 0);
-        const dx = tx - bot.x, dz = tz - bot.z, d2 = dx * dx + dz * dz;
-        targetCandidates.push({ kind, target, socket, dx, dz, d2 });
+      const solidActors=this.solidActors(bot.id,now);
+      const tryTraverse=(ax,az)=>{
+        const len=Math.hypot(ax,az);if(len<.2||bot.traversal)return false;
+        const dirX=ax/len,dirZ=az/len,candidate=findTraversalCandidate({x:bot.x,y:bot.y,z:bot.z,dirX,dirZ,height:PLAYER_HEIGHT,radius:PLAYER_RADIUS,airborne:false});
+        if(!candidate||this.actorBlocksAt(candidate.endX,candidate.endZ,candidate.endY,bot.x,bot.z,solidActors,PLAYER_HEIGHT))return false;
+        const plan=createTraversalPlan(candidate,bot.x,bot.y,bot.z,now,++bot.traverseSeq);if(!plan)return false;
+        bot.traversal=plan;this.broadcast({t:'traverse',id:bot.id,accepted:true,...plan});return true;
       };
-      for (const h of humans) consider("human", h.target, h.socket);
-      for (const other of this.bots) {
-        if (other === bot || now < (other.wastedUntil || 0)) continue;
-        consider("bot", other, null);
-      }
+      const tryMove=(ax,az,step)=>{
+        const fromX=bot.x,fromZ=bot.z,nx=bot.x+ax*step,nz=bot.z+az*step;
+        if(!worldBlockedAt(nx,bot.z,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(nx,bot.z,bot.y,fromX,fromZ,solidActors)&&!worldBlockedAt(nx,nz,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(nx,nz,bot.y,fromX,fromZ,solidActors)){bot.x=nx;bot.z=nz;return true;}
+        if(!worldBlockedAt(bot.x,nz,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(bot.x,nz,bot.y,fromX,fromZ,solidActors)){bot.z=nz;return true;}
+        return false;
+      };
+
+      const targetCandidates=[];
+      const consider=(kind,target,socket=null)=>{
+        if(!target||target.hp<=0||combatantsAreFriendly(matchMode(meta.match),bot.id,bot.team,target.id||target.clientId,target.team)||target.id===bot.id||target.clientId===bot.id)return;
+        const tx=finiteNumber(target.x,0),tz=finiteNumber(target.z,0),dx=tx-bot.x,dz=tz-bot.z,d2=dx*dx+dz*dz;targetCandidates.push({kind,target,socket,dx,dz,d2});
+      };
+      for(const h of humans)consider('human',h.target,h.socket);
+      for(const other of this.bots){if(other===bot||now<(other.wastedUntil||0))continue;consider('bot',other,null);}
       targetCandidates.sort((a,b)=>a.d2-b.d2);
-      let nearest = null;
-      for (const candidate of targetCandidates) { if (actorHasLineOfSight(bot, candidate.target)) { nearest = candidate; break; } }
-      if (!nearest) continue;
+      let nearest=null;for(const candidate of targetCandidates){if(actorHasLineOfSight(bot,candidate.target)){nearest=candidate;break;}}
 
-      const d = Math.sqrt(nearest.d2) || 0.001;
-      const difficulty = safeBotDifficulty(meta?.botDifficulty);
-      const profile = BOT_DIFFICULTIES[difficulty];
-      bot.yaw = Math.atan2(-nearest.dx, -nearest.dz);
-      {
-        const ux = nearest.dx / d, uz = nearest.dz / d, solidActors=this.solidActors(bot.id,now);
-        const tryTraverse=(ax,az)=>{
-          const len=Math.hypot(ax,az);if(len<.2||bot.traversal)return false;
-          const dirX=ax/len,dirZ=az/len,candidate=findTraversalCandidate({x:bot.x,y:bot.y,z:bot.z,dirX,dirZ,height:PLAYER_HEIGHT,radius:PLAYER_RADIUS,airborne:false});
-          if(!candidate||this.actorBlocksAt(candidate.endX,candidate.endZ,candidate.endY,bot.x,bot.z,solidActors,PLAYER_HEIGHT))return false;
-          const plan=createTraversalPlan(candidate,bot.x,bot.y,bot.z,now,++bot.traverseSeq);if(!plan)return false;
-          bot.traversal=plan;this.broadcast({t:'traverse',id:bot.id,accepted:true,...plan});return true;
-        };
-        const tryMove=(ax,az,step)=>{
-          const fromX=bot.x,fromZ=bot.z,nx=bot.x+ax*step,nz=bot.z+az*step;
-          if(!worldBlockedAt(nx,bot.z,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(nx,bot.z,bot.y,fromX,fromZ,solidActors)&&!worldBlockedAt(nx,nz,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(nx,nz,bot.y,fromX,fromZ,solidActors)){bot.x=nx;bot.z=nz;return true;}
-          if(!worldBlockedAt(bot.x,nz,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(bot.x,nz,bot.y,fromX,fromZ,solidActors)){bot.z=nz;return true;}
-          return false;
-        };
-        if(d>profile.preferredRange){
-          const speed=d>16?settings.movement.runSpeed*profile.moveRun:settings.movement.walkSpeed*profile.moveWalk;
-          const step=Math.min(d-profile.preferredRange,speed*dt);
-          if(!tryMove(ux,uz,step)&&!tryTraverse(ux,uz))tryMove(-uz,ux,step*.82)||tryMove(uz,-ux,step*.82);
-        }else if(profile.strafe>0&&d<=profile.range){
-          if(!bot.strafeUntil||now>=bot.strafeUntil){bot.strafeDir=Math.random()<.5?-1:1;bot.strafeUntil=now+650+Math.random()*850;}
-          const sx=-uz*(bot.strafeDir||1),sz=ux*(bot.strafeDir||1),step=settings.movement.walkSpeed*profile.strafe*dt;
-          if(!tryMove(sx,sz,step)){bot.strafeDir=-(bot.strafeDir||1);tryMove(-sx,-sz,step);}
+      if(!nearest){
+        const memoryActive=bot.lastSeenAt&&now-bot.lastSeenAt<=BOT_TARGET_MEMORY_MS;
+        if(!memoryActive&&(now>=finiteNumber(bot.patrolUntil,0)||Math.hypot(bot.patrolX-bot.x,bot.patrolZ-bot.z)<1.2)){
+          let picked=false;for(let attempt=0;attempt<8&&!picked;attempt++){
+            const angle=Math.random()*Math.PI*2,distance=12+Math.random()*26,px=clamp(bot.x+Math.cos(angle)*distance,-ARENA_LIMIT+2,ARENA_LIMIT-2),pz=clamp(bot.z+Math.sin(angle)*distance,-ARENA_LIMIT+2,ARENA_LIMIT-2),py=worldSupportHeight(px,pz,bot.y);
+            if(!worldBlockedAt(px,pz,py,PLAYER_HEIGHT,.34)){bot.patrolX=px;bot.patrolZ=pz;picked=true;}
+          }
+          bot.patrolUntil=now+BOT_PATROL_MIN_MS+Math.random()*(BOT_PATROL_MAX_MS-BOT_PATROL_MIN_MS);
         }
-        bot.y=worldSupportHeight(bot.x,bot.z,bot.y);
+        const goalX=memoryActive?finiteNumber(bot.lastKnownX,bot.x):finiteNumber(bot.patrolX,bot.x),goalZ=memoryActive?finiteNumber(bot.lastKnownZ,bot.z):finiteNumber(bot.patrolZ,bot.z),dx=goalX-bot.x,dz=goalZ-bot.z,d=Math.hypot(dx,dz);
+        if(d>.65){const ux=dx/d,uz=dz/d,speed=(memoryActive?settings.movement.runSpeed*.66:settings.movement.walkSpeed*.62)*profile.moveWalk,step=Math.min(d,speed*dt);bot.yaw=Math.atan2(-dx,-dz);if(!tryMove(ux,uz,step)&&!tryTraverse(ux,uz))tryMove(-uz,ux,step*.72)||tryMove(uz,-ux,step*.72);bot.y=worldSupportHeight(bot.x,bot.z,bot.y);}
+        else if(memoryActive){bot.lastSeenAt=0;bot.lastSeenTargetId='';}
+        continue;
       }
 
-      const target = nearest.target;
-      const botFireDelay = Math.max(settings.weapons.assault.cooldownMs * profile.fireScale, 70);
-      if (d <= profile.range && now >= finiteNumber(bot.nextShotAt,0)) {
-        if (bot.ammo.assault <= 0) {
-          if (!bot.reloadAt) { bot.reloadAt = now + settings.weapons.assault.reloadMs; bot.reloadWeapon = "assault"; }
-          continue;
+      const d=Math.sqrt(nearest.d2)||.001,target=nearest.target,targetId=String(target.clientId||target.id||'');bot.lastSeenTargetId=targetId;bot.lastSeenAt=now;bot.lastKnownX=finiteNumber(target.x,bot.x);bot.lastKnownZ=finiteNumber(target.z,bot.z);bot.yaw=Math.atan2(-nearest.dx,-nearest.dz);
+      const ux=nearest.dx/d,uz=nearest.dz/d;
+      let preferredRange=profile.preferredRange,engageRange=profile.range;
+      if(botWeapon==='shotgun'){preferredRange=Math.min(preferredRange,5.2);engageRange=Math.min(18,engageRange);}
+      else if(botWeapon==='sniper'){preferredRange=Math.max(14,preferredRange*1.8);engageRange=Math.max(36,engageRange*1.18);}
+      if(d>preferredRange){
+        const speed=d>16?settings.movement.runSpeed*profile.moveRun:settings.movement.walkSpeed*profile.moveWalk,step=Math.min(d-preferredRange,speed*dt);
+        if(!tryMove(ux,uz,step)&&!tryTraverse(ux,uz))tryMove(-uz,ux,step*.82)||tryMove(uz,-ux,step*.82);
+      }else if(profile.strafe>0&&d<=engageRange){
+        if(!bot.strafeUntil||now>=bot.strafeUntil){bot.strafeDir=Math.random()<.5?-1:1;bot.strafeUntil=now+650+Math.random()*850;}
+        const sx=-uz*(bot.strafeDir||1),sz=ux*(bot.strafeDir||1),step=settings.movement.walkSpeed*profile.strafe*dt;
+        if(!tryMove(sx,sz,step)){bot.strafeDir=-(bot.strafeDir||1);tryMove(-sx,-sz,step);}
+      }
+      bot.y=worldSupportHeight(bot.x,bot.z,bot.y);
+
+      const weaponSettings=settings.weapons[botWeapon],fireScale=botWeapon==='sniper'?1.12:botWeapon==='shotgun'?.96:1,botFireDelay=Math.max(weaponSettings.cooldownMs*profile.fireScale*fireScale,70);
+      if(d<=engageRange&&now>=finiteNumber(bot.nextShotAt,0)){
+        if((bot.ammo[botWeapon]||0)<=0){if(!bot.reloadAt){bot.reloadAt=now+weaponSettings.reloadMs;bot.reloadWeapon=botWeapon;}continue;}
+        bot.nextShotAt=now+botFireDelay+profile.reactionBase+Math.floor(Math.random()*profile.reactionJitter);bot.ammo[botWeapon]-=1;if(bot.ammo[botWeapon]===0){bot.reloadAt=now+weaponSettings.reloadMs;bot.reloadWeapon=botWeapon;}
+        const tx=finiteNumber(target.x,0)-bot.x,ty=(finiteNumber(target.y,terrainHeight(target.x||0,target.z||0))+1.05)-(bot.y+1.28),tz=finiteNumber(target.z,0)-bot.z,dist=Math.hypot(tx,ty,tz)||1;
+        const baseSpread=profile.spreadBase+Math.min(.09,d*profile.spreadDistance),spread=botWeapon==='shotgun'?Math.max(.052,baseSpread*2.15):botWeapon==='sniper'?baseSpread*.55:baseSpread,pellets=botWeapon==='shotgun'?8:1;
+        for(let pellet=0;pellet<pellets;pellet++){
+          const fx=tx/dist+(Math.random()-.5)*spread,fy=ty/dist+(Math.random()-.5)*spread*.65,fz=tz/dist+(Math.random()-.5)*spread,norm=Math.hypot(fx,fy,fz)||1;
+          this.spawnBullet({ownerId:bot.id,ownerTeam:safeTeam(bot.team),damage:weaponSettings.damage,weapon:botWeapon,lifetimeMs:WEAPON_SPECS[botWeapon].lifetimeMs,x:bot.x+(fx/norm)*.55,y:bot.y+1.25,z:bot.z+(fz/norm)*.55,vx:(fx/norm)*weaponSettings.speed,vy:(fy/norm)*weaponSettings.speed,vz:(fz/norm)*weaponSettings.speed,now,consumeAmmo:pellet===0});
         }
-        bot.nextShotAt = now + botFireDelay + profile.reactionBase + Math.floor(Math.random() * profile.reactionJitter);
-        bot.ammo.assault -= 1;
-        if (bot.ammo.assault === 0) { bot.reloadAt = now + settings.weapons.assault.reloadMs; bot.reloadWeapon = "assault"; }
-        const tx = finiteNumber(target.x, 0) - bot.x;
-        const ty = (finiteNumber(target.y, terrainHeight(target.x || 0, target.z || 0)) + 1.05) - (bot.y + 1.28);
-        const tz = finiteNumber(target.z, 0) - bot.z;
-        const dist = Math.hypot(tx, ty, tz) || 1;
-        const spread = profile.spreadBase + Math.min(0.09, d * profile.spreadDistance);
-        const fx = tx / dist + (Math.random() - 0.5) * spread;
-        const fy = ty / dist + (Math.random() - 0.5) * spread * 0.65;
-        const fz = tz / dist + (Math.random() - 0.5) * spread;
-        const norm = Math.hypot(fx, fy, fz) || 1;
-        this.spawnBullet({
-          ownerId: bot.id, ownerTeam: safeTeam(bot.team), damage: settings.weapons.assault.damage, weapon: "assault",
-          lifetimeMs: WEAPON_SPECS.assault.lifetimeMs,
-          x: bot.x + (fx / norm) * 0.55, y: bot.y + 1.25, z: bot.z + (fz / norm) * 0.55,
-          vx: (fx / norm) * settings.weapons.assault.speed, vy: (fy / norm) * settings.weapons.assault.speed, vz: (fz / norm) * settings.weapons.assault.speed, now,
-        });
       }
     }
   }
@@ -1757,23 +1764,56 @@ export class GameRoom {
     for(const [id,g] of this.throwables){
       if(g.stuckTo){const a=this.findActorState(g.stuckTo);if(a){g.x=a.x;g.y=a.y+1.0;g.z=a.z;}else g.stuckTo='';}
       if(!g.stuck){
-        // Integrate only up to the fuse time, but never discard elapsed time.
-        // A late room tick therefore detonates at the physically correct point
-        // on the trajectory instead of exploding wherever the last capped step
-        // happened to leave the grenade.
-        const integrationEnd=Math.min(now,g.fuseAt),elapsed=Math.max(0,(integrationEnd-g.lastAt)/1000);g.lastAt=integrationEnd;const steps=Math.max(1,Math.ceil(elapsed/.012));
+        // Tactical physics stay intentionally lightweight: the server owns the
+        // path, collision and fuse, while flashbangs retain believable carry,
+        // bounce and ground roll. Stickies remain sticky on first contact.
+        const integrationEnd=Math.min(now,g.fuseAt),elapsed=Math.max(0,(integrationEnd-g.lastAt)/1000);g.lastAt=integrationEnd;const steps=Math.max(1,Math.ceil(elapsed/.012)),st=elapsed/steps;
         for(let i=0;i<steps&&!g.stuck;i++){
-          const st=elapsed/steps;g.vy-=TACTICAL_GRAVITY*st;const px=g.x,py=g.y,pz=g.z;g.x+=g.vx*st;g.y+=g.vy*st;g.z+=g.vz*st;
-          const actor=this.findStickyTarget(g);if(g.kind==='sticky'&&actor){g.stuck=true;g.stuckTo=actor;g.vx=g.vy=g.vz=0;break;}
-          const hitGround=g.y<=terrainHeight(g.x,g.z)+.08,hitObj=segmentHitsObstacle(px,py,pz,g.x,g.y,g.z);
-          if(hitGround||hitObj){
-            if(g.kind==='sticky'){g.x=px;g.y=Math.max(py,terrainHeight(px,pz)+.10);g.z=pz;g.vx=g.vy=g.vz=0;g.stuck=true;}
-            else{g.x=px;g.y=Math.max(py,terrainHeight(px,pz)+.12);g.z=pz;g.vy=Math.abs(g.vy)*.42;g.vx*=-.42;g.vz*=-.42;if(Math.hypot(g.vx,g.vy,g.vz)<2)g.stuck=true;}
-            this.broadcast({t:'throwableImpact',id:g.id,kind:g.kind,x:g.x,y:g.y,z:g.z,vx:g.vx,vy:g.vy,vz:g.vz,stuck:g.stuck,at:now});
+          const px=g.x,py=g.y,pz=g.z;
+          if(g.kind==='flash'&&g.rolling){
+            const nx=px+g.vx*st,nz=pz+g.vz*st,ny=terrainHeight(nx,nz)+.10,hitObj=segmentHitsObstacle(px,py,pz,nx,ny,nz);
+            if(hitObj){
+              const hitX=segmentHitsObstacle(px,py,pz,nx,py,pz),hitZ=segmentHitsObstacle(px,py,pz,px,py,nz),ambiguous=!hitX&&!hitZ;
+              if(hitX||ambiguous)g.vx=-g.vx*.34;
+              if(hitZ||ambiguous)g.vz=-g.vz*.34;
+              g.vx*=.82;g.vz*=.82;
+              this.broadcast({t:'throwableImpact',id:g.id,kind:g.kind,x:g.x,y:g.y,z:g.z,vx:g.vx,vy:0,vz:g.vz,stuck:false,rolling:true,at:now});
+            }else{g.x=nx;g.y=ny;g.z=nz;}
+            const groundFriction=Math.exp(-4.15*st);g.vx*=groundFriction;g.vz*=groundFriction;g.vy=0;
+            if(Math.hypot(g.vx,g.vz)<.18){g.vx=g.vz=0;g.rolling=false;g.stuck=true;}
+            continue;
           }
+
+          g.vy-=TACTICAL_GRAVITY*st;
+          const nx=px+g.vx*st,ny=py+g.vy*st,nz=pz+g.vz*st;
+          g.x=nx;g.y=ny;g.z=nz;
+          const actor=this.findStickyTarget(g);if(g.kind==='sticky'&&actor){g.stuck=true;g.stuckTo=actor;g.vx=g.vy=g.vz=0;break;}
+          const groundY=terrainHeight(nx,nz)+.08,hitGround=ny<=groundY,hitObj=!hitGround&&segmentHitsObstacle(px,py,pz,nx,ny,nz);
+          if(!hitGround&&!hitObj)continue;
+
+          if(g.kind==='sticky'){
+            g.x=px;g.y=Math.max(py,terrainHeight(px,pz)+.10);g.z=pz;g.vx=g.vy=g.vz=0;g.stuck=true;g.rolling=false;
+          }else if(hitGround){
+            // Preserve horizontal direction on a ground contact. High-energy
+            // impacts bounce; low-energy impacts transition naturally to roll.
+            const impact=Math.abs(g.vy),horizontal=Math.hypot(g.vx,g.vz);
+            g.x=nx;g.y=terrainHeight(nx,nz)+.10;g.z=nz;g.vx*=.76;g.vz*=.76;
+            if(impact>2.15){g.vy=impact*.29;g.rolling=false;}
+            else{g.vy=0;g.rolling=horizontal>.24;if(!g.rolling){g.vx=g.vz=0;g.stuck=true;}}
+          }else{
+            // Reflect only the component that met a wall/solid rather than
+            // reversing the entire throw direction on every contact.
+            g.x=px;g.y=py;g.z=pz;
+            const hitX=segmentHitsObstacle(px,py,pz,nx,ny,pz),hitZ=segmentHitsObstacle(px,py,pz,px,ny,nz),ambiguous=!hitX&&!hitZ;
+            if(hitX||ambiguous)g.vx=-g.vx*.38;
+            if(hitZ||ambiguous)g.vz=-g.vz*.38;
+            g.vy*=.58;
+            if(Math.abs(g.vy)<.55&&Math.hypot(g.vx,g.vz)<.35){g.vx=g.vy=g.vz=0;g.stuck=true;g.rolling=false;}
+          }
+          this.broadcast({t:'throwableImpact',id:g.id,kind:g.kind,x:g.x,y:g.y,z:g.z,vx:g.vx,vy:g.vy,vz:g.vz,stuck:g.stuck,rolling:!!g.rolling,at:now});
         }
       }
-      if(now-g.lastBroadcast>=THROWABLE_BROADCAST_MS){g.lastBroadcast=now;this.broadcast({t:'throwableState',id:g.id,x:g.x,y:g.y,z:g.z,vx:g.vx,vy:g.vy,vz:g.vz,stuck:g.stuck,at:now});}
+      if(now-g.lastBroadcast>=THROWABLE_BROADCAST_MS){g.lastBroadcast=now;this.broadcast({t:'throwableState',id:g.id,x:g.x,y:g.y,z:g.z,vx:g.vx,vy:g.vy,vz:g.vz,stuck:g.stuck,rolling:!!g.rolling,at:now});}
       if(now>=g.fuseAt){if(g.kind==='flash')this.detonateFlash(g,now);else this.explodeSticky(g,now,settings);this.throwables.delete(id);this.broadcast({t:'throwableEnd',id:g.id});}
     }
   }
@@ -2067,6 +2107,7 @@ export class GameRoom {
     }
     await this.scheduleRoomAlarm(expiresAt);
     await this.updateDirectory(live.length, meta, attachment.replaced ? "" : (attachment.clientId || ""));
+    if(!attachment.replaced&&attachment.godMode)this.broadcastMatch(meta,now);
   }
 
   async webSocketError(socket) {
@@ -2162,7 +2203,7 @@ export class GameRoom {
           mode: matchMode(match),
           blue,
           red,
-          custom: !!meta.custom,
+          custom: this.isCustomMatch(meta),
           matchStatus: match.status,
           blueScore: match.blueScore,
           redScore: match.redScore,
