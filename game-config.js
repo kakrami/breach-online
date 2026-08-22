@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.23.0';
-export const PROTOCOL_VERSION = 43;
+export const APP_VERSION = '1.24.0';
+export const PROTOCOL_VERSION = 44;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -33,7 +33,17 @@ export const CROUCH_HEIGHT = 1.08;
 export const CROUCH_SPEED_MULTIPLIER = 0.62;
 export const EQUIPMENT_CAPS = { flash: 2, sticky: 2 };
 
-export const DEFAULT_MATCH_RULES = { scoreLimit:30, timeLimitMs:8*60*1000 };
+export const GAME_MODE_ORDER = ['tdm','ffa','sandbox'];
+export const DEFAULT_GAME_MODE = 'tdm';
+export const GAME_MODES = Object.freeze({
+  tdm:Object.freeze({id:'tdm',name:'TEAM DEATHMATCH',short:'TDM',teamBased:true,scoreType:'team',scoreLimit:30,timeLimitMs:8*60*1000}),
+  ffa:Object.freeze({id:'ffa',name:'FREE FOR ALL',short:'FFA',teamBased:false,scoreType:'player',scoreLimit:20,timeLimitMs:8*60*1000}),
+  sandbox:Object.freeze({id:'sandbox',name:'SANDBOX',short:'SANDBOX',teamBased:true,scoreType:'none',scoreLimit:0,timeLimitMs:0}),
+});
+export function normalizeGameMode(value){const id=String(value||'').toLowerCase();return GAME_MODES[id]?id:DEFAULT_GAME_MODE;}
+export function gameModeSpec(value){return GAME_MODES[normalizeGameMode(value)];}
+export function gameModeIsTeamBased(value){return !!gameModeSpec(value).teamBased;}
+export const DEFAULT_MATCH_RULES = { mode:DEFAULT_GAME_MODE, scoreLimit:GAME_MODES.tdm.scoreLimit, timeLimitMs:GAME_MODES.tdm.timeLimitMs };
 export const MATCH_WARMUP_MS = 4000;
 export const MATCH_END_MS = 7000;
 

@@ -4,7 +4,7 @@ import {
 import {
   APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS,
   WEAPON_ORDER, PRIMARY_WEAPONS, WEAPON_SPECS, weaponSpreadRadians, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings,
-  DEFAULT_MATCH_RULES, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, GROUND_FOLLOW_DROP
+  DEFAULT_MATCH_RULES, GAME_MODES, normalizeGameMode, gameModeSpec, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, GROUND_FOLLOW_DROP
 } from './game-config.js';
 import { normalizeMatchRules, defaultMatchState, normalizeMatchState, publicMatchState, matchRulesAreDefault } from './match-model.js';
 import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback, sweepHorizontalMovement, createTraversalPlan, traversalPose, tacticalThrowVelocity } from './movement-model.js';
@@ -175,6 +175,9 @@ function finiteNumber(value, fallback = 0) {
 function safeTeam(value) {
   return String(value || "blue").toLowerCase() === "red" ? "red" : "blue";
 }
+function matchMode(value){return normalizeGameMode(value?.mode??value);}
+function matchUsesTeams(value){return !!gameModeSpec(matchMode(value)).teamBased;}
+function combatantsAreFriendly(mode,ownerId,ownerTeam,targetId,targetTeam){return ownerId!==targetId&&matchUsesTeams(mode)&&safeTeam(ownerTeam)===safeTeam(targetTeam);}
 
 function normalizeAdminIds(meta) {
   const owner = safeClientId(meta?.ownerClientId);
@@ -304,9 +307,14 @@ const TEAM_SPAWNS = {
   blue: [[-92,-82],[-98,74],[-104,0],[-66,24],[-28,-96],[-76,-48]],
   red: [[92,82],[98,-74],[104,0],[66,-24],[28,96],[76,48]],
 };
+const FFA_SPAWNS = [...TEAM_SPAWNS.blue,...TEAM_SPAWNS.red];
 function spawnForTeam(team,index){
   team=safeTeam(team);const points=TEAM_SPAWNS[team],p=points[Math.abs(index)%points.length];
   return {x:p[0],y:terrainHeight(p[0],p[1]),z:p[1]};
+}
+function spawnForMode(mode,team,index){
+  if(normalizeGameMode(mode)!=='ffa')return spawnForTeam(team,index);
+  const p=FFA_SPAWNS[Math.abs(index)%FFA_SPAWNS.length];return{x:p[0],y:terrainHeight(p[0],p[1]),z:p[1]};
 }
 function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
   const next={
@@ -319,13 +327,13 @@ function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
   if(resetStats)Object.assign(next,{kills:0,deaths:0,multiKillCount:0,lastKillAt:0});
   return next;
 }
-function makeBot(team, teamIndex) {
+function makeBot(team, teamIndex, mode='tdm', spawnIndex=teamIndex) {
   team = safeTeam(team);
-  const spawn = spawnForTeam(team, teamIndex);
-  const label = team === "red" ? "Red" : "Blue";
+  const spawn = spawnForMode(mode, team, spawnIndex);
+  const label = team === "red" ? "Red" : "Blue",ffa=normalizeGameMode(mode)==='ffa';
   return {
     id: `bot-${team}-${teamIndex + 1}`,
-    name: `${label} Bot ${teamIndex + 1}`,
+    name: ffa?`Bot ${spawnIndex + 1}`:`${label} Bot ${teamIndex + 1}`,
     team,
     ...spawn,
     yaw: 0,
@@ -344,17 +352,17 @@ function makeBot(team, teamIndex) {
     traverseSeq: 0,
   };
 }
-function makeBots(blueBots, redBots) {
+function makeBots(blueBots, redBots, mode='tdm') {
   blueBots = clamp(Math.floor(finiteNumber(blueBots, 0)), 0, MAX_BOTS);
   redBots = clamp(Math.floor(finiteNumber(redBots, 0)), 0, MAX_BOTS);
-  const bots = [];
-  for (let i = 0; i < blueBots; i += 1) bots.push(makeBot("blue", i));
-  for (let i = 0; i < redBots; i += 1) bots.push(makeBot("red", i));
+  const bots = [];let spawnIndex=0;
+  for (let i = 0; i < blueBots; i += 1) bots.push(makeBot("blue", i, mode, spawnIndex++));
+  for (let i = 0; i < redBots; i += 1) bots.push(makeBot("red", i, mode, spawnIndex++));
   return bots;
 }
-function reconcileBots(existing, blueBots, redBots) {
+function reconcileBots(existing, blueBots, redBots, mode='tdm') {
   const prior = new Map((Array.isArray(existing) ? existing : []).map((bot) => [bot.id, bot]));
-  return makeBots(blueBots, redBots).map((fresh) => {
+  return makeBots(blueBots, redBots, mode).map((fresh) => {
     const old = prior.get(fresh.id);
     if (!old) return fresh;
     return {
@@ -400,7 +408,7 @@ export default {
         service: "breach-online",
         protocol: PROTOCOL_VERSION,
         game: GAME_VERSION,
-        mode: "durable-object-tactical-team-fps",
+        mode: "durable-object-tactical-fps-lobby-modes",
       });
     }
 
@@ -422,6 +430,7 @@ export default {
       const redBots = clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS);
       const botCount = blueBots + redBots;
       const botDifficulty = safeBotDifficulty(body.botDifficulty);
+      const mode = normalizeGameMode(body.mode);
       const creatorGod = !!body.creatorGod;
       if (!clientId) return json(request, env, { error: "Missing client ID." }, 400);
       if (clientAuth.length < 32) return json(request, env, { error: "Missing client credential." }, 400);
@@ -448,7 +457,7 @@ export default {
         const created = await room.fetch('https://room.internal/create', {
           method: "POST",
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ code, ownerClientId: clientId, ownerAuthHash, blueBots, redBots, botDifficulty, creatorGod }),
+          body: JSON.stringify({ code, ownerClientId: clientId, ownerAuthHash, blueBots, redBots, botDifficulty, mode, creatorGod }),
         });
         if (created.status === 201) {
           return json(request, env, { code }, 201);
@@ -546,6 +555,7 @@ export class WorldDirectory {
       const body = await request.json();
       const code = normalizeRoomCode(body.code);
       if (!code) return new Response("bad code", { status: 400 });
+      const mode=normalizeGameMode(body.mode),modeSpec=gameModeSpec(mode);
       rooms[code] = {
         code,
         protocol: PROTOCOL_VERSION,
@@ -553,6 +563,7 @@ export class WorldDirectory {
         blueBots: clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS),
         redBots: clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS),
         botDifficulty: safeBotDifficulty(body.botDifficulty),
+        mode,
         blue: clamp(Math.floor(finiteNumber(body.blue, 0)), 0, MAX_PLAYERS + MAX_BOTS),
         red: clamp(Math.floor(finiteNumber(body.red, 0)), 0, MAX_PLAYERS + MAX_BOTS),
         maxPlayers: MAX_PLAYERS,
@@ -563,7 +574,7 @@ export class WorldDirectory {
         matchStatus: String(body.matchStatus || 'waiting'),
         blueScore: Math.max(0, Math.floor(finiteNumber(body.blueScore, 0))),
         redScore: Math.max(0, Math.floor(finiteNumber(body.redScore, 0))),
-        scoreLimit: clamp(Math.floor(finiteNumber(body.scoreLimit, DEFAULT_MATCH_RULES.scoreLimit)), 5, 100),
+        scoreLimit: modeSpec.scoreType==='none'?0:clamp(Math.floor(finiteNumber(body.scoreLimit, modeSpec.scoreLimit||DEFAULT_MATCH_RULES.scoreLimit)), 5, 100),
       };
       await this.ctx.storage.put("rooms", rooms);
       return new Response("ok");
@@ -608,16 +619,16 @@ export class GameRoom {
       meta.adminClientIds = normalizeAdminIds(meta);
       meta.clientAuthHashes = normalizeClientAuthHashes(meta);
       meta.settings = normalizeWorldSettings(meta.settings);
-      meta.match = normalizeMatchState(meta.match, Date.now(), meta.match || DEFAULT_MATCH_RULES);
-      this.metaCache = meta;
+      meta.match=normalizeMatchState(meta.match,Date.now(),meta.match||DEFAULT_MATCH_RULES);meta.mode=matchMode(meta.match);
+      this.metaCache=meta;
     }
     return meta || null;
   }
 
   async putMeta(meta) {
     meta.adminClientIds = normalizeAdminIds(meta);
-    meta.clientAuthHashes = normalizeClientAuthHashes(meta);
-    this.metaCache = meta;
+    meta.clientAuthHashes=normalizeClientAuthHashes(meta);meta.mode=matchMode(meta.match||meta.mode);
+    this.metaCache=meta;
     await this.ctx.storage.put("meta", meta);
   }
 
@@ -634,7 +645,7 @@ export class GameRoom {
       : type === 'state' ? { rate: 55, burst: 80 }
       : type === 'simTick' ? { rate: 40, burst: 60 }
       : type === 'fire' ? { rate: 24, burst: 30 }
-      : ['throw','reload','weapon','team','god','adminPlayer','adminSettings','adminMatch','adminBots'].includes(type) ? { rate: 14, burst: 22 }
+      : ['throw','reload','weapon','loadout','team','god','startMatch','lobbyMode','adminPlayer','adminSettings','adminMatch','adminBots'].includes(type) ? { rate: 14, burst: 22 }
       : type === 'ping' ? { rate: 8, burst: 12 }
       : { rate: 30, burst: 45 };
     let state = this.socketRate.get(socket);
@@ -693,76 +704,78 @@ export class GameRoom {
     const stored = await this.ctx.storage.get("bots");
     if (Array.isArray(stored) && stored.length === counts.botCount) this.bots = stored;
     else {
-      this.bots = makeBots(counts.blueBots, counts.redBots);
+      this.bots = makeBots(counts.blueBots, counts.redBots, matchMode(meta.match));
       await this.ctx.storage.put("bots", this.bots);
     }
     this.lastSimAt = Date.now();
     this.simAccumulatorMs = 0;
   }
 
-  startWarmupIfWaiting(meta, now = Date.now()) {
-    const match = meta.match;
-    if (match.status !== 'waiting') return false;
-    Object.assign(match, { status:'warmup', warmupEndsAt:now + MATCH_WARMUP_MS, startedAt:0, endsAt:0, endedAt:0, restartAt:0, winner:'', reason:'', updatedAt:now });
-    meta.match = match; this.matchDirty = true;
+  broadcastMatch(meta,now=Date.now()){this.broadcast({t:'match',match:publicMatchState(meta.match,now),custom:!!meta.custom});}
+
+  finishMatch(meta,winner,reason,now=Date.now()){
+    const match=meta.match;if(match.status==='ended')return false;
+    const result=winner&&typeof winner==='object'?winner:{winner:winner||'draw'};
+    Object.assign(match,{status:'ended',endedAt:now,restartAt:now+MATCH_END_MS,winner:['blue','red','draw'].includes(result.winner)?result.winner:'',winnerId:safeClientId(result.winnerId||''),winnerName:String(result.winnerName||'').slice(0,24),reason:String(reason||'').slice(0,24),updatedAt:now});
+    this.bullets.clear();this.throwables.clear();meta.match=match;this.matchDirty=true;this.broadcastMatch(meta,now);return true;
+  }
+
+  individualLeaders(){
+    const rows=[];
+    for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(p.clientId&&!p.replaced)rows.push(this.findCombatant(p.clientId));}
+    for(const bot of this.bots)rows.push(this.findCombatant(bot.id));
+    rows.sort((a,b)=>(b.kills-a.kills)||(a.deaths-b.deaths)||a.name.localeCompare(b.name));return rows;
+  }
+
+  prepareRound(meta,now=Date.now(),{increment=false}={}){
+    const old=meta.match,mode=matchMode(old);
+    meta.match={...defaultMatchState(now,old),round:Math.max(1,old.round+(increment?1:0)),status:'warmup',warmupEndsAt:now+MATCH_WARMUP_MS,mode,scoreLimit:old.scoreLimit,timeLimitMs:old.timeLimitMs};
+    this.bullets.clear();this.throwables.clear();const players=[];let index=0;
+    for(const socket of this.ctx.getWebSockets()){
+      const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;
+      const team=matchUsesTeams(mode)&&p.pendingTeam?safeTeam(p.pendingTeam):safeTeam(p.team);
+      const reset=spawnedPlayerState(p,spawnForMode(mode,team,index++),team,now,{resetStats:true});socket.serializeAttachment(reset);players.push(publicPlayer(reset));
+    }
+    this.bots=makeBots(meta.blueBots||0,meta.redBots||0,mode);this.matchDirty=true;
+    this.broadcast({t:'matchReset',match:publicMatchState(meta.match,now),players,bots:this.bots.map(publicBot),custom:!!meta.custom});
     return true;
   }
 
-  broadcastMatch(meta, now = Date.now()) {
-    this.broadcast({ t:'match', match:publicMatchState(meta.match, now), custom:!!meta.custom });
-  }
+  resetRound(meta,now=Date.now()){return this.prepareRound(meta,now,{increment:true});}
 
-  finishMatch(meta, winner, reason, now = Date.now()) {
-    const match = meta.match;
-    if (match.status === 'ended') return false;
-    Object.assign(match, { status:'ended', endedAt:now, restartAt:now + MATCH_END_MS, winner: winner || 'draw', reason:String(reason||'').slice(0,24), updatedAt:now });
-    this.bullets.clear(); this.throwables.clear();
-    meta.match = match; this.matchDirty = true; this.broadcastMatch(meta, now);
-    return true;
-  }
 
-  resetRound(meta, now = Date.now()) {
-    const old = meta.match;
-    meta.match = { ...defaultMatchState(now, old), round:old.round + 1, status:'warmup', warmupEndsAt:now + MATCH_WARMUP_MS, scoreLimit:old.scoreLimit, timeLimitMs:old.timeLimitMs };
-    this.bullets.clear(); this.throwables.clear();
-    const players=[];
-    let index=0;
-    for (const socket of this.ctx.getWebSockets()) {
-      const p = socket.deserializeAttachment() || {};
-      if (!p.clientId || p.replaced) continue;
-      const team = p.pendingTeam ? safeTeam(p.pendingTeam) : safeTeam(p.team);
-      const reset=spawnedPlayerState(p,spawnForTeam(team,index++),team,now,{resetStats:true});
-      socket.serializeAttachment(reset);players.push(publicPlayer(reset));
+  stepMatch(now,meta){
+    const match=meta.match,mode=matchMode(match),spec=gameModeSpec(mode);
+    if(match.status==='waiting')return;
+    if(match.status==='warmup'&&match.warmupEndsAt&&now>=match.warmupEndsAt){
+      Object.assign(match,{status:'active',startedAt:now,endsAt:spec.timeLimitMs>0?now+match.timeLimitMs:0,warmupEndsAt:0,winner:'',winnerId:'',winnerName:'',reason:'',updatedAt:now});
+      this.matchDirty=true;this.broadcastMatch(meta,now);return;
     }
-    this.bots = makeBots(meta.blueBots || 0, meta.redBots || 0);
-    this.matchDirty = true;
-    this.broadcast({ t:'matchReset', match:publicMatchState(meta.match, now), players, bots:this.bots.map(publicBot), custom:!!meta.custom });
+    if(match.status==='active'&&spec.scoreType!=='none'&&match.endsAt&&now>=match.endsAt){
+      if(spec.scoreType==='team'){
+        const winner=match.blueScore===match.redScore?'draw':match.blueScore>match.redScore?'blue':'red';this.finishMatch(meta,winner,'time',now);
+      }else{
+        const leaders=this.individualLeaders(),top=leaders[0],second=leaders[1];
+        if(!top||second&&top.kills===second.kills)this.finishMatch(meta,'draw','time',now);else this.finishMatch(meta,{winnerId:top.id,winnerName:top.name},'time',now);
+      }
+      return;
+    }
+    if(match.status==='ended'&&match.restartAt&&now>=match.restartAt)this.resetRound(meta,now);
   }
 
-  stepMatch(now, meta) {
-    const match = meta.match;
-    if (match.status === 'waiting') return;
-    if (match.status === 'warmup' && match.warmupEndsAt && now >= match.warmupEndsAt) {
-      Object.assign(match, { status:'active', startedAt:now, endsAt:now + match.timeLimitMs, warmupEndsAt:0, winner:'', reason:'', updatedAt:now });
-      this.matchDirty = true; this.broadcastMatch(meta, now); return;
+  recordMatchKill(attackerId,victimId,now=Date.now()){
+    const meta=this.metaCache;if(!meta)return;const match=meta.match,mode=matchMode(match),spec=gameModeSpec(mode);
+    if(match.status!=='active'||spec.scoreType==='none'||!attackerId||attackerId===victimId)return;
+    const attacker=this.findCombatant(attackerId),victim=this.findCombatant(victimId);
+    if(!attacker?.id||!victim?.id||attacker.godMode||combatantsAreFriendly(mode,attacker.id,attacker.team,victim.id,victim.team))return;
+    match.updatedAt=now;meta.match=match;this.matchDirty=true;
+    if(spec.scoreType==='team'){
+      if(attacker.team==='red')match.redScore+=1;else match.blueScore+=1;
+      const reached=attacker.team==='red'?match.redScore>=match.scoreLimit:match.blueScore>=match.scoreLimit;
+      if(reached)this.finishMatch(meta,attacker.team,'score',now);else this.broadcastMatch(meta,now);return;
     }
-    if (match.status === 'active' && match.endsAt && now >= match.endsAt) {
-      const winner = match.blueScore === match.redScore ? 'draw' : (match.blueScore > match.redScore ? 'blue' : 'red');
-      this.finishMatch(meta, winner, 'time', now); return;
-    }
-    if (match.status === 'ended' && match.restartAt && now >= match.restartAt) this.resetRound(meta, now);
-  }
-
-  recordMatchKill(attackerId, victimId, now = Date.now()) {
-    const meta = this.metaCache; if (!meta) return;
-    const match = meta.match;
-    if (match.status !== 'active' || !attackerId || attackerId === victimId) return;
-    const attacker = this.findCombatant(attackerId), victim = this.findCombatant(victimId);
-    if (!attacker?.id || !victim?.id || attacker.team === victim.team || attacker.godMode) return;
-    if (attacker.team === 'red') match.redScore += 1; else match.blueScore += 1;
-    match.updatedAt = now; meta.match = match; this.matchDirty = true;
-    const reached = attacker.team === 'red' ? match.redScore >= match.scoreLimit : match.blueScore >= match.scoreLimit;
-    if (reached) this.finishMatch(meta, attacker.team, 'score', now); else this.broadcastMatch(meta, now);
+    if(attacker.kills>=match.scoreLimit){this.finishMatch(meta,{winnerId:attacker.id,winnerName:attacker.name},'score',now);return;}
+    this.broadcastMatch(meta,now);
   }
 
   async loadJoinTickets(now = Date.now()) {
@@ -846,10 +859,11 @@ export class GameRoom {
       const redBots = clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS);
       const botCount = blueBots + redBots;
       const botDifficulty = safeBotDifficulty(body.botDifficulty);
+      const mode = normalizeGameMode(body.mode);
       const creatorGod = !!body.creatorGod;
       if (botCount > MAX_BOTS) return json(request, this.env, { error: `Maximum ${MAX_BOTS} bots per match.` }, 400);
       const now = Date.now();
-      const match = defaultMatchState(now, DEFAULT_MATCH_RULES);
+      const match = defaultMatchState(now, {mode,...gameModeSpec(mode)});
       const meta = {
         code,
         protocol: PROTOCOL_VERSION,
@@ -859,6 +873,7 @@ export class GameRoom {
         blueBots,
         redBots,
         botDifficulty,
+        mode,
         creatorGod,
         settings: normalizeWorldSettings(),
         match,
@@ -867,7 +882,7 @@ export class GameRoom {
         expiresAt: now + ROOM_MAX_LIFETIME_MS,
       };
       await this.putMeta(meta);
-      this.bots = makeBots(blueBots, redBots);
+      this.bots = makeBots(blueBots, redBots, mode);
       await this.ctx.storage.put("bots", this.bots);
       await this.scheduleRoomAlarm(meta.expiresAt);
       await this.updateDirectory(0, meta);
@@ -938,7 +953,7 @@ export class GameRoom {
     }
 
     const requestedTeamCount = liveMembers.filter(({attachment:a}) => safeTeam(a.team) === requestedTeam).length;
-    const spawn = preserved || spawnForTeam(requestedTeam, requestedTeamCount);
+    const spawn = preserved || spawnForMode(matchMode(meta.match), requestedTeam, matchMode(meta.match)==='ffa'?liveMembers.length:requestedTeamCount);
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -995,8 +1010,6 @@ export class GameRoom {
     await this.scheduleRoomAlarm(meta.expiresAt);
 
     const currentPlayers = liveMembers.map(({ attachment: a }) => publicPlayer(a));
-    if (this.startWarmupIfWaiting(meta, Date.now())) await this.putMeta(meta);
-
     sendJson(server,{
       t: "welcome",
       self: publicPlayer(attachment),
@@ -1140,6 +1153,26 @@ export class GameRoom {
       sendLoadout(socket,me,{action:'weapon',accepted:true,retryAfterMs:Math.max(0,Math.ceil(finiteNumber(me.weaponReadyAt,0)-now))});return;
     }
 
+    if(payload.t==='loadout'){
+      if(meta.match.status!=='waiting'){sendLoadout(socket,me,{action:'loadout',accepted:false,reason:'match_started'});return;}
+      const primary=safePrimaryWeapon(payload.primaryWeapon);me.primaryWeapon=primary;me.weapon=primary;me.ammo=freshAmmo();me.reloadAt=0;me.reloadWeapon='';me.weaponReadyAt=0;
+      if(me.godMode)refreshUnlimitedResources(me);socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me)});return;
+    }
+
+    if(payload.t==='lobbyMode'){
+      if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Admin access required.'});return;}
+      if(meta.match.status!=='waiting'){sendJson(socket,{t:'notice',tone:'error',text:'Game mode can only be changed in the lobby.'});return;}
+      const mode=normalizeGameMode(payload.mode),spec=gameModeSpec(mode);meta.mode=mode;meta.match={...meta.match,mode,blueScore:0,redScore:0,scoreLimit:spec.scoreLimit,timeLimitMs:spec.timeLimitMs,winner:'',winnerId:'',winnerName:'',reason:'',updatedAt:now};
+      for(const s of this.ctx.getWebSockets()){const p=s.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;p.pendingTeam='';s.serializeAttachment(p);}
+      await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);this.broadcastMatch(meta,now);return;
+    }
+
+    if(payload.t==='startMatch'){
+      if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Only a lobby admin can start the match.'});return;}
+      if(meta.match.status!=='waiting'){sendJson(socket,{t:'notice',tone:'error',text:'Match has already started.'});return;}
+      this.prepareRound(meta,now,{increment:false});await this.putMeta(meta);await this.ctx.storage.put('bots',this.bots);await this.updateDirectory(this.liveSockets().length,meta);return;
+    }
+
     if (payload.t === "god") {
       if (!isRoomAdmin(meta, me.clientId)) {
         sendJson(socket,{t:"notice",tone:"error",text:"Admin access required for God Mode."});
@@ -1155,19 +1188,15 @@ export class GameRoom {
       return;
     }
 
-    if (payload.t === "team") {
-      const nextTeam = safeTeam(payload.team);
-      const currentTeam = safeTeam(me.team);
-      if (nextTeam === currentTeam) {
-        me.pendingTeam = ''; socket.serializeAttachment(me);
-        sendLoadout(socket, me, { action:'team', accepted:true, pendingTeam:'' });
-        sendJson(socket,{t:'teamQueued',id:me.clientId,team:currentTeam,pendingTeam:''});
-        return;
+    if(payload.t==='team'){
+      const mode=matchMode(meta.match),spec=gameModeSpec(mode),nextTeam=safeTeam(payload.team),currentTeam=safeTeam(me.team);
+      if(!spec.teamBased){me.pendingTeam='';socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:false,reason:'free_for_all',pendingTeam:''});sendJson(socket,{t:'notice',text:'Free For All has no teams.'});return;}
+      if(meta.match.status==='waiting'){
+        if(nextTeam!==currentTeam){const sameTeam=this.liveSockets(socket).filter(s=>safeTeam((s.deserializeAttachment()||{}).team)===nextTeam).length;const moved=spawnedPlayerState(me,spawnForTeam(nextTeam,sameTeam),nextTeam,now,{resetStats:false});moved.kills=me.kills;moved.deaths=me.deaths;me=moved;socket.serializeAttachment(me);}
+        me.pendingTeam='';socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:true,pendingTeam:''});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me)});await this.updateDirectory(this.liveSockets().length,meta);return;
       }
-      me.pendingTeam = nextTeam; socket.serializeAttachment(me);
-      sendLoadout(socket, me, { action:'team', accepted:true, pendingTeam:nextTeam });
-      sendJson(socket,{t:'teamQueued',id:me.clientId,team:currentTeam,pendingTeam:nextTeam});
-      return;
+      if(nextTeam===currentTeam){me.pendingTeam='';socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:true,pendingTeam:''});sendJson(socket,{t:'teamQueued',id:me.clientId,team:currentTeam,pendingTeam:''});return;}
+      me.pendingTeam=nextTeam;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:true,pendingTeam:nextTeam});sendJson(socket,{t:'teamQueued',id:me.clientId,team:currentTeam,pendingTeam:nextTeam});return;
     }
 
     if (payload.t === "adminPlayer") {
@@ -1240,17 +1269,18 @@ export class GameRoom {
         sendJson(socket,{t:"notice",tone:"error",text:"Admin access required."});
         return;
       }
-      const rules = normalizeMatchRules(payload.rules);
-      const match = normalizeMatchState(meta.match, now, rules);
-      match.scoreLimit = rules.scoreLimit; match.timeLimitMs = rules.timeLimitMs;
-      if (match.status === 'active' && match.startedAt) match.endsAt = match.startedAt + match.timeLimitMs;
+      const rules=normalizeMatchRules({...payload.rules,mode:matchMode(meta.match)});
+      const match=normalizeMatchState(meta.match,now,rules);
+      match.scoreLimit=rules.scoreLimit;match.timeLimitMs=rules.timeLimitMs;
+      if(match.status==='active'&&match.startedAt)match.endsAt=match.timeLimitMs>0?match.startedAt+match.timeLimitMs:0;
       match.updatedAt = now; meta.match = match;
       if (!matchRulesAreDefault(match)) meta.custom = true;
       this.matchDirty = true; await this.putMeta(meta); this.matchDirty = false;
       this.broadcastMatch(meta, now); await this.updateDirectory(this.liveSockets().length, meta);
-      if (match.status === 'active' && (match.blueScore >= match.scoreLimit || match.redScore >= match.scoreLimit)) {
-        const winner = match.blueScore === match.redScore ? 'draw' : (match.blueScore > match.redScore ? 'blue' : 'red');
-        this.finishMatch(meta, winner, 'score', now);
+      if(match.status==='active'&&gameModeSpec(match.mode).scoreType==='team'&&(match.blueScore>=match.scoreLimit||match.redScore>=match.scoreLimit)){
+        const winner=match.blueScore===match.redScore?'draw':match.blueScore>match.redScore?'blue':'red';this.finishMatch(meta,winner,'score',now);
+      }else if(match.status==='active'&&gameModeSpec(match.mode).scoreType==='player'){
+        const leader=this.individualLeaders()[0];if(leader&&leader.kills>=match.scoreLimit)this.finishMatch(meta,{winnerId:leader.id,winnerName:leader.name},'score',now);
       }
       return;
     }
@@ -1271,7 +1301,7 @@ export class GameRoom {
       meta.redBots = redBots;
       meta.botDifficulty = safeBotDifficulty(payload.difficulty);
       await this.putMeta(meta);
-      this.bots = reconcileBots(this.bots, blueBots, redBots);
+      this.bots = reconcileBots(this.bots, blueBots, redBots, matchMode(meta.match));
       const activeBotIds = new Set(this.bots.map((bot) => bot.id));
       for (const [id, bullet] of [...this.bullets.entries()]) {
         if (String(bullet.ownerId || "").startsWith("bot-") && !activeBotIds.has(bullet.ownerId)) this.endBullet(id, "bot-removed");
@@ -1582,7 +1612,7 @@ export class GameRoom {
       if (!player.wastedUntil || now < player.wastedUntil) continue;
 
       const team = player.pendingTeam ? safeTeam(player.pendingTeam) : safeTeam(player.team);
-      const spawn=spawnForTeam(team,Math.floor(Math.random()*TEAM_SPAWNS[team].length));
+      const mode=matchMode(this.metaCache?.match);const spawn=spawnForMode(mode,team,Math.floor(Math.random()*(mode==='ffa'?FFA_SPAWNS.length:TEAM_SPAWNS[team].length)));
       const respawned=spawnedPlayerState(player,spawn,team,now);
       socket.serializeAttachment(respawned);
       this.broadcast({ t: "respawn", player: publicPlayer(respawned) });
@@ -1623,7 +1653,7 @@ export class GameRoom {
       const bot = this.bots[i];
       if (bot.hp <= 0) {
         if (now >= bot.wastedUntil) {
-          const spawn = spawnForTeam(bot.team, i + Math.floor(Math.random() * TEAM_SPAWNS[safeTeam(bot.team)].length));
+          const mode=matchMode(meta.match);const spawn = spawnForMode(mode,bot.team,i+Math.floor(Math.random()*(mode==='ffa'?FFA_SPAWNS.length:TEAM_SPAWNS[safeTeam(bot.team)].length)));
           Object.assign(bot, spawn, { hp: 100, wastedUntil: 0, regenAt: 0, weapon: "assault", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "", flashUntil: 0, flashSpin: 0, traversal: null });
           this.broadcast({ t: "respawn", player: publicBot(bot) });
         }
@@ -1648,7 +1678,7 @@ export class GameRoom {
 
       const targetCandidates = [];
       const consider = (kind, target, socket = null) => {
-        if (!target || target.hp <= 0 || safeTeam(target.team) === safeTeam(bot.team) || target.id === bot.id || target.clientId === bot.id) return;
+        if (!target || target.hp <= 0 || combatantsAreFriendly(matchMode(meta.match),bot.id,bot.team,target.id||target.clientId,target.team) || target.id === bot.id || target.clientId === bot.id) return;
         const tx = finiteNumber(target.x, 0), tz = finiteNumber(target.z, 0);
         const dx = tx - bot.x, dz = tz - bot.z, d2 = dx * dx + dz * dz;
         targetCandidates.push({ kind, target, socket, dx, dz, d2 });
@@ -1748,7 +1778,7 @@ export class GameRoom {
     }
   }
   findActorState(id){for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(p.clientId===id&&!p.replaced)return p;}return this.bots.find(b=>b.id===id)||null;}
-  findStickyTarget(g){for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.clientId===g.ownerId||p.hp<=0||safeTeam(p.team)===g.ownerTeam)continue;if(Math.hypot(p.x-g.x,p.y+1-g.y,p.z-g.z)<.62)return p.clientId;}for(const b of this.bots){if(b.id===g.ownerId||b.hp<=0||safeTeam(b.team)===g.ownerTeam)continue;if(Math.hypot(b.x-g.x,b.y+1-g.y,b.z-g.z)<.62)return b.id;}return '';}
+  findStickyTarget(g){for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.clientId===g.ownerId||p.hp<=0||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,p.clientId,p.team))continue;if(Math.hypot(p.x-g.x,p.y+1-g.y,p.z-g.z)<.62)return p.clientId;}for(const b of this.bots){if(b.id===g.ownerId||b.hp<=0||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,b.id,b.team))continue;if(Math.hypot(b.x-g.x,b.y+1-g.y,b.z-g.z)<.62)return b.id;}return '';}
   detonateFlash(g,now){
     const radius=FLASH_RADIUS;this.broadcast({t:'flashDetonate',id:g.id,x:g.x,y:g.y,z:g.z,radius});
     for(const socket of this.ctx.getWebSockets()){
@@ -1767,11 +1797,11 @@ export class GameRoom {
   explodeSticky(g,now,settings){
     const radius=STICKY_RADIUS,maxDamage=STICKY_MAX_DAMAGE;
     for(const socket of this.ctx.getWebSockets()){
-      const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;const self=p.clientId===g.ownerId;if(!self&&safeTeam(p.team)===g.ownerTeam)continue;
+      const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;const self=p.clientId===g.ownerId;if(!self&&combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,p.clientId,p.team))continue;
       const dx=p.x-g.x,dz=p.z-g.z,d=Math.hypot(dx,p.y+1-g.y,dz);if(d>radius||segmentFirstWorldOcclusionT(g.x,g.y,g.z,p.x,p.y+1,p.z)!=null)continue;
       let damage=Math.max(12,Math.round(maxDamage*(1-d/radius)));if(self)damage=Math.round(damage*.72);const n=Math.hypot(dx,dz)||1;this.damageHuman(socket,p,g.ownerId,damage,'sticky',{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});
     }
-    for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||safeTeam(b.team)===g.ownerTeam)continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius||segmentFirstWorldOcclusionT(g.x,g.y,g.z,b.x,b.y+1,b.z)!=null)continue;const damage=Math.max(12,Math.round(maxDamage*(1-d/radius))),n=Math.hypot(dx,dz)||1;this.damageBot(b,g.ownerId,damage,'sticky',{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});}
+    for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,b.id,b.team))continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius||segmentFirstWorldOcclusionT(g.x,g.y,g.z,b.x,b.y+1,b.z)!=null)continue;const damage=Math.max(12,Math.round(maxDamage*(1-d/radius))),n=Math.hypot(dx,dz)||1;this.damageBot(b,g.ownerId,damage,'sticky',{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});}
     this.broadcast({t:'explosion',id:g.id,x:g.x,y:g.y,z:g.z,kind:'sticky',radius});
   }
 
@@ -1821,11 +1851,11 @@ export class GameRoom {
           };
           for (const h of humans) {
             const target = h.player;
-            if (!target.clientId || target.replaced || target.clientId === bullet.ownerId || target.hp <= 0 || now < (target.wastedUntil || 0) || safeTeam(target.team) === bullet.ownerTeam || bullet.hitTargets.has(target.clientId)) continue;
+            if (!target.clientId || target.replaced || target.clientId === bullet.ownerId || target.hp <= 0 || now < (target.wastedUntil || 0) || combatantsAreFriendly(matchMode(this.metaCache?.match),bullet.ownerId,bullet.ownerTeam,target.clientId,target.team) || bullet.hitTargets.has(target.clientId)) continue;
             consider('human', target, h.socket);
           }
           for (const bot of this.bots) {
-            if (bot.id === bullet.ownerId || bot.hp <= 0 || now < bot.wastedUntil || safeTeam(bot.team) === bullet.ownerTeam || bullet.hitTargets.has(bot.id)) continue;
+            if (bot.id === bullet.ownerId || bot.hp <= 0 || now < bot.wastedUntil || combatantsAreFriendly(matchMode(this.metaCache?.match),bullet.ownerId,bullet.ownerTeam,bot.id,bot.team) || bullet.hitTargets.has(bot.id)) continue;
             consider('bot', bot);
           }
 
@@ -2129,6 +2159,7 @@ export class GameRoom {
           blueBots: (this.bots || []).filter((bot) => safeTeam(bot.team) === "blue").length,
           redBots: (this.bots || []).filter((bot) => safeTeam(bot.team) === "red").length,
           botDifficulty: safeBotDifficulty(meta.botDifficulty),
+          mode: matchMode(match),
           blue,
           red,
           custom: !!meta.custom,

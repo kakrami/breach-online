@@ -1,35 +1,46 @@
-import { DEFAULT_MATCH_RULES } from './game-config.js';
+import { DEFAULT_MATCH_RULES, gameModeSpec, normalizeGameMode } from './game-config.js';
 
-const clamp = (value,min,max) => Math.max(min,Math.min(max,value));
-const number = (value,fallback=0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
+const finiteNumber=(value,fallback=0)=>{const n=Number(value);return Number.isFinite(n)?n:fallback;};
 
-export function normalizeMatchRules(value) {
+export function normalizeMatchRules(value){
   const v=value&&typeof value==='object'?value:{};
-  return {
-    scoreLimit:clamp(Math.floor(number(v.scoreLimit,DEFAULT_MATCH_RULES.scoreLimit)),5,100),
-    timeLimitMs:clamp(Math.round(number(v.timeLimitMs,DEFAULT_MATCH_RULES.timeLimitMs)),120000,1800000),
+  const mode=normalizeGameMode(v.mode??DEFAULT_MATCH_RULES.mode),spec=gameModeSpec(mode);
+  if(spec.scoreType==='none')return{mode,scoreLimit:0,timeLimitMs:0};
+  return{
+    mode,
+    scoreLimit:clamp(Math.floor(finiteNumber(v.scoreLimit,spec.scoreLimit)),5,100),
+    timeLimitMs:clamp(Math.round(finiteNumber(v.timeLimitMs,spec.timeLimitMs)),2*60*1000,30*60*1000),
   };
 }
 
-export function defaultMatchState(now=Date.now(),rules=DEFAULT_MATCH_RULES) {
-  const r=normalizeMatchRules(rules);
-  return {status:'waiting',round:1,blueScore:0,redScore:0,scoreLimit:r.scoreLimit,timeLimitMs:r.timeLimitMs,warmupEndsAt:0,startedAt:0,endsAt:0,endedAt:0,restartAt:0,winner:'',reason:'',updatedAt:now};
-}
-
-export function normalizeMatchState(value,now=Date.now(),rules=DEFAULT_MATCH_RULES) {
-  const v=value&&typeof value==='object'?value:{},def=defaultMatchState(now,rules);
-  return {
-    status:['waiting','warmup','active','ended'].includes(v.status)?v.status:def.status,
-    round:Math.max(1,Math.floor(number(v.round,def.round))),
-    blueScore:Math.max(0,Math.floor(number(v.blueScore))),
-    redScore:Math.max(0,Math.floor(number(v.redScore))),
-    scoreLimit:clamp(Math.floor(number(v.scoreLimit,def.scoreLimit)),5,100),
-    timeLimitMs:clamp(Math.round(number(v.timeLimitMs,def.timeLimitMs)),120000,1800000),
-    warmupEndsAt:Math.max(0,number(v.warmupEndsAt)),startedAt:Math.max(0,number(v.startedAt)),endsAt:Math.max(0,number(v.endsAt)),
-    endedAt:Math.max(0,number(v.endedAt)),restartAt:Math.max(0,number(v.restartAt)),
-    winner:['blue','red','draw'].includes(v.winner)?v.winner:'',reason:String(v.reason||'').slice(0,24),updatedAt:Math.max(0,number(v.updatedAt,now)),
+export function defaultMatchState(now=Date.now(),rules=DEFAULT_MATCH_RULES){
+  const normalized=normalizeMatchRules(rules);
+  return{
+    status:'waiting',round:1,mode:normalized.mode,blueScore:0,redScore:0,
+    scoreLimit:normalized.scoreLimit,timeLimitMs:normalized.timeLimitMs,
+    warmupEndsAt:0,startedAt:0,endsAt:0,endedAt:0,restartAt:0,
+    winner:'',winnerId:'',winnerName:'',reason:'',updatedAt:now,
   };
 }
 
-export function publicMatchState(value,now=Date.now()) { return {...value,serverTime:now}; }
-export function matchRulesAreDefault(match) { return match.scoreLimit===DEFAULT_MATCH_RULES.scoreLimit&&match.timeLimitMs===DEFAULT_MATCH_RULES.timeLimitMs; }
+export function normalizeMatchState(value,now=Date.now(),rules=DEFAULT_MATCH_RULES){
+  const v=value&&typeof value==='object'?value:{},mode=normalizeGameMode(v.mode??rules?.mode),def=defaultMatchState(now,{...rules,mode});
+  const normalizedRules=normalizeMatchRules({...def,...v,mode});
+  const status=['waiting','warmup','active','ended'].includes(String(v.status))?String(v.status):def.status;
+  const winner=['blue','red','draw'].includes(String(v.winner))?String(v.winner):'';
+  return{
+    status,round:Math.max(1,Math.floor(finiteNumber(v.round,def.round))),mode,
+    blueScore:Math.max(0,Math.floor(finiteNumber(v.blueScore,0))),redScore:Math.max(0,Math.floor(finiteNumber(v.redScore,0))),
+    scoreLimit:normalizedRules.scoreLimit,timeLimitMs:normalizedRules.timeLimitMs,
+    warmupEndsAt:Math.max(0,finiteNumber(v.warmupEndsAt,0)),startedAt:Math.max(0,finiteNumber(v.startedAt,0)),endsAt:Math.max(0,finiteNumber(v.endsAt,0)),endedAt:Math.max(0,finiteNumber(v.endedAt,0)),restartAt:Math.max(0,finiteNumber(v.restartAt,0)),
+    winner,winnerId:String(v.winnerId||'').slice(0,64),winnerName:String(v.winnerName||'').slice(0,24),reason:String(v.reason||'').slice(0,24),updatedAt:Math.max(0,finiteNumber(v.updatedAt,now)),
+  };
+}
+
+export function publicMatchState(value,now=Date.now()){const match=normalizeMatchState(value,now,value);return{...match,serverTime:now};}
+
+export function matchRulesAreDefault(match){
+  const normalized=normalizeMatchState(match,Date.now(),match),spec=gameModeSpec(normalized.mode);
+  return normalized.scoreLimit===spec.scoreLimit&&normalized.timeLimitMs===spec.timeLimitMs;
+}
