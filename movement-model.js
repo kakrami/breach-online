@@ -61,21 +61,60 @@ export function sweepHorizontalMovement({
   const distance = Math.hypot(sxTotal, szTotal);
   const steps = Math.max(1, Math.ceil(distance / maxStep));
   const sx = sxTotal / steps, sz = szTotal / steps;
+  let blockedAny = false;
   for (let i = 0; i < steps; i += 1) {
     const fromX = px, fromZ = pz;
     const nextX = Math.max(-limit, Math.min(limit, px + sx));
     const nextXY = stepY(nextX, pz);
-    if (!blocked(nextX, pz, nextXY, fromX, fromZ)) { px = nextX; py = nextXY; }
+    if (!blocked(nextX, pz, nextXY, fromX, fromZ)) { px = nextX; py = nextXY; } else blockedAny = true;
     followGround();
 
     const beforeZx = px, beforeZz = pz;
     const nextZ = Math.max(-limit, Math.min(limit, pz + sz));
     const nextZY = stepY(px, nextZ);
-    if (!blocked(px, nextZ, nextZY, beforeZx, beforeZz)) { pz = nextZ; py = nextZY; }
+    if (!blocked(px, nextZ, nextZY, beforeZx, beforeZz)) { pz = nextZ; py = nextZY; } else blockedAny = true;
     followGround();
   }
 
-  return { x:px, y:py, z:pz, grounded:followsSupport };
+  return { x:px, y:py, z:pz, grounded:followsSupport, blocked:blockedAny };
+}
+
+
+
+export function createTraversalPlan(candidate, startX, startY, startZ, startedAt, seq=0) {
+  if(!candidate)return null;
+  const mode=candidate.mode==='vault'?'vault':'mantle';
+  const sx=Number(startX)||0,sy=Number(startY)||0,sz=Number(startZ)||0;
+  const ex=Number(candidate.endX),ey=Number(candidate.endY),ez=Number(candidate.endZ);
+  if(!Number.isFinite(ex)||!Number.isFinite(ey)||!Number.isFinite(ez))return null;
+  const distance=Math.hypot(ex-sx,ez-sz),rise=Math.max(0,ey-sy);
+  const durationMs=mode==='vault'?Math.round(Math.max(300,Math.min(430,300+distance*34))):Math.round(Math.max(380,Math.min(540,390+rise*72+distance*24)));
+  return {
+    seq:Math.max(0,Math.floor(Number(seq)||0)),mode,role:String(candidate.role||''),
+    startX:sx,startY:sy,startZ:sz,endX:ex,endY:ey,endZ:ez,
+    peakY:Math.max(Number(candidate.peakY)||ey,ey+.08),startedAt:Number(startedAt)||0,durationMs,
+  };
+}
+
+function smooth01(value){const t=Math.max(0,Math.min(1,Number(value)||0));return t*t*(3-2*t);}
+
+export function traversalPose(plan, now) {
+  if(!plan)return null;
+  const duration=Math.max(1,Number(plan.durationMs)||1),raw=(Number(now)-Number(plan.startedAt))/duration,p=Math.max(0,Math.min(1,raw));
+  const eased=smooth01(p),sx=Number(plan.startX)||0,sy=Number(plan.startY)||0,sz=Number(plan.startZ)||0,ex=Number(plan.endX)||0,ey=Number(plan.endY)||0,ez=Number(plan.endZ)||0;
+  let x,z,y;
+  if(plan.mode==='vault'){
+    x=sx+(ex-sx)*eased;z=sz+(ez-sz)*eased;
+    const base=sy+(ey-sy)*eased,peak=Math.max(Number(plan.peakY)||base,sy,ey);
+    y=base+Math.sin(Math.PI*p)*Math.max(0,peak-(sy+ey)*.5);
+  }else{
+    // Mantle is a two-stage pull: rise to hand height, then move the hips onto
+    // the ledge. The motion is deterministic on client and server.
+    const lift=smooth01(Math.min(1,p/.56)),pull=smooth01(Math.max(0,(p-.30)/.70));
+    const grabY=Math.max(ey+.055,Math.min(Number(plan.peakY)||ey+.10,ey+.18));
+    x=sx+(ex-sx)*pull;z=sz+(ez-sz)*pull;y=sy+(grabY-sy)*lift+(ey-grabY)*smooth01(Math.max(0,(p-.62)/.38));
+  }
+  return {x,y,z,progress:p,done:raw>=1,mode:plan.mode};
 }
 
 export function tacticalThrowVelocity(yaw, pitch, speed, loft) {

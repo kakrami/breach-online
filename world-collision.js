@@ -1,9 +1,12 @@
-import { ARENA_LIMIT, PLAYER_HEIGHT, PLAYER_RADIUS, WORLD_PLAYER_COLLIDERS } from './world-geometry.js';
+import { ARENA_LIMIT, PLAYER_HEIGHT, PLAYER_RADIUS, WORLD_PLAYER_COLLIDERS, worldSupportHeight } from './world-geometry.js';
 
 const CELL_SIZE = 8;
 const CELL_HEIGHT = 3;
 const HORIZONTAL_SKIN = 0.015;
 const VERTICAL_SKIN = 0.04;
+const TRAVERSE_PROBE = 1.45;
+const VAULT_MAX_RISE = 1.08;
+const MANTLE_MAX_RISE = 1.25;
 const grid = new Map();
 const entries = [];
 const keyFor = (cx,cy,cz) => `${cx},${cy},${cz}`;
@@ -42,6 +45,10 @@ function rampTopAt(collider,x){
   return collider.y0+(collider.y1-collider.y0)*t;
 }
 
+function colliderTopAt(collider,x){
+  return collider.type==='ramp'?rampTopAt(collider,x):collider.maxY;
+}
+
 let stamp=0;
 export function worldBlockerAt(x,z,y,height=PLAYER_HEIGHT,radius=PLAYER_RADIUS){
   const px=Number(x),pz=Number(z),py=Number(y),h=Math.max(0,Number(height)||PLAYER_HEIGHT),r=Math.max(0,Number(radius)||PLAYER_RADIUS);
@@ -74,6 +81,90 @@ export function worldBlockerAt(x,z,y,height=PLAYER_HEIGHT,radius=PLAYER_RADIUS){
 
 export function worldBlockedAt(x,z,y,height=PLAYER_HEIGHT,radius=PLAYER_RADIUS){
   return worldBlockerAt(x,z,y,height,radius)!==null;
+}
+
+function clearStandingAt(x,z,y,height,radius){
+  return !worldBlockerAt(x,z,y+.018,height,radius);
+}
+
+function findFrontBlocker(x,y,z,dx,dz,height,radius){
+  for(let distance=.08;distance<=TRAVERSE_PROBE;distance+=.07){
+    const px=x+dx*distance,pz=z+dz*distance,c=worldBlockerAt(px,pz,y,height,radius);
+    if(c&&c.role!=='arena'&&c.role!=='invalid')return {collider:c,distance,probeX:px,probeZ:pz};
+  }
+  return null;
+}
+
+function vaultLanding(x,y,z,dx,dz,height,radius,hit,topY){
+  let sawBlocked=false;
+  for(let distance=Math.max(.12,hit.distance);distance<=3.05;distance+=.07){
+    const px=x+dx*distance,pz=z+dz*distance;
+    const obstacle=worldBlockerAt(px,pz,y,height,radius);
+    if(obstacle){sawBlocked=true;continue;}
+    if(!sawBlocked)continue;
+    const support=worldSupportHeight(px,pz,y,false,radius);
+    if(Math.abs(support-y)>.82)continue;
+    if(!clearStandingAt(px,pz,support,height,radius))continue;
+    return {endX:px,endY:support,endZ:pz,peakY:Math.max(topY+.20,y+.62)};
+  }
+  return null;
+}
+
+function boxMantleLanding(c,x,y,z,dx,dz,height,radius,hit,topY){
+  const inset=radius+.065,minX=c.minX+inset,maxX=c.maxX-inset,minZ=c.minZ+inset,maxZ=c.maxZ-inset;
+  if(minX>maxX||minZ>maxZ)return null;
+  for(let distance=Math.max(hit.distance,.10);distance<=hit.distance+2.15;distance+=.055){
+    const px=x+dx*distance,pz=z+dz*distance;
+    if(px<minX||px>maxX||pz<minZ||pz>maxZ)continue;
+    if(!clearStandingAt(px,pz,topY,height,radius))continue;
+    const support=worldSupportHeight(px,pz,topY,false,radius);
+    if(Math.abs(support-topY)>.09)continue;
+    return {endX:px,endY:topY,endZ:pz,peakY:topY+.12};
+  }
+  return null;
+}
+
+function roundMantleLanding(c,x,y,z,dx,dz,height,radius,topY){
+  const supportRadius=Math.max(radius+.10,Number(c.supportRadius)||c.r),available=supportRadius-radius-.055;
+  if(available<=.05)return null;
+  let ox=x-c.x,oz=z-c.z,len=Math.hypot(ox,oz);
+  if(len<1e-5){ox=-dx;oz=-dz;len=1;}
+  const px=c.x+ox/len*available,pz=c.z+oz/len*available;
+  if(Math.hypot(px-x,pz-z)>2.35)return null;
+  if(!clearStandingAt(px,pz,topY,height,radius))return null;
+  const support=worldSupportHeight(px,pz,topY,false,radius);
+  if(Math.abs(support-topY)>.09)return null;
+  return {endX:px,endY:topY,endZ:pz,peakY:topY+.12};
+}
+
+export function findTraversalCandidate({x,y,z,dirX,dirZ,height=PLAYER_HEIGHT,radius=PLAYER_RADIUS,airborne=false}={}){
+  const px=Number(x),py=Number(y),pz=Number(z),h=Math.max(.2,Number(height)||PLAYER_HEIGHT),r=Math.max(.05,Number(radius)||PLAYER_RADIUS);
+  let dx=Number(dirX)||0,dz=Number(dirZ)||0;const len=Math.hypot(dx,dz);
+  if(!Number.isFinite(px)||!Number.isFinite(py)||!Number.isFinite(pz)||len<.35)return null;
+  dx/=len;dz/=len;
+  const hit=findFrontBlocker(px,py,pz,dx,dz,h,r);if(!hit)return null;
+  const c=hit.collider,mode=c.traversal||'';if(!mode)return null;
+  const topY=colliderTopAt(c,hit.probeX),rise=topY-py;
+  if(!Number.isFinite(topY)||rise<.12)return null;
+  // Thin overhead slabs are ceilings, not mantle ledges. A ledge must have a
+  // face that reaches down near the player's feet.
+  const minY=Number.isFinite(c.minY)?c.minY:Number.isFinite(c.bottomY)?c.bottomY:py;
+  if(minY>py+.34)return null;
+  if(mode==='vault'){
+    if(rise>VAULT_MAX_RISE)return null;
+    const landing=vaultLanding(px,py,pz,dx,dz,h,r,hit,topY);if(!landing)return null;
+    return {mode:'vault',role:c.role||'',rise,topY,...landing,dirX:dx,dirZ:dz};
+  }
+  if(mode==='mantle'){
+    if(!c.supportTop||rise>MANTLE_MAX_RISE)return null;
+    // Higher ledges require the player to actually jump close enough to grab
+    // them. Low waist-height ledges may mantle directly from a jump press.
+    if(!airborne&&rise>.98)return null;
+    const landing=c.type==='box'?boxMantleLanding(c,px,py,pz,dx,dz,h,r,hit,topY):c.type==='round'?roundMantleLanding(c,px,py,pz,dx,dz,h,r,topY):null;
+    if(!landing)return null;
+    return {mode:'mantle',role:c.role||'',rise,topY,...landing,dirX:dx,dirZ:dz};
+  }
+  return null;
 }
 
 export function collisionDebugStats(){return {colliders:entries.length,cells:grid.size};}

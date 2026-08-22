@@ -7,9 +7,9 @@ import {
   DEFAULT_MATCH_RULES, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, GROUND_FOLLOW_DROP
 } from './game-config.js';
 import { normalizeMatchRules, defaultMatchState, normalizeMatchState, publicMatchState, matchRulesAreDefault } from './match-model.js';
-import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback, sweepHorizontalMovement, tacticalThrowVelocity } from './movement-model.js';
+import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback, sweepHorizontalMovement, createTraversalPlan, traversalPose, tacticalThrowVelocity } from './movement-model.js';
 import { projectileSegmentHitZone, segmentFirstWorldHitT, segmentFirstWorldOcclusionT, segmentHitsObstacle, actorHasLineOfSight } from './server-collision.js';
-import { worldBlockedAt } from './world-collision.js';
+import { worldBlockedAt, findTraversalCandidate } from './world-collision.js';
 
 const GAME_VERSION = APP_VERSION;
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -269,6 +269,7 @@ function publicPlayer(attachment) {
     grounded: attachment.serverGrounded !== false,
     verticalVelocity: finiteNumber(attachment.verticalVelocity, 0),
     jumpSeq: Math.max(0, Math.floor(finiteNumber(attachment.lastJumpSeq, 0))),
+    traversal: attachment.traversal ? {mode:attachment.traversal.mode,role:attachment.traversal.role||'',seq:attachment.traversal.seq,startX:attachment.traversal.startX,startY:attachment.traversal.startY,startZ:attachment.traversal.startZ,endX:attachment.traversal.endX,endY:attachment.traversal.endY,endZ:attachment.traversal.endZ,peakY:attachment.traversal.peakY,startedAt:attachment.traversal.startedAt,durationMs:attachment.traversal.durationMs} : null,
   };
 }
 
@@ -293,6 +294,7 @@ function publicBot(bot) {
     reloadWeapon: bot.reloadWeapon || "",
     kills: Math.max(0, Math.floor(finiteNumber(bot.kills, 0))),
     deaths: Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))),
+    traversal: bot.traversal ? {mode:bot.traversal.mode,role:bot.traversal.role||'',seq:bot.traversal.seq,startX:bot.traversal.startX,startY:bot.traversal.startY,startZ:bot.traversal.startZ,endX:bot.traversal.endX,endY:bot.traversal.endY,endZ:bot.traversal.endZ,peakY:bot.traversal.peakY,startedAt:bot.traversal.startedAt,durationMs:bot.traversal.durationMs} : null,
   };
 }
 
@@ -312,7 +314,7 @@ function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
     weapon:safePrimaryWeapon(player.primaryWeapon),ammo:freshAmmo(),equipment:freshEquipment(),reloadAt:0,reloadWeapon:'',
     fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,ads:false,crouched:false,moveSpeed:0,
     verticalVelocity:0,serverGrounded:true,lastVerticalAt:now,lastStateAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
-    flashUntil:0,flashPower:0,flashDurationMs:0,knockVelocityX:0,knockVelocityZ:0,
+    flashUntil:0,flashPower:0,flashDurationMs:0,knockVelocityX:0,knockVelocityZ:0,traversal:null,lastTraverseSeq:0,
   };
   if(resetStats)Object.assign(next,{kills:0,deaths:0,multiKillCount:0,lastKillAt:0});
   return next;
@@ -338,6 +340,8 @@ function makeBot(team, teamIndex) {
     regenAt: 0,
     kills: 0,
     deaths: 0,
+    traversal: null,
+    traverseSeq: 0,
   };
 }
 function makeBots(blueBots, redBots) {
@@ -977,6 +981,7 @@ export class GameRoom {
       verticalVelocity: finiteNumber(preserved?.verticalVelocity, 0),
       serverGrounded: preserved?.serverGrounded !== false,
       lastJumpSeq: Math.max(0, Math.floor(finiteNumber(preserved?.lastJumpSeq, 0))),
+      traversal:null,lastTraverseSeq:Math.max(0,Math.floor(finiteNumber(preserved?.lastTraverseSeq,0))),
       lastVerticalAt: Date.now(),
       lastStateAt: Date.now(),
       moveBudgetSec: MOVE_BUDGET_INITIAL_SEC,
@@ -1042,13 +1047,15 @@ export class GameRoom {
     const settings = meta.settings;
 
     me = this.advanceReloadForSocket(socket, me, now, settings);
+    me = this.advanceTraversalState(me, now);
+    socket.serializeAttachment(me);
 
     if (payload.t === "state") {
       if (me.hp > 0 || now >= me.wastedUntil) {
         const next = this.validateHumanState(me, payload, now, settings);
         me = next.player;
         socket.serializeAttachment(me);
-        const state = { t: "state", id: me.clientId, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched };
+        const state = { t: "state", id: me.clientId, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched, traversal:me.traversal?.mode||'' };
         this.broadcast(state, socket);
         if (next.corrected) sendJson(socket,{
           t:"correction",x:me.x,y:me.y,z:me.z,vertical:next.verticalCorrected,
@@ -1060,6 +1067,19 @@ export class GameRoom {
     }
 
 
+    if (payload.t === "traverse") {
+      const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0))),previousSeq=Math.max(0,Math.floor(finiteNumber(me.lastTraverseSeq,0)));
+      if(seq<=previousSeq||me.traversal||meta.match.status!=='active'||me.hp<=0||now<me.wastedUntil){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
+      let dirX=clamp(finiteNumber(payload.dirX,0),-1,1),dirZ=clamp(finiteNumber(payload.dirZ,0),-1,1),dirLen=Math.hypot(dirX,dirZ);
+      if(dirLen<.35){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}dirX/=dirLen;dirZ/=dirLen;
+      const playerHeight=me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT,candidate=findTraversalCandidate({x:me.x,y:me.y,z:me.z,dirX,dirZ,height:playerHeight,radius:PLAYER_RADIUS,airborne:me.serverGrounded===false});
+      const solidActors=this.solidActors(me.clientId,now);
+      if(!candidate||this.actorBlocksAt(candidate.endX,candidate.endZ,candidate.endY,me.x,me.z,solidActors,playerHeight)){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
+      const plan=createTraversalPlan(candidate,me.x,me.y,me.z,now,seq);if(!plan){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
+      me={...me,traversal:plan,lastTraverseSeq:seq,verticalVelocity:0,serverGrounded:false,ads:false,moveSpeed:0};socket.serializeAttachment(me);
+      const event={t:'traverse',id:me.clientId,accepted:true,...plan};sendJson(socket,event);this.broadcast(event,socket);return;
+    }
+
     if (payload.t === "simTick") { await this.stepSimulation(now, meta); return; }
 
     if (payload.t === "fire") {
@@ -1068,6 +1088,7 @@ export class GameRoom {
       if(requestedWeapon!==me.weapon){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'weapon_mismatch'});return;}
       const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon],unlimited=!!me.godMode;
       if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'dead'});return;}
+      if(me.traversal){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'traversing'});return;}
       if(!unlimited&&me.reloadAt){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'reloading'});return;}
       const switchReadyAt=finiteNumber(me.weaponReadyAt,0),shotReadyAt=finiteNumber(me.fireReadyAt[weapon],0),readyAt=Math.max(switchReadyAt,shotReadyAt);
       if(now<readyAt){const retryAfterMs=Math.max(1,Math.ceil(readyAt-now)),reason=switchReadyAt>=shotReadyAt?'weapon_switch':'cooldown';sendLoadout(socket,me,{action:'fire',accepted:false,reason,retryAfterMs});return;}
@@ -1088,7 +1109,7 @@ export class GameRoom {
       if(meta.match.status!=='active'){sendJson(socket,{t:'throwAck',id:safeClientId(payload.id).slice(0,24),accepted:false,reason:'match_inactive'});return;}
       const kind=safeEquipmentKind(payload.kind),unlimited=!!me.godMode;
       const requestedId=safeClientId(payload.id).slice(0,24),id=requestedId&&!this.throwables.has(requestedId)?requestedId:crypto.randomUUID().replace(/-/g,'').slice(0,16);
-      if(me.hp<=0||now<me.wastedUntil||now<finiteNumber(me.equipmentReadyAt,0)||(!unlimited&&me.equipment[kind]<=0)){sendJson(socket,{t:'throwAck',id:requestedId||id,accepted:false});return;}
+      if(me.hp<=0||now<me.wastedUntil||me.traversal||now<finiteNumber(me.equipmentReadyAt,0)||(!unlimited&&me.equipment[kind]<=0)){sendJson(socket,{t:'throwAck',id:requestedId||id,accepted:false});return;}
       me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.25,1.15);
       const flashPower=activeFlashPower(me,now);let throwYaw=me.yaw,throwPitch=me.pitch;
       if(flashPower>.02){const flashSpread=.025+flashPower*.16;throwYaw+=(Math.random()-.5)*2*flashSpread;throwPitch=clamp(throwPitch+(Math.random()-.5)*1.4*flashSpread,-1.25,1.15);me.ads=false;}
@@ -1103,6 +1124,7 @@ export class GameRoom {
       if(requestedWeapon!==me.weapon){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'weapon_mismatch'});return;}
       const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon];
       if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'dead'});return;}
+      if(me.traversal){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'traversing'});return;}
       if(me.godMode){sendLoadout(socket,me,{action:'reload',accepted:true,reason:'unlimited',unlimited:true});return;}
       if(me.reloadAt){sendLoadout(socket,me,{action:'reload',accepted:true,reason:'already'});return;}
       if(me.ammo[weapon]>=WEAPON_SPECS[weapon].mag){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'full'});return;}
@@ -1111,6 +1133,7 @@ export class GameRoom {
 
     if (payload.t === "weapon") {
       if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'weapon',accepted:false,reason:'dead'});return;}
+      if(me.traversal){sendLoadout(socket,me,{action:'weapon',accepted:false,reason:'traversing'});return;}
       const weapon=safeWeapon(payload.weapon);
       if(!playerCanEquip(me,weapon)){sendLoadout(socket,me,{action:'weapon',accepted:false,reason:'loadout'});return;}
       if(weapon!==me.weapon){me.weapon=weapon;me.reloadAt=0;me.reloadWeapon="";me.weaponReadyAt=now+WEAPON_SWITCH_LOCK_MS;socket.serializeAttachment(me);this.broadcast({t:'weapon',id:me.clientId,weapon},socket);}
@@ -1291,9 +1314,21 @@ export class GameRoom {
     return false;
   }
 
+  advanceTraversalState(me, now) {
+    if(!me?.traversal)return me;
+    const pose=traversalPose(me.traversal,now);if(!pose){return {...me,traversal:null};}
+    const next={...me,x:pose.x,y:pose.y,z:pose.z,verticalVelocity:0,serverGrounded:false,moveSpeed:0,lastVerticalAt:now};
+    if(pose.done){next.x=me.traversal.endX;next.y=me.traversal.endY;next.z=me.traversal.endZ;next.traversal=null;next.serverGrounded=true;next.moveBudgetSec=MOVE_BUDGET_INITIAL_SEC;}
+    return next;
+  }
+
   validateHumanState(me, payload, now, settings) {
     const desiredX = clamp(finiteNumber(payload.x, me.x), -ARENA_LIMIT, ARENA_LIMIT);
     const desiredZ = clamp(finiteNumber(payload.z, me.z), -ARENA_LIMIT, ARENA_LIMIT);
+    if(me.traversal){
+      const desiredY=finiteNumber(payload.y,me.y),error=Math.hypot(desiredX-me.x,desiredY-me.y,desiredZ-me.z);
+      return {corrected:error>.18,verticalCorrected:false,player:{...me,lastStateAt:now,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,moveSpeed:0}};
+    }
     const elapsed = clamp((now - finiteNumber(me.lastStateAt, now)) / 1000, 0, 0.25);
     const flashPower = activeFlashPower(me, now);
     const ads = flashPower > 0.12 ? false : !!payload.ads;
@@ -1589,10 +1624,15 @@ export class GameRoom {
       if (bot.hp <= 0) {
         if (now >= bot.wastedUntil) {
           const spawn = spawnForTeam(bot.team, i + Math.floor(Math.random() * TEAM_SPAWNS[safeTeam(bot.team)].length));
-          Object.assign(bot, spawn, { hp: 100, wastedUntil: 0, regenAt: 0, weapon: "assault", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "", flashUntil: 0, flashSpin: 0 });
+          Object.assign(bot, spawn, { hp: 100, wastedUntil: 0, regenAt: 0, weapon: "assault", ammo: freshAmmo(), reloadAt: 0, reloadWeapon: "", flashUntil: 0, flashSpin: 0, traversal: null });
           this.broadcast({ t: "respawn", player: publicBot(bot) });
         }
         continue;
+      }
+      if(bot.traversal){
+        const pose=traversalPose(bot.traversal,now);
+        if(pose){bot.x=pose.x;bot.y=pose.y;bot.z=pose.z;if(pose.done){bot.x=bot.traversal.endX;bot.y=bot.traversal.endY;bot.z=bot.traversal.endZ;bot.traversal=null;}else continue;}
+        else bot.traversal=null;
       }
       if (bot.reloadAt && now >= bot.reloadAt) {
         bot.reloadAt = 0;
@@ -1629,6 +1669,13 @@ export class GameRoom {
       bot.yaw = Math.atan2(-nearest.dx, -nearest.dz);
       {
         const ux = nearest.dx / d, uz = nearest.dz / d, solidActors=this.solidActors(bot.id,now);
+        const tryTraverse=(ax,az)=>{
+          const len=Math.hypot(ax,az);if(len<.2||bot.traversal)return false;
+          const dirX=ax/len,dirZ=az/len,candidate=findTraversalCandidate({x:bot.x,y:bot.y,z:bot.z,dirX,dirZ,height:PLAYER_HEIGHT,radius:PLAYER_RADIUS,airborne:false});
+          if(!candidate||this.actorBlocksAt(candidate.endX,candidate.endZ,candidate.endY,bot.x,bot.z,solidActors,PLAYER_HEIGHT))return false;
+          const plan=createTraversalPlan(candidate,bot.x,bot.y,bot.z,now,++bot.traverseSeq);if(!plan)return false;
+          bot.traversal=plan;this.broadcast({t:'traverse',id:bot.id,accepted:true,...plan});return true;
+        };
         const tryMove=(ax,az,step)=>{
           const fromX=bot.x,fromZ=bot.z,nx=bot.x+ax*step,nz=bot.z+az*step;
           if(!worldBlockedAt(nx,bot.z,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(nx,bot.z,bot.y,fromX,fromZ,solidActors)&&!worldBlockedAt(nx,nz,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(nx,nz,bot.y,fromX,fromZ,solidActors)){bot.x=nx;bot.z=nz;return true;}
@@ -1638,7 +1685,7 @@ export class GameRoom {
         if(d>profile.preferredRange){
           const speed=d>16?settings.movement.runSpeed*profile.moveRun:settings.movement.walkSpeed*profile.moveWalk;
           const step=Math.min(d-profile.preferredRange,speed*dt);
-          if(!tryMove(ux,uz,step))tryMove(-uz,ux,step*.82)||tryMove(uz,-ux,step*.82);
+          if(!tryMove(ux,uz,step)&&!tryTraverse(ux,uz))tryMove(-uz,ux,step*.82)||tryMove(uz,-ux,step*.82);
         }else if(profile.strafe>0&&d<=profile.range){
           if(!bot.strafeUntil||now>=bot.strafeUntil){bot.strafeDir=Math.random()<.5?-1:1;bot.strafeUntil=now+650+Math.random()*850;}
           const sx=-uz*(bot.strafeDir||1),sz=ux*(bot.strafeDir||1),step=settings.movement.walkSpeed*profile.strafe*dt;
@@ -1873,6 +1920,7 @@ export class GameRoom {
     const wasted = target.hp <= 0;
     let multiKill = 0;
     if (wasted) {
+      target.traversal = null;
       target.wastedUntil = now + settings.combat.respawnMs;
       target.deaths = Math.max(0, Math.floor(finiteNumber(target.deaths, 0))) + 1;
       target.multiKillCount = 0;
@@ -1897,6 +1945,7 @@ export class GameRoom {
     const wasted = bot.hp <= 0;
     let multiKill = 0;
     if (wasted) {
+      bot.traversal = null;
       bot.wastedUntil = now + settings.combat.respawnMs;
       bot.deaths = Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))) + 1;
       bot.multiKillCount = 0;
