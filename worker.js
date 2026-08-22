@@ -9,7 +9,7 @@ import {
 import { normalizeMatchRules, defaultMatchState, normalizeMatchState, publicMatchState, matchRulesAreDefault } from './match-model.js';
 import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback, sweepHorizontalMovement, createTraversalPlan, traversalPose, tacticalThrowVelocity } from './movement-model.js';
 import { projectileSegmentHitZone, segmentFirstWorldHitT, segmentFirstWorldOcclusionT, segmentHitsObstacle, actorHasLineOfSight } from './server-collision.js';
-import { worldBlockedAt, findTraversalCandidate } from './world-collision.js';
+import { worldBlockedAt, worldMoveBlockedAt, findTraversalCandidate } from './world-collision.js';
 
 const GAME_VERSION = APP_VERSION;
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -723,7 +723,7 @@ export class GameRoom {
     this.simAccumulatorMs = 0;
   }
 
-  broadcastMatch(meta,now=Date.now()){this.broadcast({t:'match',match:publicMatchState(meta.match,now),custom:this.isCustomMatch(meta)});}
+  broadcastMatch(meta,now=Date.now(),extra={}){this.broadcast({t:'match',match:publicMatchState(meta.match,now),custom:this.isCustomMatch(meta),...extra});}
 
   finishMatch(meta,winner,reason,now=Date.now()){
     const match=meta.match;if(match.status==='ended')return false;
@@ -1174,7 +1174,7 @@ export class GameRoom {
       const mode=normalizeGameMode(payload.mode),spec=gameModeSpec(mode);meta.match={...meta.match,mode,blueScore:0,redScore:0,scoreLimit:spec.scoreLimit,timeLimitMs:spec.timeLimitMs,winner:'',winnerId:'',winnerName:'',reason:'',updatedAt:now};
       for(const s of this.ctx.getWebSockets()){const p=s.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;p.pendingTeam='';s.serializeAttachment(p);}
       this.bots=reconcileBots(this.bots,meta.blueBots||0,meta.redBots||0,mode);await this.ctx.storage.put('bots',this.bots);
-      await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);this.broadcastMatch(meta,now);this.broadcast({t:'bots',config:{blueBots:meta.blueBots||0,redBots:meta.redBots||0,difficulty:safeBotDifficulty(meta.botDifficulty)},bots:this.bots.map(publicBot)});return;
+      await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);this.broadcastMatch(meta,now,{rulesUpdated:true,by:me.clientId});this.broadcast({t:'bots',config:{blueBots:meta.blueBots||0,redBots:meta.redBots||0,difficulty:safeBotDifficulty(meta.botDifficulty)},bots:this.bots.map(publicBot)});return;
     }
 
     if(payload.t==='startMatch'){
@@ -1270,10 +1270,16 @@ export class GameRoom {
         sendJson(socket,{t:"notice",tone:"error",text:"Admin access required."});
         return;
       }
-      const nextSettings = normalizeWorldSettings(payload.settings);
+      const section = payload.section === 'advanced' ? 'advanced' : 'gameplay';
+      const patch = payload.patch && typeof payload.patch === 'object' ? payload.patch : payload.settings && typeof payload.settings === 'object' ? payload.settings : {};
+      const current = normalizeWorldSettings(meta.settings);
+      const merged = section === 'advanced'
+        ? { ...current, weapons:Object.fromEntries(WEAPON_ORDER.map(name=>[name,{...current.weapons[name],...(patch.weapons?.[name]||{})}])) }
+        : { ...current, movement:{...current.movement,...(patch.movement||{})}, combat:{...current.combat,...(patch.combat||{})} };
+      const nextSettings = normalizeWorldSettings(merged);
       meta.settings = nextSettings;
       await this.putMeta(meta);
-      this.broadcast({ t: "settings", settings: nextSettings, by: me.clientId, custom:this.isCustomMatch(meta) });
+      this.broadcast({ t: "settings", settings: nextSettings, section, by: me.clientId, custom:this.isCustomMatch(meta) });
       await this.updateDirectory(this.liveSockets().length, meta);
       return;
     }
@@ -1289,7 +1295,7 @@ export class GameRoom {
       if(match.status==='active'&&match.startedAt)match.endsAt=match.timeLimitMs>0?match.startedAt+match.timeLimitMs:0;
       match.updatedAt = now; meta.match = match;
       this.matchDirty = true; await this.putMeta(meta); this.matchDirty = false;
-      this.broadcastMatch(meta, now); await this.updateDirectory(this.liveSockets().length, meta);
+      this.broadcastMatch(meta, now, {rulesUpdated:true,by:me.clientId}); await this.updateDirectory(this.liveSockets().length, meta);
       if(match.status==='active'&&gameModeSpec(match.mode).scoreType==='team'&&(match.blueScore>=match.scoreLimit||match.redScore>=match.scoreLimit)){
         const winner=match.blueScore===match.redScore?'draw':match.blueScore>match.redScore?'blue':'red';this.finishMatch(meta,winner,'score',now);
       }else if(match.status==='active'&&gameModeSpec(match.mode).scoreType==='player'){
@@ -1440,7 +1446,7 @@ export class GameRoom {
     const horizontal = sweepHorizontalMovement({
       x:me.x,y:me.y,z:me.z,dx,dz,grounded:serverGrounded,arenaLimit:ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,
       supportHeight:(x,z,y)=>worldSupportHeight(x,z,y,crouched),
-      blockedAt:(x,z,y,fromX,fromZ)=>worldBlockedAt(x,z,y,playerHeight,PLAYER_RADIUS)||this.actorBlocksAt(x,z,y,fromX,fromZ,solidActors,playerHeight),
+      blockedAt:(x,z,y,fromX,fromZ)=>worldMoveBlockedAt(x,z,y,fromX,fromZ,playerHeight,PLAYER_RADIUS)||this.actorBlocksAt(x,z,y,fromX,fromZ,solidActors,playerHeight),
     });
     let x=horizontal.x,z=horizontal.z,walkY=horizontal.y,followsSupport=horizontal.grounded;
 

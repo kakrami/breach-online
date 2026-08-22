@@ -83,6 +83,51 @@ export function worldBlockedAt(x,z,y,height=PLAYER_HEIGHT,radius=PLAYER_RADIUS){
   return worldBlockerAt(x,z,y,height,radius)!==null;
 }
 
+function horizontalSignedDistance(collider,x,z){
+  if(collider.type==='round')return Math.hypot(x-collider.x,z-collider.z)-collider.r;
+  const b=collider.type==='ramp'?boundsFor(collider):{minX:collider.minX,maxX:collider.maxX,minZ:collider.minZ,maxZ:collider.maxZ};
+  const dx=Math.max(b.minX-x,0,x-b.maxX),dz=Math.max(b.minZ-z,0,z-b.maxZ);
+  if(dx||dz)return Math.hypot(dx,dz);
+  return -Math.min(x-b.minX,b.maxX-x,z-b.minZ,b.maxZ-z);
+}
+
+function colliderBlocksAt(collider,x,z,y,height,effectiveRadius){
+  const b=boundsFor(collider);
+  if(collider.type==='ramp'){
+    if(!circleTouchesBox(x,z,effectiveRadius,b.minX,b.maxX,b.minZ,b.maxZ))return false;
+    return verticalOverlap(y,height,collider.bottomY,rampTopAt(collider,x));
+  }
+  if(!verticalOverlap(y,height,b.minY,b.maxY))return false;
+  if(collider.type==='box')return circleTouchesBox(x,z,effectiveRadius,b.minX,b.maxX,b.minZ,b.maxZ);
+  return Math.hypot(x-collider.x,z-collider.z)<collider.r+effectiveRadius;
+}
+
+// Normal collision rejects new penetration, but a player who just stepped off
+// a roof can legitimately begin a frame slightly overlapping the wall/slab
+// below. Allow motion that strictly reduces every existing overlap. Without
+// this, slow walk-offs could freeze horizontally against the ledge until the
+// player fell all the way to the ground.
+export function worldMoveBlockedAt(x,z,y,fromX,fromZ,height=PLAYER_HEIGHT,radius=PLAYER_RADIUS){
+  const px=Number(x),pz=Number(z),py=Number(y),fx=Number(fromX),fz=Number(fromZ),h=Math.max(0,Number(height)||PLAYER_HEIGHT),r=Math.max(0,Number(radius)||PLAYER_RADIUS);
+  if(!Number.isFinite(px)||!Number.isFinite(pz)||!Number.isFinite(py)||!Number.isFinite(fx)||!Number.isFinite(fz))return true;
+  const effectiveRadius=Math.max(0,r-HORIZONTAL_SKIN);
+  if(Math.abs(px)+effectiveRadius>ARENA_LIMIT||Math.abs(pz)+effectiveRadius>ARENA_LIMIT)return true;
+  stamp=(stamp+1)>>>0;if(!stamp){for(const entry of entries)entry.visit=0;stamp=1;}
+  const minCX=Math.floor((px-r)/CELL_SIZE),maxCX=Math.floor((px+r)/CELL_SIZE),minCY=Math.floor(py/CELL_HEIGHT),maxCY=Math.floor((py+h)/CELL_HEIGHT),minCZ=Math.floor((pz-r)/CELL_SIZE),maxCZ=Math.floor((pz+r)/CELL_SIZE);
+  for(let cx=minCX;cx<=maxCX;cx++)for(let cy=minCY;cy<=maxCY;cy++)for(let cz=minCZ;cz<=maxCZ;cz++){
+    const list=grid.get(keyFor(cx,cy,cz));if(!list)continue;
+    for(const entry of list){
+      if(entry.visit===stamp)continue;entry.visit=stamp;const c=entry.collider;
+      if(!colliderBlocksAt(c,px,pz,py,h,effectiveRadius))continue;
+      const wasBlocked=colliderBlocksAt(c,fx,fz,py,h,effectiveRadius);
+      if(!wasBlocked)return true;
+      const before=horizontalSignedDistance(c,fx,fz),after=horizontalSignedDistance(c,px,pz);
+      if(!(after>before+.0005))return true;
+    }
+  }
+  return false;
+}
+
 function clearStandingAt(x,z,y,height,radius){
   return !worldBlockerAt(x,z,y+.018,height,radius);
 }

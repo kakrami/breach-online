@@ -63,17 +63,21 @@ export function sweepHorizontalMovement({
   const sx = sxTotal / steps, sz = szTotal / steps;
   let blockedAny = false;
   for (let i = 0; i < steps; i += 1) {
-    const fromX = px, fromZ = pz;
-    const nextX = Math.max(-limit, Math.min(limit, px + sx));
-    const nextXY = stepY(nextX, pz);
-    if (!blocked(nextX, pz, nextXY, fromX, fromZ)) { px = nextX; py = nextXY; } else blockedAny = true;
-    followGround();
+    if(Math.abs(sx)>1e-9){
+      const fromX = px, fromZ = pz;
+      const nextX = Math.max(-limit, Math.min(limit, px + sx));
+      const nextXY = stepY(nextX, pz);
+      if (!blocked(nextX, pz, nextXY, fromX, fromZ)) { px = nextX; py = nextXY; } else blockedAny = true;
+      followGround();
+    }
 
-    const beforeZx = px, beforeZz = pz;
-    const nextZ = Math.max(-limit, Math.min(limit, pz + sz));
-    const nextZY = stepY(px, nextZ);
-    if (!blocked(px, nextZ, nextZY, beforeZx, beforeZz)) { pz = nextZ; py = nextZY; } else blockedAny = true;
-    followGround();
+    if(Math.abs(sz)>1e-9){
+      const beforeZx = px, beforeZz = pz;
+      const nextZ = Math.max(-limit, Math.min(limit, pz + sz));
+      const nextZY = stepY(px, nextZ);
+      if (!blocked(px, nextZ, nextZY, beforeZx, beforeZz)) { pz = nextZ; py = nextZY; } else blockedAny = true;
+      followGround();
+    }
   }
 
   return { x:px, y:py, z:pz, grounded:followsSupport, blocked:blockedAny };

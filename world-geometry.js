@@ -32,6 +32,8 @@ export const NATURAL_OBSTACLES = [
 ];
 
 const clamp = (v,min,max)=>Math.max(min,Math.min(max,v));
+const SUPPORT_CONTACT_RADIUS = 0.075;
+const CEILING_HEAD_RADIUS = 0.22;
 
 export function rawTerrainHeight(x,z){
   const rolling=0.55+1.15*Math.sin(x*0.031)*Math.cos(z*0.027)+0.72*Math.sin((x+z)*0.021)+0.48*Math.cos((x-z)*0.018);
@@ -192,7 +194,23 @@ export function buildingPlan(b){
 
 function addBox(parts,role,x,z,w,d,bottomY,topY,flags={}){
   if(w<=0||d<=0||topY-bottomY<=0)return;
-  parts.push({role,x,z,w,d,bottomY,topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:!!flags.crouchStep,traversal:flags.traversal||''});
+  parts.push({role,x,z,w,d,bottomY,topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:!!flags.crouchStep,traversal:flags.traversal||'',decorative:!!flags.decorative});
+}
+
+function addFrameX(parts,b,z,base,level,opening){
+  const y=base+level*b.floorH,bars=.095,depth=.07,h=opening.top-opening.bottom;
+  addBox(parts,'trim',b.x+opening.u-opening.w/2,z,bars,depth,y+opening.bottom,y+opening.bottom+h,{playerSolid:false,projectileSolid:false,decorative:true});
+  addBox(parts,'trim',b.x+opening.u+opening.w/2,z,bars,depth,y+opening.bottom,y+opening.bottom+h,{playerSolid:false,projectileSolid:false,decorative:true});
+  addBox(parts,'trim',b.x+opening.u,z,opening.w,depth,y+opening.top-bars,y+opening.top,{playerSolid:false,projectileSolid:false,decorative:true});
+  if(opening.kind==='window')addBox(parts,'trim',b.x+opening.u,z,opening.w,depth,y+opening.bottom,y+opening.bottom+bars,{playerSolid:false,projectileSolid:false,decorative:true});
+}
+
+function addFrameZ(parts,b,x,base,level,opening){
+  const y=base+level*b.floorH,bars=.095,depth=.07,h=opening.top-opening.bottom;
+  addBox(parts,'trim',x,b.z+opening.u-opening.w/2,depth,bars,y+opening.bottom,y+opening.bottom+h,{playerSolid:false,projectileSolid:false,decorative:true});
+  addBox(parts,'trim',x,b.z+opening.u+opening.w/2,depth,bars,y+opening.bottom,y+opening.bottom+h,{playerSolid:false,projectileSolid:false,decorative:true});
+  addBox(parts,'trim',x,b.z+opening.u,depth,opening.w,y+opening.top-bars,y+opening.top,{playerSolid:false,projectileSolid:false,decorative:true});
+  if(opening.kind==='window')addBox(parts,'trim',x,b.z+opening.u,depth,opening.w,y+opening.bottom,y+opening.bottom+bars,{playerSolid:false,projectileSolid:false,decorative:true});
 }
 
 export function makeBuildingGeometry(b){
@@ -205,6 +223,7 @@ export function makeBuildingGeometry(b){
       addBox(parts,'wall',x,z,cell.w+.015,t,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep,traversal:cell.crouchStep?'vault':''});
       if(cell.crouchStep)supports.push({type:'rect',x,z,w:cell.w+.015,d:t,y:topY,role:'windowSill',crouchStep:true});
     }
+    for(const opening of openings)addFrameX(parts,b,z+(side==='front'?-.012:.012),base,level,opening);
   };
   const addWallZ=(x,level,side)=>{
     const openings=buildingWallOpenings(b,level,side);
@@ -213,6 +232,7 @@ export function makeBuildingGeometry(b){
       addBox(parts,'wall',x,z,t,cell.w+.015,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep,traversal:cell.crouchStep?'vault':''});
       if(cell.crouchStep)supports.push({type:'rect',x,z,w:t,d:cell.w+.015,y:topY,role:'windowSill',crouchStep:true});
     }
+    for(const opening of openings)addFrameZ(parts,b,x+(side==='left'?-.012:.012),base,level,opening);
   };
   for(let level=0;level<levels;level++){
     addWallX(b.z-b.d/2+t/2,level,'front');addWallX(b.z+b.d/2-t/2,level,'back');
@@ -267,24 +287,22 @@ export function makeBuildingGeometry(b){
       // the matching continuous ramp top, so the camera stays smooth without
       // allowing the player to pass through an open/non-physical stair model.
       addBox(parts,'stairStep',x,laneZ,treadW,plan.stairW,floorY,tread,{playerSolid:false,projectileSolid:true,supportTop:false});
-      horizontalSolids.push({x,z:laneZ,w:treadW,d:plan.stairW,bottomY:floorY,topY:tread,role:'stairStep'});
+      // Stair treads are a solid stepped projectile volume, but players use the
+      // continuous stair ramp. Treating each tread as an overhead slab made its
+      // floor-level bottom act as a false ceiling while jumping near stairs.
     }
   }
 
   return{levels,base,plan,parts,supports,horizontalSolids,playerRamps};
 }
 
-export const BUILDING_SUPPORTS=[];
-export const BUILDING_HORIZONTAL_SOLIDS=[];
-export const BUILDING_PLAYER_RAMPS=[];
-export const BUILDING_PARTS=[];
-for(const building of BUILDINGS){
-  const geometry=makeBuildingGeometry(building);
-  BUILDING_SUPPORTS.push(...geometry.supports);
-  BUILDING_HORIZONTAL_SOLIDS.push(...geometry.horizontalSolids);
-  BUILDING_PLAYER_RAMPS.push(...geometry.playerRamps);
-  BUILDING_PARTS.push(...geometry.parts);
-}
+export function makeAllBuildingGeometry(){return BUILDINGS.map(makeBuildingGeometry);}
+
+export const BUILDING_GEOMETRY = makeAllBuildingGeometry();
+export const BUILDING_SUPPORTS = BUILDING_GEOMETRY.flatMap(g=>g.supports);
+export const BUILDING_HORIZONTAL_SOLIDS = BUILDING_GEOMETRY.flatMap(g=>g.horizontalSolids);
+export const BUILDING_PLAYER_RAMPS = BUILDING_GEOMETRY.flatMap(g=>g.playerRamps);
+export const BUILDING_PARTS = BUILDING_GEOMETRY.flatMap(g=>g.parts);
 
 export const STATIC_SUPPORTS = STATIC_BOXES.map(o=>({type:'rect',x:o.x,z:o.z,w:o.w,d:o.d,y:terrainHeight(o.x,o.z)+o.h}));
 
@@ -326,15 +344,19 @@ function circleTouchesRect(x,z,r,minX,maxX,minZ,maxZ){
 }
 
 function surfaceHeightAt(surface,x,z,radius=PLAYER_RADIUS){
-  const r=Math.max(0,Number(radius)||0);
+  const r=Math.max(0,Number(radius)||0),contact=Math.min(r,SUPPORT_CONTACT_RADIUS);
   if(surface.type==='rect'){
     const minX=surface.x-surface.w/2,maxX=surface.x+surface.w/2,minZ=surface.z-surface.d/2,maxZ=surface.z+surface.d/2;
-    return circleTouchesRect(x,z,r,minX,maxX,minZ,maxZ)?surface.y:null;
+    // Feet need meaningful contact with a flat surface. Using the whole player
+    // radius made floors/roofs grab the capsule ~38 cm before its center reached
+    // an edge, causing stair-top pops and sticky ledges.
+    return circleTouchesRect(x,z,contact,minX,maxX,minZ,maxZ)?surface.y:null;
   }
+  // Round rocks still require the full capsule footprint to fit on top.
   if(surface.type==='round')return Math.hypot(x-surface.x,z-surface.z)<=Math.max(0,surface.r-r)?surface.y:null;
   if(surface.type==='ramp'){
     const lo=Math.min(surface.x1,surface.x2),hi=Math.max(surface.x1,surface.x2),minZ=surface.z-surface.w/2,maxZ=surface.z+surface.w/2;
-    if(!circleTouchesRect(x,z,r,lo,hi,minZ,maxZ))return null;
+    if(!circleTouchesRect(x,z,contact,lo,hi,minZ,maxZ))return null;
     const sx=clamp(x,lo,hi),span=surface.x2-surface.x1,t=Math.abs(span)>1e-9?(sx-surface.x1)/span:0;
     return surface.y0+(surface.y1-surface.y0)*t;
   }
@@ -359,12 +381,16 @@ export function worldSupportHeight(x,z,currentY=terrainHeight(x,z),allowCrouchSt
 
 export function resolveCeilingCollision(previousY,nextY,x,z,playerHeight=PLAYER_HEIGHT,playerRadius=PLAYER_RADIUS){
   if(nextY<=previousY)return{y:nextY,hit:false};
-  const oldHead=previousY+playerHeight,newHead=nextY+playerHeight,r=Math.max(0,playerRadius-.015);let resolved=nextY,hit=false;
+  const newHead=nextY+playerHeight,r=Math.max(0,Math.min(playerRadius,CEILING_HEAD_RADIUS)-.01);let resolved=nextY,hit=false;
   for(const s of BUILDING_HORIZONTAL_SOLIDS){
     const minX=s.x-s.w/2,maxX=s.x+s.w/2,minZ=s.z-s.d/2,maxZ=s.z+s.d/2;
     const qx=clamp(x,minX,maxX),qz=clamp(z,minZ,maxZ),dx=x-qx,dz=z-qz;
     if(dx*dx+dz*dz>=r*r)continue;
-    if(oldHead<=s.bottomY+.025&&newHead>=s.bottomY-.025){resolved=Math.min(resolved,s.bottomY-playerHeight-.012);hit=true;}
+    // If the feet are still below the slab, any upward head penetration is a
+    // ceiling hit. This also repairs a missed prior frame instead of letting the
+    // player oscillate through the underside. The smaller head probe prevents
+    // full-body-radius snagging at open stair/roof edges.
+    if(previousY<s.bottomY-.01&&newHead>=s.bottomY-.018){resolved=Math.min(resolved,s.bottomY-playerHeight-.012);hit=true;}
   }
   return{y:resolved,hit};
 }
