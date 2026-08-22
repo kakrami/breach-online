@@ -6,7 +6,12 @@ export const CROUCH_WINDOW_STEP_HEIGHT = 0.86;
 
 export const STATIC_BOXES = [
   {x:0,z:0,w:8,d:8,h:3.2},{x:-24,z:-14,w:12,d:5,h:3.0},{x:28,z:19,w:11,d:6,h:3.8},{x:-42,z:34,w:7,d:13,h:4.2},
-  {x:46,z:-36,w:9,d:9,h:3.4},{x:6,z:48,w:14,d:5,h:2.8},{x:-8,z:-52,w:6,d:15,h:3.1}
+  {x:46,z:-36,w:9,d:9,h:3.4},{x:6,z:48,w:14,d:5,h:2.8},{x:-8,z:-52,w:6,d:15,h:3.1},
+  // Low mantleable cover breaks the longest edge-to-edge sightlines without
+  // turning the arena into corridors or sealing off flanking routes.
+  {x:-86,z:-6,w:3,d:8,h:1.85},{x:-42,z:-84,w:8,d:3,h:1.70},{x:0,z:-88,w:3,d:8,h:1.85},{x:44,z:-80,w:8,d:3,h:1.70},
+  {x:86,z:8,w:3,d:8,h:1.85},{x:42,z:84,w:8,d:3,h:1.70},{x:0,z:88,w:3,d:8,h:1.85},{x:-44,z:80,w:8,d:3,h:1.70},
+  {x:-34,z:8,w:6,d:2.6,h:1.60},{x:34,z:-8,w:6,d:2.6,h:1.60}
 ];
 
 export const BUILDINGS = [
@@ -30,6 +35,21 @@ export const NATURAL_OBSTACLES = [
   {type:'rock',x:-54,z:20,r:2.2,h:2.7},{type:'rock',x:-22,z:16,r:1.8,h:2.2},{type:'rock',x:15,z:-58,r:2.1,h:2.5},{type:'rock',x:44,z:54,r:2.3,h:2.8},
   {type:'rock',x:68,z:-4,r:1.9,h:2.3},{type:'rock',x:-70,z:-52,r:2.0,h:2.4},{type:'rock',x:8,z:82,r:1.8,h:2.1},{type:'rock',x:86,z:46,r:2.1,h:2.6}
 ];
+
+// Reachable patrol anchors distributed through each combat region. These are
+// intentionally denser than the old sparse ring so bots can move lane-to-lane
+// without falling back to random wandering at the map edges.
+export const COMBAT_FLOW_NODES = Object.freeze([
+  Object.freeze({x:-36,z:-72}),Object.freeze({x:-90,z:-36}),Object.freeze({x:-54,z:-72}),Object.freeze({x:-72,z:-90}),
+  Object.freeze({x:-36,z:-18}),Object.freeze({x:-36,z:0}),Object.freeze({x:-72,z:-18}),Object.freeze({x:-54,z:-18}),
+  Object.freeze({x:-36,z:54}),Object.freeze({x:-36,z:36}),Object.freeze({x:-54,z:54}),Object.freeze({x:-36,z:72}),
+  Object.freeze({x:0,z:-36}),Object.freeze({x:18,z:-54}),Object.freeze({x:18,z:-36}),Object.freeze({x:0,z:-72}),
+  Object.freeze({x:0,z:-18}),Object.freeze({x:18,z:0}),Object.freeze({x:-18,z:-18}),Object.freeze({x:-18,z:0}),
+  Object.freeze({x:-18,z:36}),Object.freeze({x:-18,z:54}),Object.freeze({x:-18,z:72}),Object.freeze({x:18,z:54}),
+  Object.freeze({x:36,z:-54}),Object.freeze({x:36,z:-72}),Object.freeze({x:36,z:-36}),Object.freeze({x:54,z:-72}),
+  Object.freeze({x:54,z:-18}),Object.freeze({x:72,z:-18}),Object.freeze({x:36,z:-18}),Object.freeze({x:36,z:0}),
+  Object.freeze({x:36,z:72}),Object.freeze({x:54,z:72}),Object.freeze({x:36,z:54}),Object.freeze({x:54,z:54}),
+]);
 
 const clamp = (v,min,max)=>Math.max(min,Math.min(max,v));
 const SUPPORT_CONTACT_RADIUS = 0.075;

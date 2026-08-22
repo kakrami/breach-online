@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.25.8';
-export const PROTOCOL_VERSION = 46;
+export const APP_VERSION = '1.26.0';
+export const PROTOCOL_VERSION = 47;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -8,10 +8,10 @@ export const TEAM_COLORS = { blue:'#54a9ff', red:'#ff6873' };
 export const WEAPON_ORDER = ['pistol','assault','shotgun','sniper'];
 export const PRIMARY_WEAPONS = ['assault','shotgun','sniper'];
 export const WEAPON_SPECS = {
-  pistol: { name:'PISTOL', short:'PST', mag:12, damage:34, reloadMs:475, cooldownMs:190, bulletSpeed:42, lifetimeMs:3200, adsFov:54 },
-  assault: { name:'ASSAULT RIFLE', short:'AR', mag:24, damage:26, reloadMs:850, cooldownMs:105, bulletSpeed:82, lifetimeMs:3400, adsFov:46 },
-  shotgun: { name:'SHOTGUN', short:'SG', mag:6, damage:18, reloadMs:980, cooldownMs:760, bulletSpeed:68, lifetimeMs:1800, adsFov:52 },
-  sniper: { name:'SNIPER', short:'SNP', mag:6, damage:120, reloadMs:1100, cooldownMs:950, bulletSpeed:180, lifetimeMs:3600, adsFov:18 },
+  pistol: { name:'PISTOL', short:'PST', mag:12, damage:34, reloadMs:475, cooldownMs:190, bulletSpeed:50, lifetimeMs:3200, adsFov:54, pellets:1, headshotMultiplier:2, headshotMinDamage:0, falloffStart:30, falloffEnd:72, minDamageScale:.74, recoilPitch:.0034, recoilYaw:.0016, recoilMaxPitch:.0065, recoilRecovery:22 },
+  assault: { name:'ASSAULT RIFLE', short:'AR', mag:24, damage:26, reloadMs:850, cooldownMs:105, bulletSpeed:96, lifetimeMs:3400, adsFov:46, pellets:1, headshotMultiplier:2, headshotMinDamage:100, falloffStart:46, falloffEnd:96, minDamageScale:.80, recoilPitch:.0019, recoilYaw:.0012, recoilMaxPitch:.0060, recoilRecovery:24 },
+  shotgun: { name:'SHOTGUN', short:'SG', mag:6, damage:18, reloadMs:980, cooldownMs:760, bulletSpeed:80, lifetimeMs:1800, adsFov:52, pellets:8, headshotMultiplier:1.25, headshotMinDamage:0, falloffStart:16, falloffEnd:40, minDamageScale:.55, recoilPitch:.0085, recoilYaw:.0028, recoilMaxPitch:.0130, recoilRecovery:18 },
+  sniper: { name:'SNIPER', short:'SNP', mag:6, damage:120, reloadMs:1100, cooldownMs:950, bulletSpeed:210, lifetimeMs:3600, adsFov:18, pellets:1, headshotMultiplier:2, headshotMinDamage:0, falloffStart:105, falloffEnd:170, minDamageScale:.94, recoilPitch:.0120, recoilYaw:.0032, recoilMaxPitch:.0180, recoilRecovery:16 },
 };
 
 export const WEAPON_ACCURACY = {
@@ -29,6 +29,24 @@ export function weaponSpreadRadians(weapon, moveSpeed, runSpeed, ads=false, crou
   return degrees*Math.PI/180;
 }
 
+export function weaponDamageAtDistance(weapon,baseDamage,distance,headshot=false){
+  const spec=WEAPON_SPECS[weapon]||WEAPON_SPECS.pistol,base=Math.max(0,Number(baseDamage)||0),d=Math.max(0,Number(distance)||0);
+  const start=Math.max(0,Number(spec.falloffStart)||0),end=Math.max(start+.001,Number(spec.falloffEnd)||start+.001),minScale=Math.max(0,Math.min(1,Number(spec.minDamageScale)||1));
+  const t=Math.max(0,Math.min(1,(d-start)/(end-start))),scaled=base*(1-(1-minScale)*t);
+  if(!headshot)return scaled;
+  return Math.max(Number(spec.headshotMinDamage)||0,scaled*Math.max(1,Number(spec.headshotMultiplier)||1));
+}
+
+export const MOVEMENT_FEEL = Object.freeze({
+  groundAcceleration:58,
+  groundBraking:78,
+  airAcceleration:16,
+  coyoteTimeMs:105,
+  jumpBufferMs:130,
+});
+
+export const WEAPON_SWITCH_MS = 120;
+
 export const CROUCH_HEIGHT = 1.08;
 export const CROUCH_SPEED_MULTIPLIER = 0.62;
 export const EQUIPMENT_CAPS = { flash: 1, sticky: 1 };
@@ -43,7 +61,7 @@ export const GAME_MODES = Object.freeze({
 export function normalizeGameMode(value){const id=String(value||'').toLowerCase();return GAME_MODES[id]?id:DEFAULT_GAME_MODE;}
 export function gameModeSpec(value){return GAME_MODES[normalizeGameMode(value)];}
 export function gameModeIsTeamBased(value){return !!gameModeSpec(value).teamBased;}
-export const DEFAULT_MATCH_RULES = { mode:DEFAULT_GAME_MODE, scoreLimit:GAME_MODES.tdm.scoreLimit, timeLimitMs:GAME_MODES.tdm.timeLimitMs };
+export const DEFAULT_MATCH_RULES = { mode:DEFAULT_GAME_MODE, scoreLimit:GAME_MODES.tdm.scoreLimit, timeLimitMs:GAME_MODES.tdm.timeLimitMs, minimapRevealAll:false };
 export const MATCH_WARMUP_MS = 4000;
 export const MATCH_END_MS = 7000;
 
