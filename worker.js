@@ -892,7 +892,7 @@ export class GameRoom {
     const meta=this.metaCache;if(!meta)return;const match=meta.match,mode=matchMode(match),spec=gameModeSpec(mode);
     if(!matchAllowsCombat(match)||spec.scoreType==='none'||!attackerId||attackerId===victimId)return;
     const attacker=this.findCombatant(attackerId),victim=this.findCombatant(victimId);
-    if(!attacker?.id||!victim?.id||attacker.godMode||combatantsAreFriendly(mode,attacker.id,attacker.team,victim.id,victim.team))return;
+    if(!attacker?.id||!victim?.id||combatantsAreFriendly(mode,attacker.id,attacker.team,victim.id,victim.team))return;
     match.updatedAt=now;meta.match=match;this.matchDirty=true;
     if(spec.scoreType==='team'){
       if(attacker.team==='red')match.redScore+=1;else match.blueScore+=1;
@@ -2289,6 +2289,10 @@ export class GameRoom {
       target.deaths = Math.max(0, Math.floor(finiteNumber(target.deaths, 0))) + 1;
       target.multiKillCount = 0;
       target.lastKillAt = 0;
+      // Publish the victim's authoritative death count before awardKill builds
+      // the kill event snapshot. This keeps the scoreboard/KD state in sync
+      // during the death screen instead of correcting only after respawn.
+      socket.serializeAttachment(target);
       multiKill = this.awardKill(attackerId, target.clientId, now);
     }
     const headshot = !!hitMeta.headshot;
