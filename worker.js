@@ -1662,6 +1662,7 @@ export class GameRoom {
       gravity:Math.max(0,finiteNumber(weaponSpec.projectileGravity,0)),explosionRadius:Math.max(0,finiteNumber(weaponSpec.explosionRadius,0)),explosionDamage:Math.max(0,finiteNumber(weaponSpec.explosionDamage,0)),
       hitTargets: new Set(),traveledDistance: 0,
       lifetimeMs: lifetimeMs || weaponSpec.lifetimeMs, x, y, z, vx, vy, vz, born: now, lastAt: now, lastBroadcast: now,
+      rpgBaseSpeed:safe==='rpg'?Math.max(1,Math.hypot(vx,vy,vz)):0,rpgBaseYaw:safe==='rpg'?Math.atan2(-vx,-vz):0,rpgBasePitch:safe==='rpg'?Math.asin(clamp(vy/Math.max(1,Math.hypot(vx,vy,vz)),-1,1)):0,rpgWanderPhase:safe==='rpg'?Math.random()*Math.PI*2:0,
     };
     this.bullets.set(id, bullet);
     this.broadcast({ t: "shot", id, ownerId, ownerTeam: bullet.ownerTeam, damage, weapon: safe, lifetimeMs: bullet.lifetimeMs, gravity:bullet.gravity, x, y, z, vx, vy, vz, consumeAmmo, primaryShot:!!primaryShot, at: now });
@@ -1998,6 +1999,17 @@ export class GameRoom {
     this.broadcast({t:'explosion',id:bullet.id,x:bullet.x,y:bullet.y,z:bullet.z,kind:bullet.weapon,radius});
   }
 
+  applyRpgWander(bullet,at){
+    if(bullet?.weapon!=='rpg'||!(bullet.rpgBaseSpeed>0))return;
+    const age=Math.max(0,(at-bullet.born)/1000),ramp=clamp((age-.08)/.32,0,1),phase=finiteNumber(bullet.rpgWanderPhase,0);
+    // Very small motor/fin wander, intentionally below the weapon's accuracy
+    // cone. The rocket visibly hunts a little in flight without turning into
+    // random bloom or disconnecting the reticle from the shot.
+    const yawOffset=ramp*(Math.sin(age*5.7+phase)*.0062+Math.sin(age*2.4+phase*1.61)*.0023),pitchOffset=ramp*(Math.sin(age*4.4+phase*.73)*.0027);
+    const yaw=finiteNumber(bullet.rpgBaseYaw,0)+yawOffset,pitch=clamp(finiteNumber(bullet.rpgBasePitch,0)+pitchOffset,-1.35,1.35),cp=Math.cos(pitch),speed=bullet.rpgBaseSpeed;
+    bullet.vx=-Math.sin(yaw)*cp*speed;bullet.vy=Math.sin(pitch)*speed;bullet.vz=-Math.cos(yaw)*cp*speed;
+  }
+
   stepBullets(now, settings) {
     const humans = this.ctx.getWebSockets().map((socket) => ({ socket, player: socket.deserializeAttachment() || {} }));
     for (const [id, bullet] of this.bullets) {
@@ -2017,6 +2029,7 @@ export class GameRoom {
       while (remaining > 1e-8 && !ended) {
         const step = Math.min(maxStepSeconds, remaining);
         remaining -= step;
+        const segmentAt=targetAt-remaining*1000;this.applyRpgWander(bullet,segmentAt);
         const gravity=Math.max(0,finiteNumber(bullet.gravity,0));
         const segmentEndX = bullet.x + bullet.vx * step;
         const segmentEndY = bullet.y + bullet.vy * step - .5*gravity*step*step;
