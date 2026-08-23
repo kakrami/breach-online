@@ -264,8 +264,15 @@ function safeShotAim(me,payload){
   return{yaw:baseYaw+clamp(normalizeAngle(requestedYaw-baseYaw),-.20,.20),pitch:clamp(basePitch+clamp(requestedPitch-basePitch,-.20,.20),-1.4,1.4)};
 }
 function shotVector(yaw,pitch){const cp=Math.cos(pitch);return{x:-Math.sin(yaw)*cp,y:Math.sin(pitch),z:-Math.cos(yaw)*cp};}
-function shotLaunchPose(me,yaw,pitch,crouched=false){
+function shotLaunchPose(me,yaw,pitch,crouched=false,weapon='pistol'){
   const dir=shotVector(yaw,pitch),eyeHeight=(crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.08,eye={x:me.x,y:me.y+eyeHeight,z:me.z},ballistic={x:eye.x+dir.x*.18,y:eye.y+dir.y*.18,z:eye.z+dir.z*.18};
+  // Standard firearms are camera/reticle authoritative. Their old synthetic
+  // muzzle sat below and to the side of the eye, which could intersect a
+  // balcony/window lip while the center-screen ray was visibly clear. That
+  // made steep downward fire get redirected into the ledge. Large launcher
+  // projectiles retain a physical barrel-clearance check because their actual
+  // projectile body must fit past nearby cover.
+  if(weapon!=='grenadeLauncher'&&weapon!=='rpg')return{x:ballistic.x,y:ballistic.y,z:ballistic.z,dx:dir.x,dy:dir.y,dz:dir.z,muzzleBlocked:false};
   const right={x:Math.cos(yaw),z:-Math.sin(yaw)},muzzle={x:me.x+right.x*.23+(-Math.sin(yaw))*.43,y:eye.y-.20,z:me.z+right.z*.23+(-Math.cos(yaw))*.43},near={x:ballistic.x+dir.x*1.15,y:ballistic.y+dir.y*1.15,z:ballistic.z+dir.z*1.15},hitT=segmentFirstWorldHitT(muzzle.x,muzzle.y,muzzle.z,near.x,near.y,near.z);
   if(hitT!=null&&hitT<.995){const hx=muzzle.x+(near.x-muzzle.x)*hitT,hy=muzzle.y+(near.y-muzzle.y)*hitT,hz=muzzle.z+(near.z-muzzle.z)*hitT,dx=hx-muzzle.x,dy=hy-muzzle.y,dz=hz-muzzle.z,len=Math.hypot(dx,dy,dz);if(len<.025)return{x:muzzle.x,y:muzzle.y,z:muzzle.z,dx:dir.x,dy:dir.y,dz:dir.z,muzzleBlocked:true};return{x:muzzle.x,y:muzzle.y,z:muzzle.z,dx:dx/len,dy:dy/len,dz:dz/len,muzzleBlocked:true};}
   return{x:ballistic.x,y:ballistic.y,z:ballistic.z,dx:dir.x,dy:dir.y,dz:dir.z,muzzleBlocked:false};
@@ -1209,8 +1216,9 @@ export class GameRoom {
       const autoReloadStarted=!unlimited&&me.ammo[weapon]===0;if(autoReloadStarted){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;}
       socket.serializeAttachment(me);
       const spreadRadius=weaponSpreadRadians(weapon,me.moveSpeed,settings.movement.runSpeed,adsAmount,!!me.crouched,airborne,preShotHeat),pellets=Math.max(1,Math.floor(WEAPON_SPECS[weapon]?.pellets||1));
+      const launcherPitchOffset=(Number(WEAPON_SPECS[weapon]?.launchPitchDeg)||0)*Math.PI/180;
       for(let i=0;i<pellets;i++){
-        const a=spreadShotAngles(shotYaw,shotPitch,spreadRadius),launch=shotLaunchPose(me,a.yaw,a.pitch,!!me.crouched);
+        const a=spreadShotAngles(shotYaw,clamp(shotPitch+launcherPitchOffset,-1.4,1.4),spreadRadius),launch=shotLaunchPose(me,a.yaw,a.pitch,!!me.crouched,weapon);
         this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage,weapon,lifetimeMs:WEAPON_SPECS[weapon].lifetimeMs,x:launch.x,y:launch.y,z:launch.z,vx:launch.dx*spec.speed,vy:launch.dy*spec.speed,vz:launch.dz*spec.speed,now,consumeAmmo:i===0&&!unlimited,primaryShot:i===0});
       }
       sendLoadout(socket,me,{action:'fire',accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;

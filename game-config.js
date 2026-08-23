@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.29.5';
+export const APP_VERSION = '1.29.6';
 export const PROTOCOL_VERSION = 49;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
@@ -14,7 +14,7 @@ export const WEAPON_SPECS = {
   shotgun: { name:'PUMP SHOTGUN', short:'SG', mag:6, damage:18, reloadMs:980, cooldownMs:760, bulletSpeed:80, lifetimeMs:1800, adsFov:52, pellets:8, headshotMultiplier:1.25, headshotMinDamage:0, falloffStart:16, falloffEnd:40, minDamageScale:.55, recoilPitch:.0160, recoilYaw:.0040, recoilMaxPitch:.0240, recoilRecovery:10, recoilRecoveryDelayMs:125, shellReload:true },
   semiShotgun: { name:'SEMI-AUTO SHOTGUN', short:'SAS', mag:8, damage:14, reloadMs:1120, cooldownMs:310, bulletSpeed:82, lifetimeMs:1850, adsFov:51, pellets:8, headshotMultiplier:1.20, headshotMinDamage:0, falloffStart:14, falloffEnd:36, minDamageScale:.50, recoilPitch:.0125, recoilYaw:.0048, recoilMaxPitch:.0310, recoilRecovery:9.2, recoilRecoveryDelayMs:145 },
   sniper: { name:'SNIPER', short:'SNP', mag:6, damage:120, reloadMs:1100, cooldownMs:950, bulletSpeed:210, lifetimeMs:3600, adsFov:18, pellets:1, headshotMultiplier:2, headshotMinDamage:0, falloffStart:105, falloffEnd:170, minDamageScale:.94, recoilPitch:.0260, recoilYaw:.0045, recoilMaxPitch:.0340, recoilRecovery:9, recoilRecoveryDelayMs:180 },
-  grenadeLauncher: { name:'GRENADE LAUNCHER', short:'GL', mag:1, damage:20, reloadMs:1320, cooldownMs:950, bulletSpeed:34, lifetimeMs:3000, adsFov:52, pellets:1, headshotMultiplier:1, headshotMinDamage:0, falloffStart:999, falloffEnd:1000, minDamageScale:1, recoilPitch:.0180, recoilYaw:.0035, recoilMaxPitch:.0280, recoilRecovery:8.8, recoilRecoveryDelayMs:165, projectileGravity:13.5, explosionRadius:7.8, explosionDamage:150 },
+  grenadeLauncher: { name:'GRENADE LAUNCHER', short:'GL', mag:1, damage:20, reloadMs:1320, cooldownMs:950, bulletSpeed:34, lifetimeMs:3000, adsFov:52, pellets:1, headshotMultiplier:1, headshotMinDamage:0, falloffStart:999, falloffEnd:1000, minDamageScale:1, recoilPitch:.0180, recoilYaw:.0035, recoilMaxPitch:.0280, recoilRecovery:8.8, recoilRecoveryDelayMs:165, projectileGravity:13.5, launchPitchDeg:5.0, explosionRadius:7.8, explosionDamage:150 },
   rpg: { name:'RPG', short:'RPG', mag:1, damage:20, reloadMs:1780, cooldownMs:1200, bulletSpeed:48, lifetimeMs:4300, adsFov:50, pellets:1, headshotMultiplier:1, headshotMinDamage:0, falloffStart:999, falloffEnd:1000, minDamageScale:1, recoilPitch:.0210, recoilYaw:.0030, recoilMaxPitch:.0310, recoilRecovery:8, recoilRecoveryDelayMs:190, projectileGravity:0, explosionRadius:9.6, explosionDamage:180 },
 };
 // Accuracy is centered on the reticle. Movement, stance, airborne state and
