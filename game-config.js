@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.35.1';
-export const PROTOCOL_VERSION = 54;
+export const APP_VERSION = '1.37.0';
+export const PROTOCOL_VERSION = 55;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -19,27 +19,27 @@ export function mapSpec(value){return MAPS[normalizeMapId(value)];}
 export const WEAPON_ORDER = ['pistol','assault','ump','shotgun','semiShotgun','sniper','grenadeLauncher','rpg'];
 export const PRIMARY_WEAPONS = ['assault','ump','shotgun','semiShotgun','sniper','grenadeLauncher','rpg'];
 export const WEAPON_SPECS = {
-  pistol: { name:'PISTOL', short:'PST', mag:12, damage:34, reloadMs:475, cooldownMs:190, bulletSpeed:50, lifetimeMs:3200, adsFov:54, pellets:1, headshotMultiplier:2, headshotMinDamage:0, falloffStart:30, falloffEnd:72, minDamageScale:.74, recoilPitch:.0090, recoilYaw:.0028, recoilMaxPitch:.0220, recoilRecovery:14, recoilRecoveryDelayMs:85 },
-  assault: { name:'ASSAULT RIFLE', short:'AR', mag:24, damage:26, reloadMs:850, cooldownMs:105, bulletSpeed:96, lifetimeMs:3400, adsFov:46, pellets:1, headshotMultiplier:2, headshotMinDamage:100, falloffStart:46, falloffEnd:96, minDamageScale:.80, recoilPitch:.0052, recoilYaw:.0024, recoilMaxPitch:.0290, recoilRecovery:11, recoilRecoveryDelayMs:92, automatic:true },
-  ump: { name:'UMP', short:'UMP', mag:30, damage:24, reloadMs:780, cooldownMs:92, bulletSpeed:91, lifetimeMs:3200, adsFov:49, pellets:1, headshotMultiplier:1.65, headshotMinDamage:0, falloffStart:28, falloffEnd:64, minDamageScale:.68, recoilPitch:.0046, recoilYaw:.0031, recoilMaxPitch:.0270, recoilRecovery:12.5, recoilRecoveryDelayMs:82, automatic:true },
-  shotgun: { name:'PUMP SHOTGUN', short:'SG', mag:6, damage:18, reloadMs:980, cooldownMs:760, bulletSpeed:80, lifetimeMs:1800, adsFov:52, pellets:8, headshotMultiplier:1.25, headshotMinDamage:0, falloffStart:16, falloffEnd:40, minDamageScale:.55, recoilPitch:.0160, recoilYaw:.0040, recoilMaxPitch:.0240, recoilRecovery:10, recoilRecoveryDelayMs:125, shellReload:true },
-  semiShotgun: { name:'SEMI-AUTO SHOTGUN', short:'SAS', mag:8, damage:14, reloadMs:1120, cooldownMs:310, bulletSpeed:82, lifetimeMs:1850, adsFov:51, pellets:8, headshotMultiplier:1.20, headshotMinDamage:0, falloffStart:14, falloffEnd:36, minDamageScale:.50, recoilPitch:.0125, recoilYaw:.0048, recoilMaxPitch:.0310, recoilRecovery:9.2, recoilRecoveryDelayMs:145 },
-  sniper: { name:'SNIPER', short:'SNP', mag:6, damage:120, reloadMs:1100, cooldownMs:950, bulletSpeed:210, lifetimeMs:3600, adsFov:18, pellets:1, headshotMultiplier:2, headshotMinDamage:0, falloffStart:105, falloffEnd:170, minDamageScale:.94, recoilPitch:.0260, recoilYaw:.0045, recoilMaxPitch:.0340, recoilRecovery:9, recoilRecoveryDelayMs:180 },
-  grenadeLauncher: { name:'GRENADE LAUNCHER', short:'GL', mag:1, damage:20, reloadMs:1320, cooldownMs:950, bulletSpeed:34, lifetimeMs:3000, adsFov:52, pellets:1, headshotMultiplier:1, headshotMinDamage:0, falloffStart:999, falloffEnd:1000, minDamageScale:1, recoilPitch:.0180, recoilYaw:.0035, recoilMaxPitch:.0280, recoilRecovery:8.8, recoilRecoveryDelayMs:165, projectileGravity:13.5, launchPitchDeg:5.0, explosionRadius:7.8, explosionDamage:150 },
-  rpg: { name:'RPG', short:'RPG', mag:1, damage:20, reloadMs:1780, cooldownMs:1200, bulletSpeed:48, lifetimeMs:4300, adsFov:50, pellets:1, headshotMultiplier:1, headshotMinDamage:0, falloffStart:999, falloffEnd:1000, minDamageScale:1, recoilPitch:.0210, recoilYaw:.0030, recoilMaxPitch:.0310, recoilRecovery:8, recoilRecoveryDelayMs:190, projectileGravity:0, explosionRadius:9.6, explosionDamage:180 },
+  pistol: { name:'PISTOL', short:'PST', mag:12, damage:35, reloadMs:900, cooldownMs:180, bulletSpeed:90, lifetimeMs:3200, adsFov:54, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:26, falloffEnd:60, minDamageScale:.72, recoilPitch:.0095, recoilYaw:.0030, recoilMaxPitch:.0240, recoilRecovery:15, recoilRecoveryDelayMs:80 },
+  assault: { name:'ASSAULT RIFLE', short:'AR', mag:30, damage:28, reloadMs:1450, cooldownMs:100, bulletSpeed:115, lifetimeMs:3000, adsFov:46, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:42, falloffEnd:92, minDamageScale:.76, recoilPitch:.0058, recoilYaw:.0026, recoilMaxPitch:.0300, recoilRecovery:11.5, recoilRecoveryDelayMs:95, automatic:true },
+  ump: { name:'UMP', short:'UMP', mag:30, damage:27, reloadMs:1320, cooldownMs:92, bulletSpeed:105, lifetimeMs:3000, adsFov:49, pellets:1, headshotMultiplier:1.45, headshotMinDamage:0, falloffStart:25, falloffEnd:62, minDamageScale:.68, recoilPitch:.0049, recoilYaw:.0034, recoilMaxPitch:.0280, recoilRecovery:13, recoilRecoveryDelayMs:80, automatic:true },
+  shotgun: { name:'PUMP SHOTGUN', short:'SG', mag:6, damage:16, reloadMs:620, cooldownMs:800, bulletSpeed:100, lifetimeMs:1700, adsFov:52, pellets:8, headshotMultiplier:1.10, headshotMinDamage:0, falloffStart:10, falloffEnd:26, minDamageScale:.38, recoilPitch:.0175, recoilYaw:.0042, recoilMaxPitch:.0260, recoilRecovery:9.5, recoilRecoveryDelayMs:140, shellReload:true },
+  semiShotgun: { name:'SEMI-AUTO SHOTGUN', short:'SAS', mag:8, damage:12, reloadMs:1550, cooldownMs:330, bulletSpeed:100, lifetimeMs:1750, adsFov:51, pellets:8, headshotMultiplier:1.10, headshotMinDamage:0, falloffStart:9, falloffEnd:24, minDamageScale:.36, recoilPitch:.0135, recoilYaw:.0052, recoilMaxPitch:.0320, recoilRecovery:9, recoilRecoveryDelayMs:150 },
+  sniper: { name:'SNIPER', short:'SNP', mag:5, damage:110, reloadMs:1650, cooldownMs:1050, bulletSpeed:240, lifetimeMs:2400, adsFov:18, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:115, falloffEnd:190, minDamageScale:.92, recoilPitch:.0290, recoilYaw:.0048, recoilMaxPitch:.0380, recoilRecovery:8.2, recoilRecoveryDelayMs:220 },
+  grenadeLauncher: { name:'GRENADE LAUNCHER', short:'GL', mag:1, damage:30, reloadMs:1650, cooldownMs:1100, bulletSpeed:34, lifetimeMs:3000, adsFov:52, pellets:1, headshotMultiplier:1, headshotMinDamage:0, falloffStart:999, falloffEnd:1000, minDamageScale:1, recoilPitch:.0200, recoilYaw:.0038, recoilMaxPitch:.0300, recoilRecovery:8.4, recoilRecoveryDelayMs:180, projectileGravity:13.5, launchPitchDeg:5.0, explosionRadius:6.8, explosionDamage:140 },
+  rpg: { name:'RPG', short:'RPG', mag:1, damage:35, reloadMs:2200, cooldownMs:1450, bulletSpeed:50, lifetimeMs:4300, adsFov:50, pellets:1, headshotMultiplier:1, headshotMinDamage:0, falloffStart:999, falloffEnd:1000, minDamageScale:1, recoilPitch:.0240, recoilYaw:.0034, recoilMaxPitch:.0340, recoilRecovery:7.6, recoilRecoveryDelayMs:220, projectileGravity:0, explosionRadius:8.2, explosionDamage:165 },
 };
 // Accuracy is centered on the reticle. Movement, stance, airborne state and
 // sustained-fire heat widen the cone around that center; they never offset the
 // cone sideways from the player's aim direction.
 export const WEAPON_ACCURACY = {
-  pistol: { hipDeg:1.30, adsDeg:0.11, moveDeg:0.68, adsMoveScale:0.38, airborneDeg:1.45, crouchScale:0.80, fireDeg:0.34, fireMaxDeg:1.35, heatRecoveryMs:185 },
-  assault: { hipDeg:1.90, adsDeg:0.075, moveDeg:0.94, adsMoveScale:0.32, airborneDeg:1.80, crouchScale:0.80, fireDeg:0.24, fireMaxDeg:1.25, heatRecoveryMs:225 },
-  ump: { hipDeg:2.20, adsDeg:0.10, moveDeg:0.78, adsMoveScale:0.30, airborneDeg:1.70, crouchScale:0.82, fireDeg:0.28, fireMaxDeg:1.40, heatRecoveryMs:205 },
-  shotgun: { hipDeg:5.00, adsDeg:3.00, moveDeg:1.05, adsMoveScale:0.55, airborneDeg:1.55, crouchScale:0.90, fireDeg:0.06, fireMaxDeg:0.22, heatRecoveryMs:220 },
-  semiShotgun: { hipDeg:5.35, adsDeg:3.15, moveDeg:1.12, adsMoveScale:0.56, airborneDeg:1.65, crouchScale:0.90, fireDeg:0.14, fireMaxDeg:0.55, heatRecoveryMs:260 },
-  sniper: { hipDeg:5.50, adsDeg:0.025, moveDeg:1.55, adsMoveScale:0.28, airborneDeg:3.00, crouchScale:0.78, fireDeg:0.05, fireMaxDeg:0.16, heatRecoveryMs:300 },
-  grenadeLauncher: { hipDeg:1.25, adsDeg:0.24, moveDeg:0.75, adsMoveScale:0.42, airborneDeg:1.55, crouchScale:0.88, fireDeg:0.04, fireMaxDeg:0.08, heatRecoveryMs:320 },
-  rpg: { hipDeg:1.65, adsDeg:0.30, moveDeg:0.90, adsMoveScale:0.45, airborneDeg:1.85, crouchScale:0.90, fireDeg:0.04, fireMaxDeg:0.08, heatRecoveryMs:360 },
+  pistol: { hipDeg:1.15, adsDeg:0.09, moveDeg:0.62, adsMoveScale:0.36, airborneDeg:1.55, crouchScale:0.78, fireDeg:0.30, fireMaxDeg:1.05, heatRecoveryMs:170 },
+  assault: { hipDeg:1.85, adsDeg:0.06, moveDeg:0.90, adsMoveScale:0.30, airborneDeg:1.85, crouchScale:0.78, fireDeg:0.20, fireMaxDeg:1.00, heatRecoveryMs:215 },
+  ump: { hipDeg:1.45, adsDeg:0.095, moveDeg:0.68, adsMoveScale:0.28, airborneDeg:1.65, crouchScale:0.80, fireDeg:0.24, fireMaxDeg:1.15, heatRecoveryMs:195 },
+  shotgun: { hipDeg:4.60, adsDeg:2.70, moveDeg:1.00, adsMoveScale:0.52, airborneDeg:1.60, crouchScale:0.88, fireDeg:0.04, fireMaxDeg:0.15, heatRecoveryMs:230 },
+  semiShotgun: { hipDeg:5.00, adsDeg:3.00, moveDeg:1.08, adsMoveScale:0.54, airborneDeg:1.70, crouchScale:0.90, fireDeg:0.18, fireMaxDeg:0.72, heatRecoveryMs:280 },
+  sniper: { hipDeg:6.50, adsDeg:0.02, moveDeg:1.70, adsMoveScale:0.25, airborneDeg:3.40, crouchScale:0.75, fireDeg:0.04, fireMaxDeg:0.12, heatRecoveryMs:320 },
+  grenadeLauncher: { hipDeg:1.35, adsDeg:0.22, moveDeg:0.78, adsMoveScale:0.40, airborneDeg:1.65, crouchScale:0.86, fireDeg:0.04, fireMaxDeg:0.08, heatRecoveryMs:340 },
+  rpg: { hipDeg:1.80, adsDeg:0.28, moveDeg:0.95, adsMoveScale:0.42, airborneDeg:2.00, crouchScale:0.88, fireDeg:0.04, fireMaxDeg:0.08, heatRecoveryMs:380 },
 };
 
 function clamp01(value){return Math.max(0,Math.min(1,Number(value)||0));}
@@ -137,11 +137,11 @@ export function normalizeWorldSettings(value) {
 export const TACTICAL_THROW_SPEED = 23.5;
 export const TACTICAL_THROW_LOFT = 6.4;
 export const TACTICAL_GRAVITY = 18;
-export const FLASH_RADIUS = 22;
-export const STICKY_RADIUS = 8.5;
-export const STICKY_MAX_DAMAGE = 150;
-export const FRAG_RADIUS = 9.2;
-export const FRAG_MAX_DAMAGE = 165;
+export const FLASH_RADIUS = 18;
+export const STICKY_RADIUS = 7.2;
+export const STICKY_MAX_DAMAGE = 145;
+export const FRAG_RADIUS = 7.8;
+export const FRAG_MAX_DAMAGE = 150;
 export const SMOKE_RADIUS = 9.6;
 export const SMOKE_DURATION_MS = 14000;
 export const GROUND_FOLLOW_DROP = 0.32;
