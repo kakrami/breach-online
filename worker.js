@@ -1910,11 +1910,14 @@ export class GameRoom {
         // Tactical physics stay intentionally lightweight: the server owns the
         // path, collision and fuse, while flashbangs retain believable carry,
         // bounce and ground roll. Stickies remain sticky on first contact.
-        const integrationEnd=Math.min(now,g.fuseAt),elapsed=Math.max(0,(integrationEnd-g.lastAt)/1000);g.lastAt=integrationEnd;const steps=Math.max(1,Math.ceil(elapsed/.012)),st=elapsed/steps;
+        const integrationStart=g.lastAt,integrationEnd=Math.min(now,g.fuseAt),elapsed=Math.max(0,(integrationEnd-integrationStart)/1000);g.lastAt=integrationEnd;const steps=Math.max(1,Math.ceil(elapsed/.012)),st=elapsed/steps;
         for(let i=0;i<steps&&!g.stuck;i++){
-          const px=g.x,py=g.y,pz=g.z;
+          const stepAt=integrationStart+(i+1)*st*1000,px=g.x,py=g.y,pz=g.z;
           if(g.kind!=='sticky'&&g.rolling){
-            const nx=px+g.vx*st,nz=pz+g.vz*st,ny=terrainHeight(nx,nz)+.10,hitObj=segmentHitsObstacle(px,py,pz,nx,ny,nz);
+            const nx=px+g.vx*st,nz=pz+g.vz*st,ny=terrainHeight(nx,nz)+.10;
+            const actorHit=this.findThrowableActorHit(g,px,py,pz,nx,ny,nz,stepAt),worldT=segmentFirstWorldHitT(px,py,pz,nx,ny,nz);
+            if(actorHit&&(worldT==null||actorHit.t<worldT-.0001)){this.resolveThrowableActorHit(g,actorHit,px,py,pz,nx,ny,nz,stepAt);continue;}
+            const hitObj=segmentHitsObstacle(px,py,pz,nx,ny,nz);
             if(hitObj){
               const hitX=segmentHitsObstacle(px,py,pz,nx,py,pz),hitZ=segmentHitsObstacle(px,py,pz,px,py,nz),ambiguous=!hitX&&!hitZ;
               if(hitX||ambiguous)g.vx=-g.vx*.34;
@@ -1929,8 +1932,9 @@ export class GameRoom {
 
           g.vy-=TACTICAL_GRAVITY*st;
           const nx=px+g.vx*st,ny=py+g.vy*st,nz=pz+g.vz*st;
+          const actorHit=this.findThrowableActorHit(g,px,py,pz,nx,ny,nz,stepAt),worldT=segmentFirstWorldHitT(px,py,pz,nx,ny,nz);
+          if(actorHit&&(worldT==null||actorHit.t<worldT-.0001)){this.resolveThrowableActorHit(g,actorHit,px,py,pz,nx,ny,nz,stepAt);continue;}
           g.x=nx;g.y=ny;g.z=nz;
-          const actor=this.findStickyTarget(g);if(g.kind==='sticky'&&actor){g.stuck=true;g.stuckTo=actor;g.vx=g.vy=g.vz=0;break;}
           const groundY=terrainHeight(nx,nz)+.08,hitGround=ny<=groundY,hitObj=!hitGround&&segmentHitsObstacle(px,py,pz,nx,ny,nz);
           if(!hitGround&&!hitObj)continue;
 
@@ -1961,7 +1965,37 @@ export class GameRoom {
     }
   }
   findActorState(id){for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(p.clientId===id&&!p.replaced)return p;}return this.bots.find(b=>b.id===id)||null;}
-  findStickyTarget(g){for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.clientId===g.ownerId||p.hp<=0||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,p.clientId,p.team))continue;if(Math.hypot(p.x-g.x,p.y+1-g.y,p.z-g.z)<.62)return p.clientId;}for(const b of this.bots){if(b.id===g.ownerId||b.hp<=0||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,b.id,b.team))continue;if(Math.hypot(b.x-g.x,b.y+1-g.y,b.z-g.z)<.62)return b.id;}return '';}
+  findThrowableActorHit(g,x1,y1,z1,x2,y2,z2,at){
+    let best=null;
+    const consider=(actor,id,team)=>{
+      if(!id||actor?.hp<=0)return;
+      // Ignore the thrower only while the equipment is leaving the hand/body.
+      // It may collide with the owner normally if it bounces back later.
+      if(id===g.ownerId&&at-g.born<260)return;
+      if(id===g.lastActorHitId&&at-g.lastActorHitAt<85)return;
+      const hit=projectileSegmentHitZone(actor,x1,y1,z1,x2,y2,z2);
+      if(hit&&(best==null||hit.t<best.t))best={actor,id,team,t:hit.t};
+    };
+    for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;consider(p,p.clientId,p.team);}
+    for(const b of this.bots)consider(b,b.id,b.team);
+    return best;
+  }
+  resolveThrowableActorHit(g,hit,x1,y1,z1,x2,y2,z2,at){
+    const t=clamp(finiteNumber(hit?.t,0),0,1),cx=x1+(x2-x1)*t,cy=y1+(y2-y1)*t,cz=z1+(z2-z1)*t;
+    const friendly=combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,hit.id,hit.team);
+    if(g.kind==='sticky'&&hit.id!==g.ownerId&&!friendly){
+      g.stuck=true;g.stuckTo=hit.id;g.x=hit.actor.x;g.y=hit.actor.y+1.0;g.z=hit.actor.z;g.vx=g.vy=g.vz=0;g.rolling=false;
+    }else{
+      const centerY=finiteNumber(hit.actor?.y,0)+(hit.actor?.crouched?CROUCH_HEIGHT*.52:PLAYER_HEIGHT*.52);
+      let nx=cx-finiteNumber(hit.actor?.x,0),ny=cy-centerY,nz=cz-finiteNumber(hit.actor?.z,0),nl=Math.hypot(nx,ny,nz);
+      if(nl<.001){const vl=Math.hypot(g.vx,g.vy,g.vz)||1;nx=-g.vx/vl;ny=-g.vy/vl;nz=-g.vz/vl;nl=1;}else{nx/=nl;ny/=nl;nz/=nl;}
+      const dot=g.vx*nx+g.vy*ny+g.vz*nz,restitution=.34;
+      if(dot<0){g.vx-=(1+restitution)*dot*nx;g.vy-=(1+restitution)*dot*ny;g.vz-=(1+restitution)*dot*nz;}
+      g.vx*=.76;g.vy*=.76;g.vz*=.76;g.x=cx+nx*.07;g.y=cy+ny*.07;g.z=cz+nz*.07;g.rolling=false;
+    }
+    g.lastActorHitId=hit.id;g.lastActorHitAt=at;
+    this.broadcast({t:'throwableImpact',id:g.id,kind:g.kind,x:g.x,y:g.y,z:g.z,vx:g.vx,vy:g.vy,vz:g.vz,stuck:g.stuck,rolling:!!g.rolling,at});
+  }
   detonateFlash(g,now){
     const radius=FLASH_RADIUS;this.broadcast({t:'flashDetonate',id:g.id,x:g.x,y:g.y,z:g.z,radius});
     for(const socket of this.ctx.getWebSockets()){
