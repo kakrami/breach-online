@@ -1,6 +1,8 @@
 import { PLAYER_HEIGHT, PLAYER_RADIUS, ARENA_LIMIT, MAX_STEP_HEIGHT } from './world-geometry.js';
 import * as HighlandsGeometry from './world-geometry.js';
 import * as DepotGeometry from './world-geometry-depot.js';
+import * as YardGeometry from './world-geometry-yard.js';
+import * as RigGeometry from './world-geometry-rig.js';
 import {
   APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS, DEFAULT_MAP_ID, normalizeMapId, mapSpec,
   WEAPON_ORDER, PRIMARY_WEAPONS, WEAPON_SPECS, weaponSpreadRadians, weaponHeatAfterDelay, weaponHeatAfterShot, weaponDamageAtDistance, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, EQUIPMENT_SPECS, TACTICAL_EQUIPMENT, LETHAL_EQUIPMENT, normalizeTactical, normalizeLethal, equipmentForLoadout, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings, MOVEMENT_FEEL, WEAPON_SWITCH_MS,
@@ -10,17 +12,25 @@ import { normalizeMatchRules, defaultMatchState, normalizeMatchState, publicMatc
 import { MATCH_STATUS, matchAllowsLobbyEdits, matchAllowsMovement, matchAllowsCombat, matchAllowsRespawn, matchPreservesReconnectPosition } from './gameplay-phase.js';
 import * as HighlandsSpawns from './spawn-director.js';
 import * as DepotSpawns from './spawn-director-depot.js';
+import * as YardSpawns from './spawn-director-yard.js';
+import * as RigSpawns from './spawn-director-rig.js';
 import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback, sweepHorizontalMovement, createTraversalPlan, traversalPose, tacticalThrowVelocity } from './movement-model.js';
 import * as HighlandsServerCollision from './server-collision.js';
 import * as DepotServerCollision from './server-collision-depot.js';
+import * as YardServerCollision from './server-collision-yard.js';
+import * as RigServerCollision from './server-collision-rig.js';
 import * as HighlandsWorldCollision from './world-collision.js';
 import * as DepotWorldCollision from './world-collision-depot.js';
+import * as YardWorldCollision from './world-collision-yard.js';
+import * as RigWorldCollision from './world-collision-rig.js';
 
 const GAME_VERSION = APP_VERSION;
 
 const WORLD_BUNDLES = Object.freeze({
   highlands:Object.freeze({id:'highlands',geometry:HighlandsGeometry,spawns:HighlandsSpawns,worldCollision:HighlandsWorldCollision,serverCollision:HighlandsServerCollision}),
   depot:Object.freeze({id:'depot',geometry:DepotGeometry,spawns:DepotSpawns,worldCollision:DepotWorldCollision,serverCollision:DepotServerCollision}),
+  yard:Object.freeze({id:'yard',geometry:YardGeometry,spawns:YardSpawns,worldCollision:YardWorldCollision,serverCollision:YardServerCollision}),
+  rig:Object.freeze({id:'rig',geometry:RigGeometry,spawns:RigSpawns,worldCollision:RigWorldCollision,serverCollision:RigServerCollision}),
 });
 function worldBundle(value){return WORLD_BUNDLES[normalizeMapId(value)]||WORLD_BUNDLES[DEFAULT_MAP_ID];}
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";

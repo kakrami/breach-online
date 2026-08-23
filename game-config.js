@@ -1,15 +1,17 @@
-export const APP_VERSION = '1.32.0';
-export const PROTOCOL_VERSION = 51;
+export const APP_VERSION = '1.34.0';
+export const PROTOCOL_VERSION = 53;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
 export const TEAM_COLORS = { blue:'#54a9ff', red:'#ff3b45' };
 
-export const MAP_ORDER = ['highlands','depot'];
+export const MAP_ORDER = ['highlands','depot','yard','rig'];
 export const DEFAULT_MAP_ID = 'highlands';
 export const MAPS = Object.freeze({
   highlands:Object.freeze({id:'highlands',name:'HIGHLANDS',short:'HIGHLANDS',description:'Open highland combat with hills, buildings, and natural cover.'}),
   depot:Object.freeze({id:'depot',name:'FREIGHT DEPOT',short:'DEPOT',description:'Industrial freight yard with warehouses, container lanes, and close flanking routes.'}),
+  yard:Object.freeze({id:'yard',name:'CONTAINER YARD',short:'YARD',description:'Compact container arena built for rapid close-quarters fights, crossing lanes, and fast respawns.'}),
+  rig:Object.freeze({id:'rig',name:'DUST RIG',short:'RIG',description:'Compact desert oil yard with a dominant central tower, exposed high ground, and fast four-way rotations.'}),
 });
 export function normalizeMapId(value){const id=String(value||'').toLowerCase();return MAPS[id]?id:DEFAULT_MAP_ID;}
 export function mapSpec(value){return MAPS[normalizeMapId(value)];}
