@@ -130,6 +130,7 @@ export function createTraversalPlan(candidate, startX, startY, startZ, startedAt
     startX:sx,startY:sy,startZ:sz,endX:ex,endY:ey,endZ:ez,
     peakY:Math.max(Number(candidate.peakY)||ey,ey+.08),startedAt:Number(startedAt)||0,durationMs,
     endGrounded:candidate.endGrounded!==false,exitVelocityY:Number.isFinite(Number(candidate.exitVelocityY))?Number(candidate.exitVelocityY):0,
+    viewMaxY:candidate.viewMaxY!=null&&Number.isFinite(Number(candidate.viewMaxY))?Number(candidate.viewMaxY):null,
   };
 }
 

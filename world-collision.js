@@ -1,4 +1,4 @@
-import { ARENA_LIMIT, PLAYER_HEIGHT, PLAYER_RADIUS, WORLD_PLAYER_COLLIDERS, BUILDING_WINDOW_PORTALS, worldSupportHeight } from './world-geometry.js';
+import { ARENA_LIMIT, PLAYER_HEIGHT, PLAYER_RADIUS, WORLD_PLAYER_COLLIDERS, BUILDING_WINDOW_PORTALS, worldSupportHeight } from './world-geometry.js?v=1.26.3';
 
 const CELL_SIZE = 8;
 const CELL_HEIGHT = 3;
@@ -173,6 +173,11 @@ function findWindowPortalCandidate(x,y,z,dx,dz,height,radius){
     const candidate={
       mode:'vault',role:'window',portalId:portal.id,rise:Math.max(.12,rise),topY:sillTop,
       endX,endY,endZ,peakY:Math.max(sillTop+.075,y+.62),endGrounded,exitVelocityY:endGrounded?0:-1.15,
+      // First-person traversal uses the actual opening ceiling instead of
+      // carrying the normal standing eye height through the wall thickness.
+      // Keeping the camera below this cap prevents the view from entering the
+      // lintel while the body is intentionally passing through the portal.
+      viewMaxY:portal.topY-.16,
       dirX:dx,dirZ:dz,
     };
     if(!best||distance<best.distance)best={distance,candidate};
