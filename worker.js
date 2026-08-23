@@ -430,6 +430,17 @@ function botCountsFromMeta(meta) {
   const redBots = clamp(Math.floor(finiteNumber(meta?.redBots, 0)), 0, MAX_BOTS);
   return { blueBots, redBots, botCount: Math.min(MAX_BOTS, blueBots + redBots) };
 }
+function botRosterMatchesConfig(existing, blueBots, redBots, mode='tdm') {
+  if (!Array.isArray(existing)) return false;
+  const expected = makeBots(blueBots, redBots, mode);
+  if (existing.length !== expected.length) return false;
+  const actual = new Map(existing.map((bot) => [String(bot?.id || ''), bot]));
+  if (actual.size !== expected.length) return false;
+  return expected.every((bot) => {
+    const saved = actual.get(bot.id);
+    return !!saved && String(saved.team || '').toLowerCase() === bot.team;
+  });
+}
 
 async function directoryStub(env) {
   return env.DIRECTORY.get(env.DIRECTORY.idFromName("global"));
@@ -750,13 +761,11 @@ export class GameRoom {
 
   async ensureSimulation(meta) {
     if (this.bots) return;
-    const counts = botCountsFromMeta(meta);
+    const counts = botCountsFromMeta(meta), mode = matchMode(meta.match);
     const stored = await this.ctx.storage.get("bots");
-    if (Array.isArray(stored) && stored.length === counts.botCount) this.bots = stored;
-    else {
-      this.bots = makeBots(counts.blueBots, counts.redBots, matchMode(meta.match));
-      await this.ctx.storage.put("bots", this.bots);
-    }
+    const rosterValid = botRosterMatchesConfig(stored, counts.blueBots, counts.redBots, mode);
+    this.bots = reconcileBots(stored, counts.blueBots, counts.redBots, mode);
+    if (!rosterValid) await this.ctx.storage.put("bots", this.bots);
     this.lastSimAt = Date.now();
     this.simAccumulatorMs = 0;
   }

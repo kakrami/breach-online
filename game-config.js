@@ -1,9 +1,9 @@
-export const APP_VERSION = '1.30.2';
+export const APP_VERSION = '1.31.0';
 export const PROTOCOL_VERSION = 50;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
-export const TEAM_COLORS = { blue:'#54a9ff', red:'#ff6873' };
+export const TEAM_COLORS = { blue:'#54a9ff', red:'#ff3b45' };
 
 export const WEAPON_ORDER = ['pistol','assault','ump','shotgun','semiShotgun','sniper','grenadeLauncher','rpg'];
 export const PRIMARY_WEAPONS = ['assault','ump','shotgun','semiShotgun','sniper','grenadeLauncher','rpg'];
