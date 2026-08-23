@@ -119,18 +119,19 @@ export function sweepHorizontalMovement({
 
 export function createTraversalPlan(candidate, startX, startY, startZ, startedAt, seq=0) {
   if(!candidate)return null;
-  const mode=candidate.mode==='vault'?'vault':'mantle';
+  const mode=candidate.mode==='vault'?'vault':candidate.mode==='ladder'?'ladder':'mantle';
   const sx=Number(startX)||0,sy=Number(startY)||0,sz=Number(startZ)||0;
   const ex=Number(candidate.endX),ey=Number(candidate.endY),ez=Number(candidate.endZ);
   if(!Number.isFinite(ex)||!Number.isFinite(ey)||!Number.isFinite(ez))return null;
-  const distance=Math.hypot(ex-sx,ez-sz),rise=Math.max(0,ey-sy);
-  const durationMs=mode==='vault'?Math.round(Math.max(300,Math.min(430,300+distance*34))):Math.round(Math.max(380,Math.min(540,390+rise*72+distance*24)));
+  const distance=Math.hypot(ex-sx,ez-sz),rise=Math.max(0,ey-sy),verticalDistance=Math.abs(ey-sy);
+  const durationMs=mode==='vault'?Math.round(Math.max(300,Math.min(430,300+distance*34))):mode==='ladder'?Math.round(Math.max(720,Math.min(2200,360+verticalDistance*225))):Math.round(Math.max(380,Math.min(540,390+rise*72+distance*24)));
   return {
     seq:Math.max(0,Math.floor(Number(seq)||0)),mode,role:String(candidate.role||''),portalId:String(candidate.portalId||''),
     startX:sx,startY:sy,startZ:sz,endX:ex,endY:ey,endZ:ez,
     peakY:Math.max(Number(candidate.peakY)||ey,ey+.08),startedAt:Number(startedAt)||0,durationMs,
     endGrounded:candidate.endGrounded!==false,exitVelocityY:Number.isFinite(Number(candidate.exitVelocityY))?Number(candidate.exitVelocityY):0,
     viewMaxY:candidate.viewMaxY!=null&&Number.isFinite(Number(candidate.viewMaxY))?Number(candidate.viewMaxY):null,
+    climbX:Number.isFinite(Number(candidate.climbX))?Number(candidate.climbX):null,climbZ:Number.isFinite(Number(candidate.climbZ))?Number(candidate.climbZ):null,
   };
 }
 
@@ -141,7 +142,16 @@ export function traversalPose(plan, now) {
   const duration=Math.max(1,Number(plan.durationMs)||1),raw=(Number(now)-Number(plan.startedAt))/duration,p=Math.max(0,Math.min(1,raw));
   const eased=smooth01(p),sx=Number(plan.startX)||0,sy=Number(plan.startY)||0,sz=Number(plan.startZ)||0,ex=Number(plan.endX)||0,ey=Number(plan.endY)||0,ez=Number(plan.endZ)||0;
   let x,z,y;
-  if(plan.mode==='vault'&&plan.role==='window'){
+  if(plan.mode==='ladder'){
+    const cx=Number.isFinite(Number(plan.climbX))?Number(plan.climbX):sx,cz=Number.isFinite(Number(plan.climbZ))?Number(plan.climbZ):sz,ascending=ey>=sy;
+    if(ascending){
+      const attach=smooth01(Math.min(1,p/.18)),climb=smooth01(Math.max(0,Math.min(1,(p-.12)/.72))),dismount=smooth01(Math.max(0,(p-.82)/.18));
+      x=sx+(cx-sx)*attach+(ex-cx)*dismount;z=sz+(cz-sz)*attach+(ez-cz)*dismount;y=sy+(ey-sy)*climb;
+    }else{
+      const attach=smooth01(Math.min(1,p/.18)),climb=smooth01(Math.max(0,Math.min(1,(p-.18)/.70))),settle=smooth01(Math.max(0,(p-.86)/.14));
+      x=sx+(cx-sx)*attach+(ex-cx)*settle;z=sz+(cz-sz)*attach+(ez-cz)*settle;y=sy+(ey-sy)*climb;
+    }
+  }else if(plan.mode==='vault'&&plan.role==='window'){
     const lift=smooth01(Math.min(1,p/.34)),cross=smooth01(Math.max(0,Math.min(1,(p-.18)/.64))),settle=smooth01(Math.max(0,(p-.72)/.28));
     const clearanceY=Math.max(Number(plan.peakY)||sy,sy,ey);
     x=sx+(ex-sx)*cross;z=sz+(ez-sz)*cross;y=sy+(clearanceY-sy)*lift+(ey-clearanceY)*settle;

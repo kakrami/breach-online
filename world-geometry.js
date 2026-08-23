@@ -11,15 +11,24 @@ export const STATIC_BOXES = [
   // turning the arena into corridors or sealing off flanking routes.
   {x:-86,z:-6,w:3,d:8,h:1.85},{x:-42,z:-84,w:8,d:3,h:1.70},{x:0,z:-88,w:3,d:8,h:1.85},{x:44,z:-80,w:8,d:3,h:1.70},
   {x:86,z:8,w:3,d:8,h:1.85},{x:42,z:84,w:8,d:3,h:1.70},{x:0,z:88,w:3,d:8,h:1.85},{x:-44,z:80,w:8,d:3,h:1.70},
-  {x:-34,z:8,w:6,d:2.6,h:1.60},{x:34,z:-8,w:6,d:2.6,h:1.60}
+  {x:-34,z:8,w:6,d:2.6,h:1.60},{x:34,z:-8,w:6,d:2.6,h:1.60},
+  // Authored combat-space props. Their box footprints are authoritative for movement/projectiles;
+  // the client renders richer compound models for recognizable silhouettes.
+  {x:-18,z:66,w:4.4,d:2.0,h:1.35,kind:'burntCar'},
+  {x:74,z:-64,w:2.5,d:10.5,h:2.95,kind:'burntBus'},
+  {x:20,z:12,w:8.0,d:.70,h:2.15,kind:'brokenWall'},
+  {x:56,z:58,w:6.5,d:1.10,h:1.20,kind:'sandbag'},
+  {x:-76,z:-6,w:3.4,d:2.2,h:1.45,kind:'dumpster'},
+  {x:5,z:70,w:4.6,d:3.2,h:2.45,kind:'checkpoint'}
+
 ];
 
 export const BUILDINGS = [
-  {x:-8,z:28,w:18,d:14,floorH:3.25,balcony:4.2,levels:2},
-  {x:63,z:-54,w:16,d:12,floorH:3.15,balcony:3.8,levels:2},
-  {x:-70,z:42,w:14,d:11,floorH:3.05,balcony:3.4,levels:2},
-  {x:68,z:38,w:20,d:16,floorH:3.15,balcony:4.0,levels:4,tall:true},
-  {x:-62,z:-38,w:18,d:14,floorH:3.10,balcony:3.8,levels:5,tall:true}
+  {x:-8,z:28,w:18,d:14,floorH:3.25,balcony:4.2,levels:2,style:'plaster'},
+  {x:63,z:-54,w:16,d:12,floorH:3.15,balcony:3.8,levels:2,style:'brick'},
+  {x:-70,z:42,w:14,d:11,floorH:3.05,balcony:3.4,levels:2,style:'stone'},
+  {x:68,z:38,w:20,d:16,floorH:3.15,balcony:4.0,levels:4,tall:true,style:'office'},
+  {x:-62,z:-38,w:18,d:14,floorH:3.10,balcony:3.8,levels:5,tall:true,style:'industrial'}
 ];
 
 export const PYRAMIDS = [
@@ -117,6 +126,10 @@ export function terrainHeight(x,z){
   if(fx+fz<=1)return a+fx*(b-a)+fz*(c-a);
   return d+(1-fx)*(c-d)+(1-fz)*(b-d);
 }
+
+// Functional ladder traversal anchors. The ladder itself is non-solid; the wall/roof it serves
+// remains authoritative collision, and traversal is validated on both client and server.
+export const LADDERS = Object.freeze([Object.freeze({id:'highlands-west-roof',x:-17.08,z:28,nx:-1,nz:0,tx:0,tz:1,width:1.20,bottomY:terrainHeight(-18.0,28),topY:terrainHeight(-8,28)+6.50})]);
 
 export function terrainMinAround(x,z,r){
   let min=terrainHeight(x,z);

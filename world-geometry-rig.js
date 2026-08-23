@@ -42,15 +42,25 @@ export const STATIC_BOXES = [
   {x:43,z:-6,w:4.5,d:4.5,h:1.45,kind:'crate'},
   {x:-7,z:-44,w:5.0,d:3.5,h:1.45,kind:'crate'},
   {x:7,z:44,w:5.0,d:3.5,h:1.45,kind:'crate'},
+  // Authored combat-space props. Their box footprints are authoritative for movement/projectiles;
+  // the client renders richer compound models for recognizable silhouettes.
+  {x:-27,z:-24,w:4.45,d:2.0,h:1.34,kind:'burntCar'},
+  {x:42,z:4,w:2.45,d:10.8,h:2.98,kind:'burntBus'},
+  {x:-24,z:35,w:8.0,d:.70,h:2.10,kind:'brokenWall'},
+  {x:28,z:39,w:6.2,d:1.05,h:1.16,kind:'sandbag'},
+  {x:-43,z:13,w:3.4,d:2.2,h:1.44,kind:'dumpster'},
+  {x:0,z:-39,w:5.2,d:2.7,h:2.45,kind:'fuelTank'},
+  {x:-40,z:-16,w:4.2,d:3.0,h:2.38,kind:'checkpoint'}
+
 ];
 
 // The center rig is intentionally the tallest and most valuable power position.
 // Generic Breach building geometry supplies smooth stair ramps, windows, floors,
 // balconies and collision so vertical traversal remains client/server identical.
 export const BUILDINGS = [
-  {x:0,z:0,w:13,d:13,floorH:3.0,balcony:4.2,levels:4,tall:true},
-  {x:34,z:-19,w:10,d:8,floorH:3.0,balcony:2.8,levels:2},
-  {x:-34,z:20,w:10,d:8,floorH:3.0,balcony:2.8,levels:2},
+  {x:0,z:0,w:13,d:13,floorH:3.0,balcony:4.2,levels:4,tall:true,style:'tower'},
+  {x:34,z:-19,w:10,d:8,floorH:3.0,balcony:2.8,levels:2,style:'utility'},
+  {x:-34,z:20,w:10,d:8,floorH:3.0,balcony:2.8,levels:2,style:'utility'},
 ];
 
 export const PYRAMIDS = [];
@@ -133,6 +143,10 @@ export function terrainHeight(x,z){
   if(fx+fz<=1)return a+fx*(b-a)+fz*(c-a);
   return d+(1-fx)*(c-d)+(1-fz)*(b-d);
 }
+
+// Functional ladder traversal anchors. The ladder itself is non-solid; the wall/roof it serves
+// remains authoritative collision, and traversal is validated on both client and server.
+export const LADDERS = Object.freeze([Object.freeze({id:'rig-service-roof',x:39.08,z:-21.5,nx:1,nz:0,tx:0,tz:1,width:1.18,bottomY:terrainHeight(40.0,-21.5),topY:terrainHeight(34,-19)+6.00})]);
 
 export function terrainMinAround(x,z,r){
   let min=terrainHeight(x,z);

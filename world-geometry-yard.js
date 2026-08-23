@@ -33,6 +33,13 @@ export const STATIC_BOXES = [
   {x:6,z:-15,w:3,d:5,h:1.45,kind:'crate'},
   {x:-27,z:-8,w:3.5,d:5,h:1.35,kind:'crate'},
   {x:27,z:8,w:3.5,d:5,h:1.35,kind:'crate'},
+  // Authored combat-space props. Their box footprints are authoritative for movement/projectiles;
+  // the client renders richer compound models for recognizable silhouettes.
+  {x:18,z:0,w:4.25,d:1.95,h:1.30,kind:'burntCar'},
+  {x:-14,z:-27,w:7.0,d:.68,h:2.05,kind:'brokenWall'},
+  {x:14,z:27,w:6.0,d:1.05,h:1.15,kind:'sandbag'},
+  {x:29,z:-12,w:4.0,d:3.0,h:2.35,kind:'checkpoint'}
+
 ];
 
 export const BUILDINGS = [];
@@ -111,6 +118,10 @@ export function terrainHeight(x,z){
   if(fx+fz<=1)return a+fx*(b-a)+fz*(c-a);
   return d+(1-fx)*(c-d)+(1-fz)*(b-d);
 }
+
+// Functional ladder traversal anchors. The ladder itself is non-solid; the wall/roof it serves
+// remains authoritative collision, and traversal is validated on both client and server.
+export const LADDERS = Object.freeze([Object.freeze({id:'yard-stack-west',x:-28.08,z:2,nx:-1,nz:0,tx:0,tz:1,width:1.18,bottomY:terrainHeight(-29.0,2),topY:terrainHeight(-25,2)+5.70})]);
 
 export function terrainMinAround(x,z,r){
   let min=terrainHeight(x,z);
