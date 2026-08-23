@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.27.2';
+export const APP_VERSION = '1.28.0';
 export const PROTOCOL_VERSION = 47;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
@@ -8,25 +8,40 @@ export const TEAM_COLORS = { blue:'#54a9ff', red:'#ff6873' };
 export const WEAPON_ORDER = ['pistol','assault','shotgun','sniper'];
 export const PRIMARY_WEAPONS = ['assault','shotgun','sniper'];
 export const WEAPON_SPECS = {
-  pistol: { name:'PISTOL', short:'PST', mag:12, damage:34, reloadMs:475, cooldownMs:190, bulletSpeed:50, lifetimeMs:3200, adsFov:54, pellets:1, headshotMultiplier:2, headshotMinDamage:0, falloffStart:30, falloffEnd:72, minDamageScale:.74, recoilPitch:.0034, recoilYaw:.0016, recoilMaxPitch:.0065, recoilRecovery:22 },
-  assault: { name:'ASSAULT RIFLE', short:'AR', mag:24, damage:26, reloadMs:850, cooldownMs:105, bulletSpeed:96, lifetimeMs:3400, adsFov:46, pellets:1, headshotMultiplier:2, headshotMinDamage:100, falloffStart:46, falloffEnd:96, minDamageScale:.80, recoilPitch:.0019, recoilYaw:.0012, recoilMaxPitch:.0060, recoilRecovery:24 },
-  shotgun: { name:'SHOTGUN', short:'SG', mag:6, damage:18, reloadMs:980, cooldownMs:760, bulletSpeed:80, lifetimeMs:1800, adsFov:52, pellets:8, headshotMultiplier:1.25, headshotMinDamage:0, falloffStart:16, falloffEnd:40, minDamageScale:.55, recoilPitch:.0085, recoilYaw:.0028, recoilMaxPitch:.0130, recoilRecovery:18 },
-  sniper: { name:'SNIPER', short:'SNP', mag:6, damage:120, reloadMs:1100, cooldownMs:950, bulletSpeed:210, lifetimeMs:3600, adsFov:18, pellets:1, headshotMultiplier:2, headshotMinDamage:0, falloffStart:105, falloffEnd:170, minDamageScale:.94, recoilPitch:.0120, recoilYaw:.0032, recoilMaxPitch:.0180, recoilRecovery:16 },
+  pistol: { name:'PISTOL', short:'PST', mag:12, damage:34, reloadMs:475, cooldownMs:190, bulletSpeed:50, lifetimeMs:3200, adsFov:54, pellets:1, headshotMultiplier:2, headshotMinDamage:0, falloffStart:30, falloffEnd:72, minDamageScale:.74, recoilPitch:.0090, recoilYaw:.0028, recoilMaxPitch:.0220, recoilRecovery:14, recoilRecoveryDelayMs:85 },
+  assault: { name:'ASSAULT RIFLE', short:'AR', mag:24, damage:26, reloadMs:850, cooldownMs:105, bulletSpeed:96, lifetimeMs:3400, adsFov:46, pellets:1, headshotMultiplier:2, headshotMinDamage:100, falloffStart:46, falloffEnd:96, minDamageScale:.80, recoilPitch:.0052, recoilYaw:.0024, recoilMaxPitch:.0290, recoilRecovery:11, recoilRecoveryDelayMs:92 },
+  shotgun: { name:'SHOTGUN', short:'SG', mag:6, damage:18, reloadMs:980, cooldownMs:760, bulletSpeed:80, lifetimeMs:1800, adsFov:52, pellets:8, headshotMultiplier:1.25, headshotMinDamage:0, falloffStart:16, falloffEnd:40, minDamageScale:.55, recoilPitch:.0160, recoilYaw:.0040, recoilMaxPitch:.0240, recoilRecovery:10, recoilRecoveryDelayMs:125 },
+  sniper: { name:'SNIPER', short:'SNP', mag:6, damage:120, reloadMs:1100, cooldownMs:950, bulletSpeed:210, lifetimeMs:3600, adsFov:18, pellets:1, headshotMultiplier:2, headshotMinDamage:0, falloffStart:105, falloffEnd:170, minDamageScale:.94, recoilPitch:.0260, recoilYaw:.0045, recoilMaxPitch:.0340, recoilRecovery:9, recoilRecoveryDelayMs:180 },
 };
 
+// Accuracy is centered on the reticle. Movement, stance, airborne state and
+// sustained-fire heat widen the cone around that center; they never offset the
+// cone sideways from the player's aim direction.
 export const WEAPON_ACCURACY = {
-  pistol: { hipDeg:1.45, adsDeg:0.48, moveDeg:0.70 },
-  assault: { hipDeg:2.25, adsDeg:0.62, moveDeg:1.00 },
-  shotgun: { hipDeg:5.20, adsDeg:3.05, moveDeg:1.10 },
-  sniper: { hipDeg:4.25, adsDeg:0.10, moveDeg:1.35 },
+  pistol: { hipDeg:1.30, adsDeg:0.11, moveDeg:0.68, adsMoveScale:0.38, airborneDeg:1.45, crouchScale:0.80, fireDeg:0.34, fireMaxDeg:1.35, heatRecoveryMs:185 },
+  assault: { hipDeg:1.90, adsDeg:0.075, moveDeg:0.94, adsMoveScale:0.32, airborneDeg:1.80, crouchScale:0.80, fireDeg:0.24, fireMaxDeg:1.25, heatRecoveryMs:225 },
+  shotgun: { hipDeg:5.00, adsDeg:3.00, moveDeg:1.05, adsMoveScale:0.55, airborneDeg:1.55, crouchScale:0.90, fireDeg:0.06, fireMaxDeg:0.22, heatRecoveryMs:220 },
+  sniper: { hipDeg:5.50, adsDeg:0.025, moveDeg:1.55, adsMoveScale:0.28, airborneDeg:3.00, crouchScale:0.78, fireDeg:0.05, fireMaxDeg:0.16, heatRecoveryMs:300 },
 };
 
-export function weaponSpreadRadians(weapon, moveSpeed, runSpeed, ads=false, crouched=false) {
-  const accuracy=WEAPON_ACCURACY[weapon]||WEAPON_ACCURACY.pistol;
-  const moveRatio=Math.max(0,Math.min(1,(Number(moveSpeed)||0)/Math.max(.1,Number(runSpeed)||.1)));
-  let degrees=(ads?accuracy.adsDeg:accuracy.hipDeg)+accuracy.moveDeg*moveRatio*(ads?.35:1);
-  if(crouched)degrees*=.82;
-  return degrees*Math.PI/180;
+function clamp01(value){return Math.max(0,Math.min(1,Number(value)||0));}
+export function weaponHeatAfterDelay(weapon,heat,deltaMs){
+  const accuracy=WEAPON_ACCURACY[weapon]||WEAPON_ACCURACY.pistol,recovery=Math.max(40,Number(accuracy.heatRecoveryMs)||200),dt=Math.max(0,Number(deltaMs)||0);
+  return Math.max(0,(Number(heat)||0)*Math.exp(-dt/recovery));
+}
+export function weaponHeatAfterShot(weapon,heat){
+  const accuracy=WEAPON_ACCURACY[weapon]||WEAPON_ACCURACY.pistol,maxHeat=Math.max(1,(Number(accuracy.fireMaxDeg)||0)/Math.max(.001,Number(accuracy.fireDeg)||.001));
+  return Math.min(maxHeat,Math.max(0,Number(heat)||0)+1);
+}
+export function weaponSpreadRadians(weapon,moveSpeed,runSpeed,adsAmount=0,crouched=false,airborne=false,shotHeat=0){
+  const accuracy=WEAPON_ACCURACY[weapon]||WEAPON_ACCURACY.pistol,ads=clamp01(adsAmount),moveRatio=Math.max(0,Math.min(1,(Number(moveSpeed)||0)/Math.max(.1,Number(runSpeed)||.1)));
+  const base=accuracy.hipDeg+(accuracy.adsDeg-accuracy.hipDeg)*ads,moveScale=1+(accuracy.adsMoveScale-1)*ads;
+  let degrees=base+accuracy.moveDeg*moveRatio*moveScale;
+  if(airborne)degrees+=accuracy.airborneDeg*(1-.18*ads);
+  if(crouched&&!airborne)degrees*=accuracy.crouchScale;
+  const firePenalty=Math.min(accuracy.fireMaxDeg,Math.max(0,Number(shotHeat)||0)*accuracy.fireDeg)*(1-.42*ads);
+  degrees+=firePenalty;
+  return Math.max(0,degrees)*Math.PI/180;
 }
 
 export function weaponDamageAtDistance(weapon,baseDamage,distance,headshot=false){

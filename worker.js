@@ -3,7 +3,7 @@ import {
 } from './world-geometry.js';
 import {
   APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS,
-  WEAPON_ORDER, PRIMARY_WEAPONS, WEAPON_SPECS, weaponSpreadRadians, weaponDamageAtDistance, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings, MOVEMENT_FEEL, WEAPON_SWITCH_MS,
+  WEAPON_ORDER, PRIMARY_WEAPONS, WEAPON_SPECS, weaponSpreadRadians, weaponHeatAfterDelay, weaponHeatAfterShot, weaponDamageAtDistance, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings, MOVEMENT_FEEL, WEAPON_SWITCH_MS,
   DEFAULT_MATCH_RULES, GAME_MODES, normalizeGameMode, gameModeSpec, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, GROUND_FOLLOW_DROP
 } from './game-config.js';
 import { normalizeMatchRules, defaultMatchState, normalizeMatchState, publicMatchState, matchRulesAreDefault } from './match-model.js';
@@ -251,6 +251,24 @@ function spreadShotAngles(yaw, pitch, radius) {
   };
 }
 
+function normalizeAngle(value){let angle=Number(value)||0;while(angle>Math.PI)angle-=Math.PI*2;while(angle<-Math.PI)angle+=Math.PI*2;return angle;}
+function safeShotAim(me,payload){
+  // State and fire packets share one ordered WebSocket. Bound the fire aim to
+  // the most recent body aim so recoil/fast input is allowed without turning
+  // the fire packet into an arbitrary server-side direction override.
+  const baseYaw=finiteNumber(me.yaw,0),basePitch=clamp(finiteNumber(me.pitch,0),-1.4,1.4),requestedYaw=finiteNumber(payload.yaw,baseYaw),requestedPitch=clamp(finiteNumber(payload.pitch,basePitch),-1.4,1.4);
+  return{yaw:baseYaw+clamp(normalizeAngle(requestedYaw-baseYaw),-.20,.20),pitch:clamp(basePitch+clamp(requestedPitch-basePitch,-.20,.20),-1.4,1.4)};
+}
+function shotVector(yaw,pitch){const cp=Math.cos(pitch);return{x:-Math.sin(yaw)*cp,y:Math.sin(pitch),z:-Math.cos(yaw)*cp};}
+function shotLaunchPose(me,yaw,pitch,crouched=false){
+  const dir=shotVector(yaw,pitch),eyeHeight=(crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.08,eye={x:me.x,y:me.y+eyeHeight,z:me.z},ballistic={x:eye.x+dir.x*.18,y:eye.y+dir.y*.18,z:eye.z+dir.z*.18};
+  const right={x:Math.cos(yaw),z:-Math.sin(yaw)},muzzle={x:me.x+right.x*.23+(-Math.sin(yaw))*.43,y:eye.y-.20,z:me.z+right.z*.23+(-Math.cos(yaw))*.43},near={x:ballistic.x+dir.x*1.15,y:ballistic.y+dir.y*1.15,z:ballistic.z+dir.z*1.15},hitT=segmentFirstWorldHitT(muzzle.x,muzzle.y,muzzle.z,near.x,near.y,near.z);
+  if(hitT!=null&&hitT<.995){const hx=muzzle.x+(near.x-muzzle.x)*hitT,hy=muzzle.y+(near.y-muzzle.y)*hitT,hz=muzzle.z+(near.z-muzzle.z)*hitT,dx=hx-muzzle.x,dy=hy-muzzle.y,dz=hz-muzzle.z,len=Math.hypot(dx,dy,dz);if(len<.025)return{x:muzzle.x,y:muzzle.y,z:muzzle.z,dx:dir.x,dy:dir.y,dz:dir.z,muzzleBlocked:true};return{x:muzzle.x,y:muzzle.y,z:muzzle.z,dx:dx/len,dy:dy/len,dz:dz/len,muzzleBlocked:true};}
+  return{x:ballistic.x,y:ballistic.y,z:ballistic.z,dx:dir.x,dy:dir.y,dz:dir.z,muzzleBlocked:false};
+}
+function decayedFireHeat(me,weapon,now){const heats=me.fireHeat&&typeof me.fireHeat==='object'?me.fireHeat:{},times=me.fireHeatAt&&typeof me.fireHeatAt==='object'?me.fireHeatAt:{},last=Math.max(0,finiteNumber(times[weapon],0));return weaponHeatAfterDelay(weapon,finiteNumber(heats[weapon],0),last?now-last:0);}
+function storeFireHeat(me,weapon,now,preShotHeat){me.fireHeat={...(me.fireHeat&&typeof me.fireHeat==='object'?me.fireHeat:{}),[weapon]:weaponHeatAfterShot(weapon,preShotHeat)};me.fireHeatAt={...(me.fireHeatAt&&typeof me.fireHeatAt==='object'?me.fireHeatAt:{}),[weapon]:now};}
+
 function publicPlayer(attachment) {
   return {
     id: attachment.clientId,
@@ -321,7 +339,7 @@ function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
     weapon:safePrimaryWeapon(player.primaryWeapon),ammo:freshAmmo(),equipment:freshEquipment(),reloadAt:0,reloadWeapon:'',
     fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,ads:false,crouched:false,moveSpeed:0,
     verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
-    flashUntil:0,flashPower:0,flashDurationMs:0,knockVelocityX:0,knockVelocityZ:0,traversal:null,lastTraverseSeq:0,
+    flashUntil:0,flashPower:0,flashDurationMs:0,fireHeat:{},fireHeatAt:{},knockVelocityX:0,knockVelocityZ:0,traversal:null,lastTraverseSeq:0,
   };
   if(resetStats)Object.assign(next,{kills:0,deaths:0,multiKillCount:0,lastKillAt:0});
   return next;
@@ -1165,14 +1183,17 @@ export class GameRoom {
       if(now<readyAt){const retryAfterMs=Math.max(1,Math.ceil(readyAt-now)),reason=switchReadyAt>=shotReadyAt?'weapon_switch':'cooldown';sendLoadout(socket,me,{action:'fire',accepted:false,reason,retryAfterMs});return;}
       if(!unlimited&&me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
 
-      me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4);
-      const flashPower=activeFlashPower(me,now);let shotYaw=me.yaw,shotPitch=me.pitch;
+      const reticle=safeShotAim(me,payload),flashPower=activeFlashPower(me,now);let shotYaw=reticle.yaw,shotPitch=reticle.pitch;
       if(flashPower>.02){const flashSpread=.035+flashPower*.22;shotYaw+=(Math.random()-.5)*2*flashSpread;shotPitch=clamp(shotPitch+(Math.random()-.5)*1.5*flashSpread,-1.4,1.4);me.ads=false;}
-      me.fireReadyAt[weapon]=now+spec.cooldownMs;if(!unlimited)me.ammo[weapon]-=1;
+      const preShotHeat=decayedFireHeat(me,weapon,now),adsAmount=me.ads?clamp(finiteNumber(payload.adsAmount,1),0,1):0,airborne=me.serverGrounded===false;
+      me.fireReadyAt[weapon]=now+spec.cooldownMs;if(!unlimited)me.ammo[weapon]-=1;storeFireHeat(me,weapon,now,preShotHeat);
       const autoReloadStarted=!unlimited&&me.ammo[weapon]===0;if(autoReloadStarted){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;}
       socket.serializeAttachment(me);
-      const spreadRadius=weaponSpreadRadians(weapon,me.moveSpeed,settings.movement.runSpeed,!!me.ads,!!me.crouched),pellets=Math.max(1,Math.floor(WEAPON_SPECS[weapon]?.pellets||1)),eyeHeight=(me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.08;
-      for(let i=0;i<pellets;i++){const a=spreadShotAngles(shotYaw,shotPitch,spreadRadius),cp=Math.cos(a.pitch),sp=Math.sin(a.pitch),sx=-Math.sin(a.yaw)*cp,sy=sp,sz=-Math.cos(a.yaw)*cp;this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage,weapon,lifetimeMs:WEAPON_SPECS[weapon].lifetimeMs,x:me.x+sx*.20,y:me.y+eyeHeight+sy*.05,z:me.z+sz*.20,vx:sx*spec.speed,vy:sy*spec.speed,vz:sz*spec.speed,now,consumeAmmo:i===0&&!unlimited});}
+      const spreadRadius=weaponSpreadRadians(weapon,me.moveSpeed,settings.movement.runSpeed,adsAmount,!!me.crouched,airborne,preShotHeat),pellets=Math.max(1,Math.floor(WEAPON_SPECS[weapon]?.pellets||1));
+      for(let i=0;i<pellets;i++){
+        const a=spreadShotAngles(shotYaw,shotPitch,spreadRadius),launch=shotLaunchPose(me,a.yaw,a.pitch,!!me.crouched);
+        this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage,weapon,lifetimeMs:WEAPON_SPECS[weapon].lifetimeMs,x:launch.x,y:launch.y,z:launch.z,vx:launch.dx*spec.speed,vy:launch.dy*spec.speed,vz:launch.dz*spec.speed,now,consumeAmmo:i===0&&!unlimited,primaryShot:i===0});
+      }
       sendLoadout(socket,me,{action:'fire',accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
     }
 
@@ -1606,7 +1627,7 @@ export class GameRoom {
     }
   }
 
-  spawnBullet({ ownerId, ownerTeam, damage, weapon, lifetimeMs, x, y, z, vx, vy, vz, now, consumeAmmo=true }) {
+  spawnBullet({ ownerId, ownerTeam, damage, weapon, lifetimeMs, x, y, z, vx, vy, vz, now, consumeAmmo=true, primaryShot=consumeAmmo }) {
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
     const safe = safeWeapon(weapon);
     const bullet = {
@@ -1617,7 +1638,7 @@ export class GameRoom {
       lifetimeMs: lifetimeMs || WEAPON_SPECS[safe].lifetimeMs, x, y, z, vx, vy, vz, born: now, lastAt: now,
     };
     this.bullets.set(id, bullet);
-    this.broadcast({ t: "shot", id, ownerId, ownerTeam: bullet.ownerTeam, damage, weapon: safe, lifetimeMs: bullet.lifetimeMs, x, y, z, vx, vy, vz, consumeAmmo, at: now });
+    this.broadcast({ t: "shot", id, ownerId, ownerTeam: bullet.ownerTeam, damage, weapon: safe, lifetimeMs: bullet.lifetimeMs, x, y, z, vx, vy, vz, consumeAmmo, primaryShot:!!primaryShot, at: now });
   }
 
   async stepSimulation(now, meta) {
