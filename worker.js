@@ -1,19 +1,28 @@
+import { PLAYER_HEIGHT, PLAYER_RADIUS, ARENA_LIMIT, MAX_STEP_HEIGHT } from './world-geometry.js';
+import * as HighlandsGeometry from './world-geometry.js';
+import * as DepotGeometry from './world-geometry-depot.js';
 import {
-  PLAYER_HEIGHT, PLAYER_RADIUS, ARENA_LIMIT, MAX_STEP_HEIGHT, COMBAT_FLOW_NODES, terrainHeight, worldSupportHeight, worldStepUpHeight, resolveCeilingCollision
-} from './world-geometry.js';
-import {
-  APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS,
+  APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS, DEFAULT_MAP_ID, normalizeMapId, mapSpec,
   WEAPON_ORDER, PRIMARY_WEAPONS, WEAPON_SPECS, weaponSpreadRadians, weaponHeatAfterDelay, weaponHeatAfterShot, weaponDamageAtDistance, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, EQUIPMENT_SPECS, TACTICAL_EQUIPMENT, LETHAL_EQUIPMENT, normalizeTactical, normalizeLethal, equipmentForLoadout, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings, MOVEMENT_FEEL, WEAPON_SWITCH_MS,
   DEFAULT_MATCH_RULES, GAME_MODES, normalizeGameMode, gameModeSpec, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, FRAG_RADIUS, FRAG_MAX_DAMAGE, SMOKE_RADIUS, SMOKE_DURATION_MS, GROUND_FOLLOW_DROP
 } from './game-config.js';
 import { normalizeMatchRules, defaultMatchState, normalizeMatchState, publicMatchState, matchRulesAreDefault } from './match-model.js';
 import { MATCH_STATUS, matchAllowsLobbyEdits, matchAllowsMovement, matchAllowsCombat, matchAllowsRespawn, matchPreservesReconnectPosition } from './gameplay-phase.js';
-import { spawnForMode as directedSpawnForMode, chooseSafeSpawn as directedChooseSafeSpawn, spawnPointCount } from './spawn-director.js';
+import * as HighlandsSpawns from './spawn-director.js';
+import * as DepotSpawns from './spawn-director-depot.js';
 import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback, sweepHorizontalMovement, createTraversalPlan, traversalPose, tacticalThrowVelocity } from './movement-model.js';
-import { projectileSegmentHitZone, segmentFirstWorldHitT, segmentHitsObstacle, actorHasLineOfSight, blastHasLineOfSight } from './server-collision.js';
-import { worldBlockedAt, worldMoveBlockedAt, worldHeightExpansionBlockedAt, findTraversalCandidate } from './world-collision.js';
+import * as HighlandsServerCollision from './server-collision.js';
+import * as DepotServerCollision from './server-collision-depot.js';
+import * as HighlandsWorldCollision from './world-collision.js';
+import * as DepotWorldCollision from './world-collision-depot.js';
 
 const GAME_VERSION = APP_VERSION;
+
+const WORLD_BUNDLES = Object.freeze({
+  highlands:Object.freeze({id:'highlands',geometry:HighlandsGeometry,spawns:HighlandsSpawns,worldCollision:HighlandsWorldCollision,serverCollision:HighlandsServerCollision}),
+  depot:Object.freeze({id:'depot',geometry:DepotGeometry,spawns:DepotSpawns,worldCollision:DepotWorldCollision,serverCollision:DepotServerCollision}),
+});
+function worldBundle(value){return WORLD_BUNDLES[normalizeMapId(value)]||WORLD_BUNDLES[DEFAULT_MAP_ID];}
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAX_MESSAGE_BYTES = 24 * 1024;
 const ROOM_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
@@ -272,7 +281,7 @@ function safeShotAim(me,payload){
   return{yaw:baseYaw+clamp(normalizeAngle(requestedYaw-baseYaw),-.20,.20),pitch:clamp(basePitch+clamp(requestedPitch-basePitch,-.20,.20),-1.4,1.4)};
 }
 function shotVector(yaw,pitch){const cp=Math.cos(pitch);return{x:-Math.sin(yaw)*cp,y:Math.sin(pitch),z:-Math.cos(yaw)*cp};}
-function shotLaunchPose(me,yaw,pitch,crouched=false,weapon='pistol'){
+function shotLaunchPose(me,yaw,pitch,crouched=false,weapon='pistol',segmentFirstWorldHitTFn=HighlandsServerCollision.segmentFirstWorldHitT){
   const dir=shotVector(yaw,pitch),eyeHeight=(crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.08,eye={x:me.x,y:me.y+eyeHeight,z:me.z},ballistic={x:eye.x+dir.x*.18,y:eye.y+dir.y*.18,z:eye.z+dir.z*.18};
   // Standard firearms are camera/reticle authoritative. Their old synthetic
   // muzzle sat below and to the side of the eye, which could intersect a
@@ -281,7 +290,7 @@ function shotLaunchPose(me,yaw,pitch,crouched=false,weapon='pistol'){
   // projectiles retain a physical barrel-clearance check because their actual
   // projectile body must fit past nearby cover.
   if(weapon!=='grenadeLauncher'&&weapon!=='rpg')return{x:ballistic.x,y:ballistic.y,z:ballistic.z,dx:dir.x,dy:dir.y,dz:dir.z,muzzleBlocked:false};
-  const right={x:Math.cos(yaw),z:-Math.sin(yaw)},muzzle={x:me.x+right.x*.23+(-Math.sin(yaw))*.43,y:eye.y-.20,z:me.z+right.z*.23+(-Math.cos(yaw))*.43},near={x:ballistic.x+dir.x*1.15,y:ballistic.y+dir.y*1.15,z:ballistic.z+dir.z*1.15},hitT=segmentFirstWorldHitT(muzzle.x,muzzle.y,muzzle.z,near.x,near.y,near.z);
+  const right={x:Math.cos(yaw),z:-Math.sin(yaw)},muzzle={x:me.x+right.x*.23+(-Math.sin(yaw))*.43,y:eye.y-.20,z:me.z+right.z*.23+(-Math.cos(yaw))*.43},near={x:ballistic.x+dir.x*1.15,y:ballistic.y+dir.y*1.15,z:ballistic.z+dir.z*1.15},hitT=segmentFirstWorldHitTFn(muzzle.x,muzzle.y,muzzle.z,near.x,near.y,near.z);
   if(hitT!=null&&hitT<.995){const hx=muzzle.x+(near.x-muzzle.x)*hitT,hy=muzzle.y+(near.y-muzzle.y)*hitT,hz=muzzle.z+(near.z-muzzle.z)*hitT,dx=hx-muzzle.x,dy=hy-muzzle.y,dz=hz-muzzle.z,len=Math.hypot(dx,dy,dz);if(len<.025)return{x:muzzle.x,y:muzzle.y,z:muzzle.z,dx:dir.x,dy:dir.y,dz:dir.z,muzzleBlocked:true};return{x:muzzle.x,y:muzzle.y,z:muzzle.z,dx:dx/len,dy:dy/len,dz:dz/len,muzzleBlocked:true};}
   return{x:ballistic.x,y:ballistic.y,z:ballistic.z,dx:dir.x,dy:dir.y,dz:dir.z,muzzleBlocked:false};
 }
@@ -354,8 +363,8 @@ function publicBot(bot) {
 
 function sendLoadout(socket, me, extra = {}) { sendJson(socket,{t:'loadout',weapon:safeWeapon(me.weapon),primaryWeapon:safePrimaryWeapon(me.primaryWeapon),tactical:safeTactical(me.tactical),lethal:safeLethal(me.lethal),pendingLoadout:me.pendingLoadout?normalizeLoadout(me.pendingLoadout,{primaryWeapon:me.primaryWeapon,tactical:me.tactical,lethal:me.lethal}):null,ammo:me.ammo,equipment:me.equipment,reloadAt:me.reloadAt||0,reloadWeapon:me.reloadWeapon||'',rev:0,...extra}); }
 
-function spawnForTeam(team,index){return directedSpawnForMode('tdm',safeTeam(team),index,terrainHeight);}
-function spawnForMode(mode,team,index){return directedSpawnForMode(normalizeGameMode(mode),safeTeam(team),index,terrainHeight);}
+function spawnForTeam(world,team,index){return world.spawns.spawnForMode('tdm',safeTeam(team),index,world.geometry.terrainHeight);}
+function spawnForMode(world,mode,team,index){return world.spawns.spawnForMode(normalizeGameMode(mode),safeTeam(team),index,world.geometry.terrainHeight);}
 function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
   const active=normalizeLoadout(player?.pendingLoadout||player,{primaryWeapon:player?.primaryWeapon,tactical:player?.tactical,lethal:player?.lethal});
   const next={
@@ -370,9 +379,9 @@ function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
 }
 
 const BOT_PRIMARY_WEAPONS=['assault','ump','shotgun','semiShotgun','sniper'];
-function makeBot(team, teamIndex, mode='tdm', spawnIndex=teamIndex, spawnOverride=null) {
+function makeBot(world,team, teamIndex, mode='tdm', spawnIndex=teamIndex, spawnOverride=null) {
   team = safeTeam(team);
-  const spawn = spawnOverride || spawnForMode(mode, team, spawnIndex),primaryWeapon=BOT_PRIMARY_WEAPONS[Math.abs(spawnIndex)%BOT_PRIMARY_WEAPONS.length]||'assault';
+  const spawn = spawnOverride || spawnForMode(world,mode, team, spawnIndex),primaryWeapon=BOT_PRIMARY_WEAPONS[Math.abs(spawnIndex)%BOT_PRIMARY_WEAPONS.length]||'assault';
   const label = team === "red" ? "Red" : "Blue",ffa=normalizeGameMode(mode)==='ffa';
   return {
     id: `bot-${team}-${teamIndex + 1}`,
@@ -396,17 +405,17 @@ function makeBot(team, teamIndex, mode='tdm', spawnIndex=teamIndex, spawnOverrid
     lastSeenTargetId:'',lastSeenAt:0,lastKnownX:spawn.x,lastKnownZ:spawn.z,patrolX:spawn.x,patrolZ:spawn.z,patrolUntil:0,patrolNodeIndex:-1,
   };
 }
-function makeBots(blueBots, redBots, mode='tdm') {
+function makeBots(world,blueBots, redBots, mode='tdm') {
   blueBots = clamp(Math.floor(finiteNumber(blueBots, 0)), 0, MAX_BOTS);
   redBots = clamp(Math.floor(finiteNumber(redBots, 0)), 0, MAX_BOTS);
   const bots = [];let spawnIndex=0;
-  for (let i = 0; i < blueBots; i += 1) bots.push(makeBot("blue", i, mode, spawnIndex++));
-  for (let i = 0; i < redBots; i += 1) bots.push(makeBot("red", i, mode, spawnIndex++));
+  for (let i = 0; i < blueBots; i += 1) bots.push(makeBot(world,"blue", i, mode, spawnIndex++));
+  for (let i = 0; i < redBots; i += 1) bots.push(makeBot(world,"red", i, mode, spawnIndex++));
   return bots;
 }
-function reconcileBots(existing, blueBots, redBots, mode='tdm') {
+function reconcileBots(world,existing, blueBots, redBots, mode='tdm') {
   const prior = new Map((Array.isArray(existing) ? existing : []).map((bot) => [bot.id, bot]));
-  return makeBots(blueBots, redBots, mode).map((fresh) => {
+  return makeBots(world,blueBots, redBots, mode).map((fresh) => {
     const old = prior.get(fresh.id);
     if (!old) return fresh;
     const primaryWeapon=safePrimaryWeapon(old.primaryWeapon||old.weapon||fresh.primaryWeapon);
@@ -418,7 +427,7 @@ function reconcileBots(existing, blueBots, redBots, mode='tdm') {
       team: fresh.team,
       x: clamp(finiteNumber(old.x, fresh.x), -ARENA_LIMIT, ARENA_LIMIT),
       z: clamp(finiteNumber(old.z, fresh.z), -ARENA_LIMIT, ARENA_LIMIT),
-      y: terrainHeight(clamp(finiteNumber(old.x, fresh.x), -ARENA_LIMIT, ARENA_LIMIT), clamp(finiteNumber(old.z, fresh.z), -ARENA_LIMIT, ARENA_LIMIT)),
+      y: world.geometry.terrainHeight(clamp(finiteNumber(old.x, fresh.x), -ARENA_LIMIT, ARENA_LIMIT), clamp(finiteNumber(old.z, fresh.z), -ARENA_LIMIT, ARENA_LIMIT)),
       ammo: normalizeAmmo(old.ammo),
       weapon: primaryWeapon,
       primaryWeapon,
@@ -430,9 +439,9 @@ function botCountsFromMeta(meta) {
   const redBots = clamp(Math.floor(finiteNumber(meta?.redBots, 0)), 0, MAX_BOTS);
   return { blueBots, redBots, botCount: Math.min(MAX_BOTS, blueBots + redBots) };
 }
-function botRosterMatchesConfig(existing, blueBots, redBots, mode='tdm') {
+function botRosterMatchesConfig(world,existing, blueBots, redBots, mode='tdm') {
   if (!Array.isArray(existing)) return false;
-  const expected = makeBots(blueBots, redBots, mode);
+  const expected = makeBots(world,blueBots, redBots, mode);
   if (existing.length !== expected.length) return false;
   const actual = new Map(existing.map((bot) => [String(bot?.id || ''), bot]));
   if (actual.size !== expected.length) return false;
@@ -612,6 +621,7 @@ export class WorldDirectory {
         blueBots: clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS),
         redBots: clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS),
         botDifficulty: safeBotDifficulty(body.botDifficulty),
+        mapId: normalizeMapId(body.mapId),
         mode,
         blue: clamp(Math.floor(finiteNumber(body.blue, 0)), 0, MAX_PLAYERS + MAX_BOTS),
         red: clamp(Math.floor(finiteNumber(body.red, 0)), 0, MAX_PLAYERS + MAX_BOTS),
@@ -662,6 +672,7 @@ export class GameRoom {
     this.matchDirty = false;
     this.recentDeaths = [];
     this.recentSpawns = [];
+    this.world = worldBundle(DEFAULT_MAP_ID);
   }
 
   async getMeta() {
@@ -671,6 +682,8 @@ export class GameRoom {
       meta.adminClientIds = normalizeAdminIds(meta);
       meta.clientAuthHashes = normalizeClientAuthHashes(meta);
       meta.settings = normalizeWorldSettings(meta.settings);
+      meta.mapId = normalizeMapId(meta.mapId);
+      this.world = worldBundle(meta.mapId);
       const legacyRules=meta.match||{...DEFAULT_MATCH_RULES,mode:normalizeGameMode(meta.mode)};
       meta.match=normalizeMatchState(meta.match,Date.now(),legacyRules);
       delete meta.mode;delete meta.custom;
@@ -681,7 +694,7 @@ export class GameRoom {
 
   async putMeta(meta) {
     meta.adminClientIds = normalizeAdminIds(meta);
-    meta.clientAuthHashes=normalizeClientAuthHashes(meta);delete meta.mode;delete meta.custom;
+    meta.clientAuthHashes=normalizeClientAuthHashes(meta);meta.mapId=normalizeMapId(meta.mapId);this.world=worldBundle(meta.mapId);delete meta.mode;delete meta.custom;
     this.metaCache=meta;
     await this.ctx.storage.put("meta", meta);
   }
@@ -705,7 +718,7 @@ export class GameRoom {
       : type === 'state' ? { rate: 55, burst: 80 }
       : type === 'simTick' ? { rate: 40, burst: 60 }
       : type === 'fire' ? { rate: 24, burst: 30 }
-      : ['throw','reload','weapon','loadout','team','god','startMatch','lobbyMode','adminPlayer','adminSettings','adminMatch','adminBots'].includes(type) ? { rate: 14, burst: 22 }
+      : ['throw','reload','weapon','loadout','team','god','startMatch','lobbyMode','adminPlayer','adminSettings','adminMatch','adminBots','lobbyMap'].includes(type) ? { rate: 14, burst: 22 }
       : type === 'ping' ? { rate: 8, burst: 12 }
       : type === 'chat' ? { rate: 1.5, burst: 4 }
       : { rate: 30, burst: 45 };
@@ -763,8 +776,8 @@ export class GameRoom {
     if (this.bots) return;
     const counts = botCountsFromMeta(meta), mode = matchMode(meta.match);
     const stored = await this.ctx.storage.get("bots");
-    const rosterValid = botRosterMatchesConfig(stored, counts.blueBots, counts.redBots, mode);
-    this.bots = reconcileBots(stored, counts.blueBots, counts.redBots, mode);
+    const rosterValid = botRosterMatchesConfig(this.world,stored, counts.blueBots, counts.redBots, mode);
+    this.bots = reconcileBots(this.world,stored, counts.blueBots, counts.redBots, mode);
     if (!rosterValid) await this.ctx.storage.put("bots", this.bots);
     this.lastSimAt = Date.now();
     this.simAccumulatorMs = 0;
@@ -788,19 +801,19 @@ export class GameRoom {
 
   selectSpawn(mode,team,actors=[],index=0,excludeId='',now=Date.now()){
     this.pruneSpawnHistory(now);
-    const result=directedChooseSafeSpawn({
+    const result=this.world.spawns.chooseSafeSpawn({
       mode:normalizeGameMode(mode),team:safeTeam(team),actors,index,excludeId,now,
       recentDeaths:this.recentDeaths,recentSpawns:this.recentSpawns,
       projectiles:[...this.bullets.values()],throwables:[...this.throwables.values()],
-      terrainHeight,
-      blockedAt:(x,z,y)=>worldBlockedAt(x,z,y,PLAYER_HEIGHT,PLAYER_RADIUS),
-      lineOfSight:(spawn,actor)=>actorHasLineOfSight(spawn,actor),
+      terrainHeight:this.world.geometry.terrainHeight,
+      blockedAt:(x,z,y)=>this.world.worldCollision.worldBlockedAt(x,z,y,PLAYER_HEIGHT,PLAYER_RADIUS),
+      lineOfSight:(spawn,actor)=>this.world.serverCollision.actorHasLineOfSight(spawn,actor),
     });
     const spawn={x:result.x,y:result.y,z:result.z};this.noteSpawn(spawn,team,excludeId,now);return spawn;
   }
 
   freezeHumanState(player,now=Date.now()){
-    const support=worldSupportHeight(player.x,player.z,player.y,false);
+    const support=this.world.geometry.worldSupportHeight(player.x,player.z,player.y,false);
     return {...player,y:support,ads:false,crouched:false,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,traversal:null,knockVelocityX:0,knockVelocityZ:0};
   }
 
@@ -812,7 +825,7 @@ export class GameRoom {
     Object.assign(match,{status:MATCH_STATUS.ENDED,endedAt:now,restartAt:now+MATCH_END_MS,winner:['blue','red','draw'].includes(result.winner)?result.winner:'',winnerId:safeClientId(result.winnerId||''),winnerName:String(result.winnerName||'').slice(0,24),reason:String(reason||'').slice(0,24),updatedAt:now});
     this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();
     for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;socket.serializeAttachment(this.freezeHumanState(p,now));}
-    for(const bot of this.bots||[]){bot.traversal=null;bot.reloadAt=0;bot.reloadWeapon='';bot.moveSpeed=0;bot.y=worldSupportHeight(bot.x,bot.z,bot.y,false);}
+    for(const bot of this.bots||[]){bot.traversal=null;bot.reloadAt=0;bot.reloadWeapon='';bot.moveSpeed=0;bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y,false);}
     meta.match=match;this.matchDirty=true;this.broadcastMatch(meta,now);return true;
   }
 
@@ -835,7 +848,7 @@ export class GameRoom {
     this.bots=[];let botSpawnIndex=index;
     for(const [team,count] of [['blue',meta.blueBots||0],['red',meta.redBots||0]])for(let i=0;i<count;i++){
       const spawn=this.selectSpawn(mode,team,[...assigned,...this.bots],botSpawnIndex,`bot-${team}-${i+1}`,now);
-      this.bots.push(makeBot(team,i,mode,botSpawnIndex++,spawn));
+      this.bots.push(makeBot(this.world,team,i,mode,botSpawnIndex++,spawn));
     }
     this.matchDirty=true;
     this.broadcast({t:'matchReset',match:publicMatchState(meta.match,now),players,bots:this.bots.map(publicBot),custom:this.isCustomMatch(meta)});
@@ -974,13 +987,15 @@ export class GameRoom {
         blueBots,
         redBots,
         botDifficulty,
+        mapId: DEFAULT_MAP_ID,
         settings: normalizeWorldSettings(),
         match,
         createdAt: now,
         expiresAt: now + ROOM_MAX_LIFETIME_MS,
       };
       await this.putMeta(meta);
-      this.bots = makeBots(blueBots, redBots, mode);
+      this.world=worldBundle(meta.mapId);
+      this.bots = makeBots(this.world,blueBots, redBots, mode);
       await this.ctx.storage.put("bots", this.bots);
       await this.scheduleRoomAlarm(meta.expiresAt);
       await this.updateDirectory(0, meta);
@@ -1056,7 +1071,7 @@ export class GameRoom {
     const requestedTeamCount = liveMembers.filter(({attachment:a}) => safeTeam(a.team) === joinTeam).length;
     const spawnActors=[...liveMembers.map(({attachment})=>attachment),...(this.bots||[])];
     const preservePosition=!!preserved&&matchPreservesReconnectPosition(meta.match);
-    const spawn = preservePosition?preserved:(matchAllowsLobbyEdits(meta.match)?spawnForMode(mode,joinTeam,mode==='ffa'?liveMembers.length:requestedTeamCount):this.selectSpawn(mode,joinTeam,spawnActors,liveMembers.length,clientId,fetchNow));
+    const spawn = preservePosition?preserved:(matchAllowsLobbyEdits(meta.match)?spawnForMode(this.world,mode,joinTeam,mode==='ffa'?liveMembers.length:requestedTeamCount):this.selectSpawn(mode,joinTeam,spawnActors,liveMembers.length,clientId,fetchNow));
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -1067,7 +1082,7 @@ export class GameRoom {
       connectedAt: Date.now(),
       replaced: false,
       x: clamp(finiteNumber(spawn.x, 0), -ARENA_LIMIT, ARENA_LIMIT),
-      y: finiteNumber(spawn.y, terrainHeight(spawn.x || 0, spawn.z || 0)),
+      y: finiteNumber(spawn.y, this.world.geometry.terrainHeight(spawn.x || 0, spawn.z || 0)),
       z: clamp(finiteNumber(spawn.z, 0), -ARENA_LIMIT, ARENA_LIMIT),
       yaw: finiteNumber(spawn.yaw, 0),
       pitch: clamp(finiteNumber(spawn.pitch, 0), -1.4, 1.4),
@@ -1128,6 +1143,7 @@ export class GameRoom {
       isAdmin: isRoomAdmin(meta, clientId),
       ownerClientId: meta.ownerClientId,
       settings: meta.settings,
+      mapId: normalizeMapId(meta.mapId),
       match: publicMatchState(meta.match, Date.now()),
       custom: this.isCustomMatch(meta),
       serverTime: Date.now(),
@@ -1176,7 +1192,7 @@ export class GameRoom {
         if (!matchAllowsMovement(meta.match)) {
           const requestedX=clamp(finiteNumber(payload.x,me.x),-ARENA_LIMIT,ARENA_LIMIT),requestedY=finiteNumber(payload.y,me.y),requestedZ=clamp(finiteNumber(payload.z,me.z),-ARENA_LIMIT,ARENA_LIMIT);
           const corrected=Math.hypot(requestedX-me.x,requestedZ-me.z)>.01||Math.abs(requestedY-me.y)>.05||!!payload.crouched||!!payload.ads;
-          const support=worldSupportHeight(me.x,me.z,me.y,false),incomingJumpSeq=Math.max(0,Math.floor(finiteNumber(payload.jumpSeq,me.lastJumpSeq||0)));
+          const support=this.world.geometry.worldSupportHeight(me.x,me.z,me.y,false),incomingJumpSeq=Math.max(0,Math.floor(finiteNumber(payload.jumpSeq,me.lastJumpSeq||0)));
           me={...me,y:support,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,lastJumpSeq:incomingJumpSeq,traversal:null,knockVelocityX:0,knockVelocityZ:0};
           socket.serializeAttachment(me);
           this.broadcast({t:'state',id:me.clientId,x:me.x,y:me.y,z:me.z,yaw:me.yaw,pitch:me.pitch,ads:false,crouched:false,traversal:''},socket);
@@ -1203,7 +1219,7 @@ export class GameRoom {
       if(seq<=previousSeq||me.traversal||!matchAllowsMovement(meta.match)||me.hp<=0||now<me.wastedUntil){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
       let dirX=clamp(finiteNumber(payload.dirX,0),-1,1),dirZ=clamp(finiteNumber(payload.dirZ,0),-1,1),dirLen=Math.hypot(dirX,dirZ);
       if(dirLen<.35){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}dirX/=dirLen;dirZ/=dirLen;
-      const playerHeight=me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT,candidate=findTraversalCandidate({x:me.x,y:me.y,z:me.z,dirX,dirZ,height:playerHeight,radius:PLAYER_RADIUS,airborne:me.serverGrounded===false});
+      const playerHeight=me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT,candidate=this.world.worldCollision.findTraversalCandidate({x:me.x,y:me.y,z:me.z,dirX,dirZ,height:playerHeight,radius:PLAYER_RADIUS,airborne:me.serverGrounded===false});
       const solidActors=this.solidActors(me.clientId,now);
       if(!candidate||this.actorBlocksAt(candidate.endX,candidate.endZ,candidate.endY,me.x,me.z,solidActors,playerHeight)){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
       const plan=createTraversalPlan(candidate,me.x,me.y,me.z,now,seq);if(!plan){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
@@ -1243,7 +1259,7 @@ export class GameRoom {
       const spreadRadius=weaponSpreadRadians(weapon,me.moveSpeed,settings.movement.runSpeed,adsAmount,!!me.crouched,airborne,preShotHeat),pellets=Math.max(1,Math.floor(WEAPON_SPECS[weapon]?.pellets||1));
       const launcherPitchOffset=(Number(WEAPON_SPECS[weapon]?.launchPitchDeg)||0)*Math.PI/180;
       for(let i=0;i<pellets;i++){
-        const a=spreadShotAngles(shotYaw,clamp(shotPitch+launcherPitchOffset,-1.4,1.4),spreadRadius),launch=shotLaunchPose(me,a.yaw,a.pitch,!!me.crouched,weapon);
+        const a=spreadShotAngles(shotYaw,clamp(shotPitch+launcherPitchOffset,-1.4,1.4),spreadRadius),launch=shotLaunchPose(me,a.yaw,a.pitch,!!me.crouched,weapon,this.world.serverCollision.segmentFirstWorldHitT);
         this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage,weapon,lifetimeMs:WEAPON_SPECS[weapon].lifetimeMs,x:launch.x,y:launch.y,z:launch.z,vx:launch.dx*spec.speed,vy:launch.dy*spec.speed,vz:launch.dz*spec.speed,now,consumeAmmo:i===0&&!unlimited,primaryShot:i===0});
       }
       sendLoadout(socket,me,{action:'fire',accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
@@ -1302,7 +1318,7 @@ export class GameRoom {
       if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Game mode can only be changed in the lobby.'});return;}
       const mode=normalizeGameMode(payload.mode),spec=gameModeSpec(mode);meta.match={...meta.match,mode,blueScore:0,redScore:0,scoreLimit:spec.scoreLimit,timeLimitMs:spec.timeLimitMs,winner:'',winnerId:'',winnerName:'',reason:'',updatedAt:now};
       for(const s of this.ctx.getWebSockets()){const p=s.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;p.pendingTeam='';s.serializeAttachment(p);}
-      this.bots=reconcileBots(this.bots,meta.blueBots||0,meta.redBots||0,mode);await this.ctx.storage.put('bots',this.bots);
+      this.bots=reconcileBots(this.world,this.bots,meta.blueBots||0,meta.redBots||0,mode);await this.ctx.storage.put('bots',this.bots);
       await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);this.broadcastMatch(meta,now,{rulesUpdated:true,by:me.clientId});this.broadcast({t:'bots',config:{blueBots:meta.blueBots||0,redBots:meta.redBots||0,difficulty:safeBotDifficulty(meta.botDifficulty)},bots:this.bots.map(publicBot)});return;
     }
 
@@ -1311,6 +1327,26 @@ export class GameRoom {
       if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Minimap visibility can only be changed in the lobby.'});return;}
       meta.match={...meta.match,minimapRevealAll:!!payload.revealAll,updatedAt:now};
       await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);this.broadcastMatch(meta,now,{rulesUpdated:true,by:me.clientId});return;
+    }
+
+    if(payload.t==='lobbyMap'){
+      if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Admin access required.'});return;}
+      if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Map can only be changed in the lobby.'});return;}
+      const nextMap=normalizeMapId(payload.mapId);
+      if(nextMap===normalizeMapId(meta.mapId)){sendJson(socket,{t:'notice',text:`Map already set to ${mapSpec(nextMap).name}.`});return;}
+      meta.mapId=nextMap;this.world=worldBundle(nextMap);
+      this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.recentDeaths=[];this.recentSpawns=[];
+      const mode=matchMode(meta.match),players=[];let playerIndex=0;
+      for(const s of this.ctx.getWebSockets()){
+        const p=s.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;
+        const team=safeTeam(p.team),spawn=spawnForMode(this.world,mode,team,playerIndex++),reset=spawnedPlayerState(p,spawn,team,now,{resetStats:false});
+        reset.kills=Math.max(0,Math.floor(finiteNumber(p.kills,0)));reset.deaths=Math.max(0,Math.floor(finiteNumber(p.deaths,0)));reset.godMode=!!p.godMode;reset.admin=isRoomAdmin(meta,p.clientId);
+        s.serializeAttachment(reset);players.push(publicPlayer(reset));
+      }
+      this.bots=makeBots(this.world,meta.blueBots||0,meta.redBots||0,mode);
+      await this.ctx.storage.put('bots',this.bots);await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);
+      this.broadcast({t:'map',mapId:nextMap,players,bots:this.bots.map(publicBot),by:me.clientId});
+      return;
     }
 
     if(payload.t==='startMatch'){
@@ -1339,7 +1375,7 @@ export class GameRoom {
       const mode=matchMode(meta.match),spec=gameModeSpec(mode),nextTeam=safeTeam(payload.team),currentTeam=safeTeam(me.team);
       if(!spec.teamBased){me.pendingTeam='';socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:false,reason:'free_for_all',pendingTeam:''});sendJson(socket,{t:'notice',text:'Free For All has no teams.'});return;}
       if(matchAllowsLobbyEdits(meta.match)){
-        if(nextTeam!==currentTeam){const sameTeam=this.liveSockets(socket).filter(s=>safeTeam((s.deserializeAttachment()||{}).team)===nextTeam).length;const moved=spawnedPlayerState(me,spawnForTeam(nextTeam,sameTeam),nextTeam,now,{resetStats:false});moved.kills=me.kills;moved.deaths=me.deaths;me=moved;socket.serializeAttachment(me);}
+        if(nextTeam!==currentTeam){const sameTeam=this.liveSockets(socket).filter(s=>safeTeam((s.deserializeAttachment()||{}).team)===nextTeam).length;const moved=spawnedPlayerState(me,spawnForTeam(this.world,nextTeam,sameTeam),nextTeam,now,{resetStats:false});moved.kills=me.kills;moved.deaths=me.deaths;me=moved;socket.serializeAttachment(me);}
         me.pendingTeam='';socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:true,pendingTeam:''});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me)});await this.updateDirectory(this.liveSockets().length,meta);return;
       }
       if(nextTeam===currentTeam){me.pendingTeam='';socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:true,pendingTeam:''});sendJson(socket,{t:'teamQueued',id:me.clientId,team:currentTeam,pendingTeam:''});return;}
@@ -1456,7 +1492,7 @@ export class GameRoom {
       meta.redBots = redBots;
       meta.botDifficulty = safeBotDifficulty(payload.difficulty);
       await this.putMeta(meta);
-      this.bots = reconcileBots(this.bots, blueBots, redBots, matchMode(meta.match));
+      this.bots = reconcileBots(this.world,this.bots, blueBots, redBots, matchMode(meta.match));
       const activeBotIds = new Set(this.bots.map((bot) => bot.id));
       for (const [id, bullet] of [...this.bullets.entries()]) {
         if (String(bullet.ownerId || "").startsWith("bot-") && !activeBotIds.has(bullet.ownerId)) this.endBullet(id, "bot-removed");
@@ -1491,7 +1527,7 @@ export class GameRoom {
 
   actorBlocksAt(x,z,y,fromX,fromZ,actors,playerHeight=PLAYER_HEIGHT) {
     for(const actor of actors||[]){
-      const ax=finiteNumber(actor.x,0),ay=finiteNumber(actor.y,terrainHeight(ax,finiteNumber(actor.z,0))),az=finiteNumber(actor.z,0),actorHeight=actor.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT;
+      const ax=finiteNumber(actor.x,0),ay=finiteNumber(actor.y,this.world.geometry.terrainHeight(ax,finiteNumber(actor.z,0))),az=finiteNumber(actor.z,0),actorHeight=actor.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT;
       if(y+playerHeight-.08<=ay||y>=ay+actorHeight-.08)continue;
       const minDist=PLAYER_RADIUS*2+.02,newDist=Math.hypot(x-ax,z-az),oldDist=Math.hypot(fromX-ax,fromZ-az);
       if(newDist<minDist&&(oldDist>=minDist||newDist<oldDist-.002))return true;
@@ -1518,7 +1554,7 @@ export class GameRoom {
     const flashPower = activeFlashPower(me, now);
     const ads = flashPower > 0.12 ? false : !!payload.ads;
     let crouched = !!payload.crouched;
-    if (!crouched && me.crouched && worldHeightExpansionBlockedAt(me.x, me.z, me.y, CROUCH_HEIGHT, PLAYER_HEIGHT, PLAYER_RADIUS)) crouched = true;
+    if (!crouched && me.crouched && this.world.worldCollision.worldHeightExpansionBlockedAt(me.x, me.z, me.y, CROUCH_HEIGHT, PLAYER_HEIGHT, PLAYER_RADIUS)) crouched = true;
     const playerHeight = crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
     const baseSpeed = ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
     const currentAllowedSpeed = baseSpeed * (crouched ? CROUCH_SPEED_MULTIPLIER : 1);
@@ -1573,7 +1609,7 @@ export class GameRoom {
     const dz = moveDz + knockDz;
     const speedViolation = reportedUserDistance > maxUserDistance + 0.08;
 
-    const startSupport = worldSupportHeight(me.x, me.z, me.y);
+    const startSupport = this.world.geometry.worldSupportHeight(me.x, me.z, me.y);
     const currentVerticalVelocity = finiteNumber(me.verticalVelocity, 0);
     let serverGrounded = me.serverGrounded !== false && Math.abs(me.y - startSupport) <= 0.28;
     if (!serverGrounded && currentVerticalVelocity <= 0 && Math.abs(me.y - startSupport) <= 0.08) serverGrounded = true;
@@ -1581,9 +1617,9 @@ export class GameRoom {
     const solidActors = this.solidActors(me.clientId, now);
     const horizontal = sweepHorizontalMovement({
       x:me.x,y:me.y,z:me.z,dx,dz,grounded:serverGrounded,arenaLimit:ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,
-      supportHeight:(x,z,y)=>worldSupportHeight(x,z,y,crouched),
-      stepUpHeight:(x,z,y,maxStep)=>worldStepUpHeight(x,z,y,maxStep,PLAYER_RADIUS),maxStepHeight:MAX_STEP_HEIGHT,
-      blockedAt:(x,z,y,fromX,fromZ)=>worldMoveBlockedAt(x,z,y,fromX,fromZ,playerHeight,PLAYER_RADIUS)||this.actorBlocksAt(x,z,y,fromX,fromZ,solidActors,playerHeight),
+      supportHeight:(x,z,y)=>this.world.geometry.worldSupportHeight(x,z,y,crouched),
+      stepUpHeight:(x,z,y,maxStep)=>this.world.geometry.worldStepUpHeight(x,z,y,maxStep,PLAYER_RADIUS),maxStepHeight:MAX_STEP_HEIGHT,
+      blockedAt:(x,z,y,fromX,fromZ)=>this.world.worldCollision.worldMoveBlockedAt(x,z,y,fromX,fromZ,playerHeight,PLAYER_RADIUS)||this.actorBlocksAt(x,z,y,fromX,fromZ,solidActors,playerHeight),
     });
     let x=horizontal.x,z=horizontal.z,walkY=horizontal.y,followsSupport=horizontal.grounded;
 
@@ -1611,12 +1647,12 @@ export class GameRoom {
       serverGrounded = false;
       let verticalRemaining=clamp((now-finiteNumber(me.lastVerticalAt,now))/1000,0,SERVER_VERTICAL_MAX_CATCHUP_SEC);
       while(verticalRemaining>1e-6&&!serverGrounded){
-        const step=Math.min(1/60,verticalRemaining),verticalStep=advanceVerticalMotion(y,verticalVelocity,gravity,step),ceiling=resolveCeilingCollision(y,verticalStep.y,x,z,playerHeight);
+        const step=Math.min(1/60,verticalRemaining),verticalStep=advanceVerticalMotion(y,verticalVelocity,gravity,step),ceiling=this.world.geometry.resolveCeilingCollision(y,verticalStep.y,x,z,playerHeight);
         y=ceiling.y;ceilingHit=ceilingHit||ceiling.hit;verticalVelocity=ceiling.hit&&verticalStep.velocity>0?0:verticalStep.velocity;verticalRemaining-=step;
-        const support=worldSupportHeight(x,z,y);if(y<=support+.025&&verticalVelocity<=0){y=support;verticalVelocity=0;serverGrounded=true;lastGroundedAt=now;break;}
+        const support=this.world.geometry.worldSupportHeight(x,z,y);if(y<=support+.025&&verticalVelocity<=0){y=support;verticalVelocity=0;serverGrounded=true;lastGroundedAt=now;break;}
       }
       if(!serverGrounded){
-        const ground=worldSupportHeight(x,z,y),clientGrounded=payload.grounded===true,closeEnoughToLand=clientGrounded&&verticalVelocity<=0&&rawRequestedY<=ground+.14&&y-ground<=GROUND_FOLLOW_DROP;
+        const ground=this.world.geometry.worldSupportHeight(x,z,y),clientGrounded=payload.grounded===true,closeEnoughToLand=clientGrounded&&verticalVelocity<=0&&rawRequestedY<=ground+.14&&y-ground<=GROUND_FOLLOW_DROP;
         if(closeEnoughToLand){y=ground;verticalVelocity=0;serverGrounded=true;lastGroundedAt=now;}
       }
     }
@@ -1767,7 +1803,7 @@ export class GameRoom {
 
       const team = player.pendingTeam ? safeTeam(player.pendingTeam) : safeTeam(player.team),mode=matchMode(this.metaCache?.match);
       const actors=[...this.ctx.getWebSockets().map(s=>s.deserializeAttachment()||{}),...(this.bots||[])];
-      const spawn=this.selectSpawn(mode,team,actors,Math.floor(Math.random()*spawnPointCount(mode,team)),player.clientId,now);
+      const spawn=this.selectSpawn(mode,team,actors,Math.floor(Math.random()*this.world.spawns.spawnPointCount(mode,team)),player.clientId,now);
       const respawned=spawnedPlayerState(player,spawn,team,now);
       socket.serializeAttachment(respawned);
       this.broadcast({ t: "respawn", player: publicPlayer(respawned) });
@@ -1809,7 +1845,7 @@ export class GameRoom {
       const bot = this.bots[i];
       if (bot.hp <= 0) {
         if (now >= bot.wastedUntil) {
-          const mode=matchMode(meta.match),actors=[...humans.map(({target})=>target),...this.bots],spawn=this.selectSpawn(mode,bot.team,actors,i+Math.floor(Math.random()*spawnPointCount(mode,bot.team)),bot.id,now),primary=safePrimaryWeapon(bot.primaryWeapon||bot.weapon);
+          const mode=matchMode(meta.match),actors=[...humans.map(({target})=>target),...this.bots],spawn=this.selectSpawn(mode,bot.team,actors,i+Math.floor(Math.random()*this.world.spawns.spawnPointCount(mode,bot.team)),bot.id,now),primary=safePrimaryWeapon(bot.primaryWeapon||bot.weapon);
           Object.assign(bot,spawn,{hp:100,wastedUntil:0,regenAt:0,weapon:primary,primaryWeapon:primary,ammo:freshAmmo(),reloadAt:0,reloadWeapon:'',flashUntil:0,flashSpin:0,traversal:null,lastSeenTargetId:'',lastSeenAt:0,lastKnownX:spawn.x,lastKnownZ:spawn.z,patrolX:spawn.x,patrolZ:spawn.z,patrolUntil:0,patrolNodeIndex:-1});
           this.broadcast({t:'respawn',player:publicBot(bot)});
         }
@@ -1832,14 +1868,14 @@ export class GameRoom {
       if(now<finiteNumber(bot.flashUntil,0)){
         bot.yaw+=dt*(bot.flashSpin||2.2);
         const step=settings.movement.walkSpeed*.22*dt,dx=Math.sin(bot.yaw)*step,dz=Math.cos(bot.yaw)*step;
-        if(!worldBlockedAt(bot.x+dx,bot.z+dz,bot.y,PLAYER_HEIGHT,.34)){bot.x+=dx;bot.z+=dz;bot.y=worldSupportHeight(bot.x,bot.z,bot.y);}
+        if(!this.world.worldCollision.worldBlockedAt(bot.x+dx,bot.z+dz,bot.y,PLAYER_HEIGHT,.34)){bot.x+=dx;bot.z+=dz;bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y);}
         continue;
       }
 
       const solidActors=this.solidActors(bot.id,now);
       const tryTraverse=(ax,az)=>{
         const len=Math.hypot(ax,az);if(len<.2||bot.traversal)return false;
-        const dirX=ax/len,dirZ=az/len,candidate=findTraversalCandidate({x:bot.x,y:bot.y,z:bot.z,dirX,dirZ,height:PLAYER_HEIGHT,radius:PLAYER_RADIUS,airborne:false});
+        const dirX=ax/len,dirZ=az/len,candidate=this.world.worldCollision.findTraversalCandidate({x:bot.x,y:bot.y,z:bot.z,dirX,dirZ,height:PLAYER_HEIGHT,radius:PLAYER_RADIUS,airborne:false});
         if(!candidate||candidate.endGrounded===false||this.actorBlocksAt(candidate.endX,candidate.endZ,candidate.endY,bot.x,bot.z,solidActors,PLAYER_HEIGHT))return false;
         const plan=createTraversalPlan(candidate,bot.x,bot.y,bot.z,now,++bot.traverseSeq);if(!plan)return false;
         bot.traversal=plan;this.broadcast({t:'traverse',id:bot.id,accepted:true,...plan});return true;
@@ -1848,9 +1884,9 @@ export class GameRoom {
         const fromX=bot.x,fromZ=bot.z;
         const out=sweepHorizontalMovement({
           x:bot.x,y:bot.y,z:bot.z,dx:ax*step,dz:az*step,grounded:true,arenaLimit:ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,
-          supportHeight:(x,z,y)=>worldSupportHeight(x,z,y,false,.34),
-          stepUpHeight:(x,z,y,maxStep)=>worldStepUpHeight(x,z,y,maxStep,.34),maxStepHeight:MAX_STEP_HEIGHT,
-          blockedAt:(x,z,y,fx,fz)=>worldMoveBlockedAt(x,z,y,fx,fz,PLAYER_HEIGHT,.34)||this.actorBlocksAt(x,z,y,fx,fz,solidActors,PLAYER_HEIGHT),
+          supportHeight:(x,z,y)=>this.world.geometry.worldSupportHeight(x,z,y,false,.34),
+          stepUpHeight:(x,z,y,maxStep)=>this.world.geometry.worldStepUpHeight(x,z,y,maxStep,.34),maxStepHeight:MAX_STEP_HEIGHT,
+          blockedAt:(x,z,y,fx,fz)=>this.world.worldCollision.worldMoveBlockedAt(x,z,y,fx,fz,PLAYER_HEIGHT,.34)||this.actorBlocksAt(x,z,y,fx,fz,solidActors,PLAYER_HEIGHT),
         });
         const moved=Math.hypot(out.x-fromX,out.z-fromZ)>.005;bot.x=out.x;bot.y=out.y;bot.z=out.z;return moved;
       };
@@ -1869,23 +1905,23 @@ export class GameRoom {
         const memoryActive=bot.lastSeenAt&&now-bot.lastSeenAt<=BOT_TARGET_MEMORY_MS;
         if(!memoryActive&&(now>=finiteNumber(bot.patrolUntil,0)||Math.hypot(bot.patrolX-bot.x,bot.patrolZ-bot.z)<1.2)){
           let picked=false,bestNode=null;
-          for(let nodeIndex=0;nodeIndex<COMBAT_FLOW_NODES.length;nodeIndex++){
+          for(let nodeIndex=0;nodeIndex<this.world.geometry.COMBAT_FLOW_NODES.length;nodeIndex++){
             if(nodeIndex===bot.patrolNodeIndex)continue;
-            const node=COMBAT_FLOW_NODES[nodeIndex],px=node.x,pz=node.z,py=worldSupportHeight(px,pz,bot.y),distance=Math.hypot(px-bot.x,pz-bot.z);
-            if(distance<11||distance>62||worldBlockedAt(px,pz,py,PLAYER_HEIGHT,.34))continue;
+            const node=this.world.geometry.COMBAT_FLOW_NODES[nodeIndex],px=node.x,pz=node.z,py=this.world.geometry.worldSupportHeight(px,pz,bot.y),distance=Math.hypot(px-bot.x,pz-bot.z);
+            if(distance<11||distance>62||this.world.worldCollision.worldBlockedAt(px,pz,py,PLAYER_HEIGHT,.34))continue;
             const visible=this.actorLineOfSight(bot,{x:px,y:py,z:pz},now);if(!visible)continue;
             const idealPenalty=Math.abs(distance-34),score=idealPenalty+Math.random()*5;
             if(!bestNode||score<bestNode.score)bestNode={score,nodeIndex,px,pz};
           }
           if(bestNode){bot.patrolX=bestNode.px;bot.patrolZ=bestNode.pz;bot.patrolNodeIndex=bestNode.nodeIndex;picked=true;}
           for(let attempt=0;attempt<8&&!picked;attempt++){
-            const angle=Math.random()*Math.PI*2,distance=12+Math.random()*26,px=clamp(bot.x+Math.cos(angle)*distance,-ARENA_LIMIT+2,ARENA_LIMIT-2),pz=clamp(bot.z+Math.sin(angle)*distance,-ARENA_LIMIT+2,ARENA_LIMIT-2),py=worldSupportHeight(px,pz,bot.y);
-            if(!worldBlockedAt(px,pz,py,PLAYER_HEIGHT,.34)){bot.patrolX=px;bot.patrolZ=pz;bot.patrolNodeIndex=-1;picked=true;}
+            const angle=Math.random()*Math.PI*2,distance=12+Math.random()*26,px=clamp(bot.x+Math.cos(angle)*distance,-ARENA_LIMIT+2,ARENA_LIMIT-2),pz=clamp(bot.z+Math.sin(angle)*distance,-ARENA_LIMIT+2,ARENA_LIMIT-2),py=this.world.geometry.worldSupportHeight(px,pz,bot.y);
+            if(!this.world.worldCollision.worldBlockedAt(px,pz,py,PLAYER_HEIGHT,.34)){bot.patrolX=px;bot.patrolZ=pz;bot.patrolNodeIndex=-1;picked=true;}
           }
           bot.patrolUntil=now+BOT_PATROL_MIN_MS+Math.random()*(BOT_PATROL_MAX_MS-BOT_PATROL_MIN_MS);
         }
         const goalX=memoryActive?finiteNumber(bot.lastKnownX,bot.x):finiteNumber(bot.patrolX,bot.x),goalZ=memoryActive?finiteNumber(bot.lastKnownZ,bot.z):finiteNumber(bot.patrolZ,bot.z),dx=goalX-bot.x,dz=goalZ-bot.z,d=Math.hypot(dx,dz);
-        if(d>.65){const ux=dx/d,uz=dz/d,speed=(memoryActive?settings.movement.runSpeed*.66:settings.movement.walkSpeed*.62)*profile.moveWalk,step=Math.min(d,speed*dt);bot.yaw=Math.atan2(-dx,-dz);if(!tryMove(ux,uz,step)&&!tryTraverse(ux,uz))tryMove(-uz,ux,step*.72)||tryMove(uz,-ux,step*.72);bot.y=worldSupportHeight(bot.x,bot.z,bot.y);}
+        if(d>.65){const ux=dx/d,uz=dz/d,speed=(memoryActive?settings.movement.runSpeed*.66:settings.movement.walkSpeed*.62)*profile.moveWalk,step=Math.min(d,speed*dt);bot.yaw=Math.atan2(-dx,-dz);if(!tryMove(ux,uz,step)&&!tryTraverse(ux,uz))tryMove(-uz,ux,step*.72)||tryMove(uz,-ux,step*.72);bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y);}
         else if(memoryActive){bot.lastSeenAt=0;bot.lastSeenTargetId='';}
         continue;
       }
@@ -1903,13 +1939,13 @@ export class GameRoom {
         const sx=-uz*(bot.strafeDir||1),sz=ux*(bot.strafeDir||1),step=settings.movement.walkSpeed*profile.strafe*dt;
         if(!tryMove(sx,sz,step)){bot.strafeDir=-(bot.strafeDir||1);tryMove(-sx,-sz,step);}
       }
-      bot.y=worldSupportHeight(bot.x,bot.z,bot.y);
+      bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y);
 
       const weaponSettings=settings.weapons[botWeapon],fireScale=botWeapon==='sniper'?1.12:(botWeapon==='shotgun'||botWeapon==='semiShotgun')?.96:1,botFireDelay=Math.max(weaponSettings.cooldownMs*profile.fireScale*fireScale,70);
       if(d<=engageRange&&now>=finiteNumber(bot.nextShotAt,0)){
         if((bot.ammo[botWeapon]||0)<=0){if(!bot.reloadAt){bot.reloadAt=now+weaponSettings.reloadMs;bot.reloadWeapon=botWeapon;}continue;}
         bot.nextShotAt=now+botFireDelay+profile.reactionBase+Math.floor(Math.random()*profile.reactionJitter);bot.ammo[botWeapon]-=1;if(bot.ammo[botWeapon]===0){bot.reloadAt=now+weaponSettings.reloadMs;bot.reloadWeapon=botWeapon;}
-        const tx=finiteNumber(target.x,0)-bot.x,ty=(finiteNumber(target.y,terrainHeight(target.x||0,target.z||0))+1.05)-(bot.y+1.28),tz=finiteNumber(target.z,0)-bot.z,dist=Math.hypot(tx,ty,tz)||1;
+        const tx=finiteNumber(target.x,0)-bot.x,ty=(finiteNumber(target.y,this.world.geometry.terrainHeight(target.x||0,target.z||0))+1.05)-(bot.y+1.28),tz=finiteNumber(target.z,0)-bot.z,dist=Math.hypot(tx,ty,tz)||1;
         const baseSpread=profile.spreadBase+Math.min(.09,d*profile.spreadDistance),spread=(botWeapon==='shotgun'||botWeapon==='semiShotgun')?Math.max(.052,baseSpread*2.15):botWeapon==='sniper'?baseSpread*.55:baseSpread,pellets=Math.max(1,Math.floor(WEAPON_SPECS[botWeapon]?.pellets||1));
         for(let pellet=0;pellet<pellets;pellet++){
           const fx=tx/dist+(Math.random()-.5)*spread,fy=ty/dist+(Math.random()-.5)*spread*.65,fz=tz/dist+(Math.random()-.5)*spread,norm=Math.hypot(fx,fy,fz)||1;
@@ -1925,7 +1961,7 @@ export class GameRoom {
       if(now>=cloud.expiresAt)continue;const ax=finiteNumber(a.x,0),ay=finiteNumber(a.y,0)+1.05,az=finiteNumber(a.z,0),bx=finiteNumber(b.x,0),by=finiteNumber(b.y,0)+1.05,bz=finiteNumber(b.z,0),vx=bx-ax,vy=by-ay,vz=bz-az,wx=cloud.x-ax,wy=cloud.y-ay,wz=cloud.z-az,len2=vx*vx+vy*vy+vz*vz||1,t=clamp((wx*vx+wy*vy+wz*vz)/len2,0,1),dx=ax+vx*t-cloud.x,dy=ay+vy*t-cloud.y,dz=az+vz*t-cloud.z;if(Math.hypot(dx,dy,dz)<=cloud.radius*.88)return true;
     }return false;
   }
-  actorLineOfSight(a,b,now){return actorHasLineOfSight(a,b)&&!this.smokeBlocksSegment(a,b,now);}
+  actorLineOfSight(a,b,now){return this.world.serverCollision.actorHasLineOfSight(a,b)&&!this.smokeBlocksSegment(a,b,now);}
 
   stepThrowables(now,settings){
     for(const [id,cloud] of this.smokeClouds)if(now>=cloud.expiresAt)this.smokeClouds.delete(id);
@@ -1939,12 +1975,12 @@ export class GameRoom {
         for(let i=0;i<steps&&!g.stuck;i++){
           const stepAt=integrationStart+(i+1)*st*1000,px=g.x,py=g.y,pz=g.z;
           if(g.kind!=='sticky'&&g.rolling){
-            const nx=px+g.vx*st,nz=pz+g.vz*st,ny=terrainHeight(nx,nz)+.10;
-            const actorHit=this.findThrowableActorHit(g,px,py,pz,nx,ny,nz,stepAt),worldT=segmentFirstWorldHitT(px,py,pz,nx,ny,nz);
+            const nx=px+g.vx*st,nz=pz+g.vz*st,ny=this.world.geometry.terrainHeight(nx,nz)+.10;
+            const actorHit=this.findThrowableActorHit(g,px,py,pz,nx,ny,nz,stepAt),worldT=this.world.serverCollision.segmentFirstWorldHitT(px,py,pz,nx,ny,nz);
             if(actorHit&&(worldT==null||actorHit.t<worldT-.0001)){this.resolveThrowableActorHit(g,actorHit,px,py,pz,nx,ny,nz,stepAt);continue;}
-            const hitObj=segmentHitsObstacle(px,py,pz,nx,ny,nz);
+            const hitObj=this.world.serverCollision.segmentHitsObstacle(px,py,pz,nx,ny,nz);
             if(hitObj){
-              const hitX=segmentHitsObstacle(px,py,pz,nx,py,pz),hitZ=segmentHitsObstacle(px,py,pz,px,py,nz),ambiguous=!hitX&&!hitZ;
+              const hitX=this.world.serverCollision.segmentHitsObstacle(px,py,pz,nx,py,pz),hitZ=this.world.serverCollision.segmentHitsObstacle(px,py,pz,px,py,nz),ambiguous=!hitX&&!hitZ;
               if(hitX||ambiguous)g.vx=-g.vx*.34;
               if(hitZ||ambiguous)g.vz=-g.vz*.34;
               g.vx*=.82;g.vz*=.82;
@@ -1957,26 +1993,26 @@ export class GameRoom {
 
           g.vy-=TACTICAL_GRAVITY*st;
           const nx=px+g.vx*st,ny=py+g.vy*st,nz=pz+g.vz*st;
-          const actorHit=this.findThrowableActorHit(g,px,py,pz,nx,ny,nz,stepAt),worldT=segmentFirstWorldHitT(px,py,pz,nx,ny,nz);
+          const actorHit=this.findThrowableActorHit(g,px,py,pz,nx,ny,nz,stepAt),worldT=this.world.serverCollision.segmentFirstWorldHitT(px,py,pz,nx,ny,nz);
           if(actorHit&&(worldT==null||actorHit.t<worldT-.0001)){this.resolveThrowableActorHit(g,actorHit,px,py,pz,nx,ny,nz,stepAt);continue;}
           g.x=nx;g.y=ny;g.z=nz;
-          const groundY=terrainHeight(nx,nz)+.08,hitGround=ny<=groundY,hitObj=!hitGround&&segmentHitsObstacle(px,py,pz,nx,ny,nz);
+          const groundY=this.world.geometry.terrainHeight(nx,nz)+.08,hitGround=ny<=groundY,hitObj=!hitGround&&this.world.serverCollision.segmentHitsObstacle(px,py,pz,nx,ny,nz);
           if(!hitGround&&!hitObj)continue;
 
           if(g.kind==='sticky'){
-            g.x=px;g.y=Math.max(py,terrainHeight(px,pz)+.10);g.z=pz;g.vx=g.vy=g.vz=0;g.stuck=true;g.rolling=false;
+            g.x=px;g.y=Math.max(py,this.world.geometry.terrainHeight(px,pz)+.10);g.z=pz;g.vx=g.vy=g.vz=0;g.stuck=true;g.rolling=false;
           }else if(hitGround){
             // Preserve horizontal direction on a ground contact. High-energy
             // impacts bounce; low-energy impacts transition naturally to roll.
             const impact=Math.abs(g.vy),horizontal=Math.hypot(g.vx,g.vz);
-            g.x=nx;g.y=terrainHeight(nx,nz)+.10;g.z=nz;g.vx*=.76;g.vz*=.76;
+            g.x=nx;g.y=this.world.geometry.terrainHeight(nx,nz)+.10;g.z=nz;g.vx*=.76;g.vz*=.76;
             if(impact>2.15){g.vy=impact*.29;g.rolling=false;}
             else{g.vy=0;g.rolling=horizontal>.24;if(!g.rolling){g.vx=g.vz=0;g.stuck=true;}}
           }else{
             // Reflect only the component that met a wall/solid rather than
             // reversing the entire throw direction on every contact.
             g.x=px;g.y=py;g.z=pz;
-            const hitX=segmentHitsObstacle(px,py,pz,nx,ny,pz),hitZ=segmentHitsObstacle(px,py,pz,px,ny,nz),ambiguous=!hitX&&!hitZ;
+            const hitX=this.world.serverCollision.segmentHitsObstacle(px,py,pz,nx,ny,pz),hitZ=this.world.serverCollision.segmentHitsObstacle(px,py,pz,px,ny,nz),ambiguous=!hitX&&!hitZ;
             if(hitX||ambiguous)g.vx=-g.vx*.38;
             if(hitZ||ambiguous)g.vz=-g.vz*.38;
             g.vy*=.58;
@@ -1998,7 +2034,7 @@ export class GameRoom {
       // It may collide with the owner normally if it bounces back later.
       if(id===g.ownerId&&at-g.born<260)return;
       if(id===g.lastActorHitId&&at-g.lastActorHitAt<85)return;
-      const hit=projectileSegmentHitZone(actor,x1,y1,z1,x2,y2,z2);
+      const hit=this.world.serverCollision.projectileSegmentHitZone(actor,x1,y1,z1,x2,y2,z2);
       if(hit&&(best==null||hit.t<best.t))best={actor,id,team,t:hit.t};
     };
     for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;consider(p,p.clientId,p.team);}
@@ -2026,7 +2062,7 @@ export class GameRoom {
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;
       const ex=p.x,ey=p.y+PLAYER_HEIGHT*.75,ez=p.z,dx=g.x-ex,dy=g.y-ey,dz=g.z-ez,dist=Math.hypot(dx,dy,dz);if(dist>radius)continue;
-      if(!blastHasLineOfSight(g.x,g.y,g.z,ex,ey,ez))continue;
+      if(!this.world.serverCollision.blastHasLineOfSight(g.x,g.y,g.z,ex,ey,ez))continue;
       const cp=Math.cos(p.pitch||0),fx=-Math.sin(p.yaw||0)*cp,fy=Math.sin(p.pitch||0),fz=-Math.cos(p.yaw||0)*cp,n=dist||1,dot=(fx*dx+fy*dy+fz*dz)/n,front=.12+.88*Math.max(0,(dot+1)/2),power=clamp((1-dist/radius)*front,0,1);if(power<.035)continue;
       const durationMs=Math.round(650+power*2850),existingPower=activeFlashPower(p,now);
       if(power>=existingPower){p.flashPower=power;p.flashDurationMs=durationMs;p.flashUntil=now+durationMs;}
@@ -2034,7 +2070,7 @@ export class GameRoom {
       p.ads=false;socket.serializeAttachment(p);
       sendJson(socket,{t:'flashEffect',power,durationMs});
     }
-    for(const b of this.bots){if(b.hp<=0)continue;const dx=b.x-g.x,dy=b.y+1.05-g.y,dz=b.z-g.z,dist=Math.hypot(dx,dy,dz);if(dist>radius||!blastHasLineOfSight(g.x,g.y,g.z,b.x,b.y+1.05,b.z))continue;const power=clamp(1-dist/radius,0,1);if(power<.05)continue;b.flashUntil=Math.max(finiteNumber(b.flashUntil,0),now+550+power*2600);b.flashSpin=(Math.random()<.5?-1:1)*(1.5+Math.random()*2.5);}
+    for(const b of this.bots){if(b.hp<=0)continue;const dx=b.x-g.x,dy=b.y+1.05-g.y,dz=b.z-g.z,dist=Math.hypot(dx,dy,dz);if(dist>radius||!this.world.serverCollision.blastHasLineOfSight(g.x,g.y,g.z,b.x,b.y+1.05,b.z))continue;const power=clamp(1-dist/radius,0,1);if(power<.05)continue;b.flashUntil=Math.max(finiteNumber(b.flashUntil,0),now+550+power*2600);b.flashSpin=(Math.random()<.5?-1:1)*(1.5+Math.random()*2.5);}
   }
   detonateSmoke(g,now){
     const cloud={id:g.id,x:g.x,y:g.y+.65,z:g.z,radius:SMOKE_RADIUS,expiresAt:now+SMOKE_DURATION_MS};this.smokeClouds.set(g.id,cloud);this.broadcast({t:'smokeDetonate',...cloud});
@@ -2051,17 +2087,17 @@ export class GameRoom {
     const frag=g.kind==='frag',radius=frag?FRAG_RADIUS:STICKY_RADIUS,maxDamage=frag?FRAG_MAX_DAMAGE:STICKY_MAX_DAMAGE,weapon=frag?'frag':'sticky';
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;const self=p.clientId===g.ownerId;if(!self&&combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,p.clientId,p.team))continue;
-      const dx=p.x-g.x,dz=p.z-g.z,d=Math.hypot(dx,p.y+1-g.y,dz);if(d>radius||!blastHasLineOfSight(g.x,g.y,g.z,p.x,p.y+1,p.z))continue;
+      const dx=p.x-g.x,dz=p.z-g.z,d=Math.hypot(dx,p.y+1-g.y,dz);if(d>radius||!this.world.serverCollision.blastHasLineOfSight(g.x,g.y,g.z,p.x,p.y+1,p.z))continue;
       let damage=this.blastDamage(maxDamage,d,radius,frag?.20:.18,frag?.30:.32);if(self)damage=Math.round(damage*(frag?.68:.72));const n=Math.hypot(dx,dz)||1;this.damageHuman(socket,p,g.ownerId,damage,weapon,{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});
     }
-    for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,b.id,b.team))continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius||!blastHasLineOfSight(g.x,g.y,g.z,b.x,b.y+1,b.z))continue;const damage=this.blastDamage(maxDamage,d,radius,frag?.20:.18,frag?.30:.32),n=Math.hypot(dx,dz)||1;this.damageBot(b,g.ownerId,damage,weapon,{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});}
+    for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,b.id,b.team))continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius||!this.world.serverCollision.blastHasLineOfSight(g.x,g.y,g.z,b.x,b.y+1,b.z))continue;const damage=this.blastDamage(maxDamage,d,radius,frag?.20:.18,frag?.30:.32),n=Math.hypot(dx,dz)||1;this.damageBot(b,g.ownerId,damage,weapon,{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});}
     this.broadcast({t:'explosion',id:g.id,x:g.x,y:g.y,z:g.z,kind:weapon,radius});
   }
 
 
   explodeProjectile(bullet,now,settings){
     const radius=Math.max(.1,finiteNumber(bullet.explosionRadius,0)),maxDamage=Math.max(1,finiteNumber(bullet.explosionDamage,0));if(radius<=.1)return;
-    const apply=(target,socket=null,isBot=false)=>{if(!target||target.hp<=0)return;const targetId=target.clientId||target.id,self=targetId===bullet.ownerId;if(!self&&combatantsAreFriendly(matchMode(this.metaCache?.match),bullet.ownerId,bullet.ownerTeam,targetId,target.team))return;const tx=target.x,ty=target.y+1,tz=target.z,dx=tx-bullet.x,dy=ty-bullet.y,dz=tz-bullet.z,d=Math.hypot(dx,dy,dz);if(d>radius||!blastHasLineOfSight(bullet.x,bullet.y,bullet.z,tx,ty,tz))return;let damage=this.blastDamage(maxDamage,d,radius,bullet.weapon==='rpg'?.22:.20,bullet.weapon==='rpg'?.34:.30);if(self)damage=Math.round(damage*.65);const horizontal=Math.hypot(dx,dz)||1,knockback={x:dx/horizontal*6.2,z:dz/horizontal*6.2,y:3.8};if(isBot)this.damageBot(target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d});else this.damageHuman(socket,target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d});};
+    const apply=(target,socket=null,isBot=false)=>{if(!target||target.hp<=0)return;const targetId=target.clientId||target.id,self=targetId===bullet.ownerId;if(!self&&combatantsAreFriendly(matchMode(this.metaCache?.match),bullet.ownerId,bullet.ownerTeam,targetId,target.team))return;const tx=target.x,ty=target.y+1,tz=target.z,dx=tx-bullet.x,dy=ty-bullet.y,dz=tz-bullet.z,d=Math.hypot(dx,dy,dz);if(d>radius||!this.world.serverCollision.blastHasLineOfSight(bullet.x,bullet.y,bullet.z,tx,ty,tz))return;let damage=this.blastDamage(maxDamage,d,radius,bullet.weapon==='rpg'?.22:.20,bullet.weapon==='rpg'?.34:.30);if(self)damage=Math.round(damage*.65);const horizontal=Math.hypot(dx,dz)||1,knockback={x:dx/horizontal*6.2,z:dz/horizontal*6.2,y:3.8};if(isBot)this.damageBot(target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d});else this.damageHuman(socket,target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d});};
     for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;apply(p,socket,false);}for(const bot of this.bots)apply(bot,null,true);
     this.broadcast({t:'explosion',id:bullet.id,x:bullet.x,y:bullet.y,z:bullet.z,kind:bullet.weapon,radius});
   }
@@ -2116,10 +2152,10 @@ export class GameRoom {
             this.endBullet(id, "world"); ended = true; break;
           }
 
-          const worldT = segmentFirstWorldHitT(previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
+          const worldT = this.world.serverCollision.segmentFirstWorldHitT(previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
           let nearest = null;
           const consider = (kind, target, socket = null) => {
-            const hit = projectileSegmentHitZone(target,previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
+            const hit = this.world.serverCollision.projectileSegmentHitZone(target,previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
             if (!hit || bullet.hitTargets.has(target.clientId || target.id)) return;
             if (!nearest || hit.t < nearest.hit.t) nearest = { kind, target, socket, hit };
           };
@@ -2449,6 +2485,7 @@ export class GameRoom {
           blueBots: (this.bots || []).filter((bot) => safeTeam(bot.team) === "blue").length,
           redBots: (this.bots || []).filter((bot) => safeTeam(bot.team) === "red").length,
           botDifficulty: safeBotDifficulty(meta.botDifficulty),
+          mapId: normalizeMapId(meta.mapId),
           mode: matchMode(match),
           blue,
           red,

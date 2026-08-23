@@ -1,9 +1,18 @@
-export const APP_VERSION = '1.31.1';
-export const PROTOCOL_VERSION = 50;
+export const APP_VERSION = '1.32.0';
+export const PROTOCOL_VERSION = 51;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
 export const TEAM_COLORS = { blue:'#54a9ff', red:'#ff3b45' };
+
+export const MAP_ORDER = ['highlands','depot'];
+export const DEFAULT_MAP_ID = 'highlands';
+export const MAPS = Object.freeze({
+  highlands:Object.freeze({id:'highlands',name:'HIGHLANDS',short:'HIGHLANDS',description:'Open highland combat with hills, buildings, and natural cover.'}),
+  depot:Object.freeze({id:'depot',name:'FREIGHT DEPOT',short:'DEPOT',description:'Industrial freight yard with warehouses, container lanes, and close flanking routes.'}),
+});
+export function normalizeMapId(value){const id=String(value||'').toLowerCase();return MAPS[id]?id:DEFAULT_MAP_ID;}
+export function mapSpec(value){return MAPS[normalizeMapId(value)];}
 
 export const WEAPON_ORDER = ['pistol','assault','ump','shotgun','semiShotgun','sniper','grenadeLauncher','rpg'];
 export const PRIMARY_WEAPONS = ['assault','ump','shotgun','semiShotgun','sniper','grenadeLauncher','rpg'];
