@@ -1334,8 +1334,11 @@ export class GameRoom {
 
     if(payload.t==='lobbyMinimap'){
       if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Admin access required.'});return;}
-      if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Minimap visibility can only be changed in the lobby.'});return;}
-      meta.match={...meta.match,minimapRevealAll:!!payload.revealAll,updatedAt:now};
+      if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Minimap settings can only be changed in the lobby.'});return;}
+      const next={...meta.match,updatedAt:now};
+      if(Object.prototype.hasOwnProperty.call(payload,'revealAll'))next.minimapRevealAll=!!payload.revealAll;
+      if(Object.prototype.hasOwnProperty.call(payload,'directional'))next.minimapDirectional=!!payload.directional;
+      meta.match=normalizeMatchState(next,now,next);
       await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);this.broadcastMatch(meta,now,{rulesUpdated:true,by:me.clientId});return;
     }
 
@@ -1471,7 +1474,7 @@ export class GameRoom {
         sendJson(socket,{t:"notice",tone:"error",text:"Admin access required."});
         return;
       }
-      const rules=normalizeMatchRules({...payload.rules,mode:matchMode(meta.match),minimapRevealAll:!!meta.match.minimapRevealAll});
+      const rules=normalizeMatchRules({...payload.rules,mode:matchMode(meta.match),minimapRevealAll:!!meta.match.minimapRevealAll,minimapDirectional:!!meta.match.minimapDirectional});
       const match=normalizeMatchState(meta.match,now,rules);
       match.scoreLimit=rules.scoreLimit;match.timeLimitMs=rules.timeLimitMs;
       if(matchAllowsCombat(match)&&match.startedAt)match.endsAt=match.timeLimitMs>0?match.startedAt+match.timeLimitMs:0;

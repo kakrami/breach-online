@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.37.2';
-export const PROTOCOL_VERSION = 55;
+export const APP_VERSION = '1.37.3';
+export const PROTOCOL_VERSION = 56;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -108,7 +108,7 @@ export const GAME_MODES = Object.freeze({
 export function normalizeGameMode(value){const id=String(value||'').toLowerCase();return GAME_MODES[id]?id:DEFAULT_GAME_MODE;}
 export function gameModeSpec(value){return GAME_MODES[normalizeGameMode(value)];}
 export function gameModeIsTeamBased(value){return !!gameModeSpec(value).teamBased;}
-export const DEFAULT_MATCH_RULES = { mode:DEFAULT_GAME_MODE, scoreLimit:GAME_MODES.tdm.scoreLimit, timeLimitMs:GAME_MODES.tdm.timeLimitMs, minimapRevealAll:false };
+export const DEFAULT_MATCH_RULES = { mode:DEFAULT_GAME_MODE, scoreLimit:GAME_MODES.tdm.scoreLimit, timeLimitMs:GAME_MODES.tdm.timeLimitMs, minimapRevealAll:false, minimapDirectional:false };
 export const MATCH_WARMUP_MS = 4000;
 export const MATCH_END_MS = 7000;
 
