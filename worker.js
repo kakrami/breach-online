@@ -178,6 +178,14 @@ function safeName(value) {
   return cleaned || "Player";
 }
 
+function safeChatText(value) {
+  return String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+}
+
 function finiteNumber(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -688,6 +696,7 @@ export class GameRoom {
       : type === 'fire' ? { rate: 24, burst: 30 }
       : ['throw','reload','weapon','loadout','team','god','startMatch','lobbyMode','adminPlayer','adminSettings','adminMatch','adminBots'].includes(type) ? { rate: 14, burst: 22 }
       : type === 'ping' ? { rate: 8, burst: 12 }
+      : type === 'chat' ? { rate: 1.5, burst: 4 }
       : { rate: 30, burst: 45 };
     let state = this.socketRate.get(socket);
     if (!state) {
@@ -1194,6 +1203,13 @@ export class GameRoom {
     }
 
     if (payload.t === "simTick") { await this.stepSimulation(now, meta); return; }
+
+    if (payload.t === "chat") {
+      const text = safeChatText(payload.text);
+      if (!text) return;
+      this.broadcast({ t:"chat", id:me.clientId, name:safeName(me.name), team:safeTeam(me.team), text, at:now });
+      return;
+    }
 
     if (payload.t === "fire") {
       if(!matchAllowsCombat(meta.match)){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'match_inactive'});return;}
