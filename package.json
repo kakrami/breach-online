@@ -1,6 +1,6 @@
 {
   "name": "breach-online",
-  "version": "1.37.3",
+  "version": "1.37.6",
   "private": true,
   "type": "module",
   "scripts": {
