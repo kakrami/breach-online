@@ -140,6 +140,19 @@ export function segmentFirstWorldOcclusionT(x1, y1, z1, x2, y2, z2) {
   return Math.min(obstacle, terrain);
 }
 
+export function blastHasLineOfSight(x1, y1, z1, x2, y2, z2, clearance = 0.22) {
+  const dx=x2-x1,dy=y2-y1,dz=z2-z1,distance=Math.hypot(dx,dy,dz);
+  if(distance<=0.001)return true;
+  // Blast origins commonly sit exactly on the wall/terrain contact that caused
+  // detonation. Starting an occlusion ray on that surface returns t=0 and can
+  // incorrectly block the whole explosion. Step a short distance toward each
+  // target so the contact surface is cleared on the exposed side while targets
+  // genuinely behind the obstacle remain occluded.
+  const step=Math.min(Math.max(0,Number(clearance)||0),distance*.35);
+  const scale=step/distance,sx=x1+dx*scale,sy=y1+dy*scale,sz=z1+dz*scale;
+  return segmentFirstWorldOcclusionT(sx,sy,sz,x2,y2,z2)==null;
+}
+
 export function segmentHitsObstacle(x1, y1, z1, x2, y2, z2) {
   return segmentFirstObstacleT(x1, y1, z1, x2, y2, z2) != null;
 }

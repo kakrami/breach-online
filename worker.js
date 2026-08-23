@@ -10,7 +10,7 @@ import { normalizeMatchRules, defaultMatchState, normalizeMatchState, publicMatc
 import { MATCH_STATUS, matchAllowsLobbyEdits, matchAllowsMovement, matchAllowsCombat, matchAllowsRespawn, matchPreservesReconnectPosition } from './gameplay-phase.js';
 import { spawnForMode as directedSpawnForMode, chooseSafeSpawn as directedChooseSafeSpawn, spawnPointCount } from './spawn-director.js';
 import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback, sweepHorizontalMovement, createTraversalPlan, traversalPose, tacticalThrowVelocity } from './movement-model.js';
-import { projectileSegmentHitZone, segmentFirstWorldHitT, segmentFirstWorldOcclusionT, segmentHitsObstacle, actorHasLineOfSight } from './server-collision.js';
+import { projectileSegmentHitZone, segmentFirstWorldHitT, segmentHitsObstacle, actorHasLineOfSight, blastHasLineOfSight } from './server-collision.js';
 import { worldBlockedAt, worldMoveBlockedAt, worldHeightExpansionBlockedAt, findTraversalCandidate } from './world-collision.js';
 
 const GAME_VERSION = APP_VERSION;
@@ -29,6 +29,7 @@ const MOVE_BUDGET_MAX_SEC = 0.26;
 const BOT_PERSIST_INTERVAL_MS = 10 * 1000;
 const BULLET_MAX_SEGMENT_DISTANCE = 6;
 const THROWABLE_BROADCAST_MS = 33;
+const EXPLOSIVE_PROJECTILE_BROADCAST_MS = 45;
 const SERVER_VERTICAL_MAX_CATCHUP_SEC = .40;
 const SERVER_COYOTE_TIME_MS = MOVEMENT_FEEL.coyoteTimeMs + 5;
 const BOT_TARGET_MEMORY_MS = 3200;
@@ -1660,7 +1661,7 @@ export class GameRoom {
       penetrationPower: safe === "sniper" ? Math.max(1, damage) : 0,
       gravity:Math.max(0,finiteNumber(weaponSpec.projectileGravity,0)),explosionRadius:Math.max(0,finiteNumber(weaponSpec.explosionRadius,0)),explosionDamage:Math.max(0,finiteNumber(weaponSpec.explosionDamage,0)),
       hitTargets: new Set(),traveledDistance: 0,
-      lifetimeMs: lifetimeMs || weaponSpec.lifetimeMs, x, y, z, vx, vy, vz, born: now, lastAt: now,
+      lifetimeMs: lifetimeMs || weaponSpec.lifetimeMs, x, y, z, vx, vy, vz, born: now, lastAt: now, lastBroadcast: now,
     };
     this.bullets.set(id, bullet);
     this.broadcast({ t: "shot", id, ownerId, ownerTeam: bullet.ownerTeam, damage, weapon: safe, lifetimeMs: bullet.lifetimeMs, gravity:bullet.gravity, x, y, z, vx, vy, vz, consumeAmmo, primaryShot:!!primaryShot, at: now });
@@ -1957,7 +1958,7 @@ export class GameRoom {
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;
       const ex=p.x,ey=p.y+PLAYER_HEIGHT*.75,ez=p.z,dx=g.x-ex,dy=g.y-ey,dz=g.z-ez,dist=Math.hypot(dx,dy,dz);if(dist>radius)continue;
-      if(segmentFirstWorldOcclusionT(g.x,g.y,g.z,ex,ey,ez)!=null)continue;
+      if(!blastHasLineOfSight(g.x,g.y,g.z,ex,ey,ez))continue;
       const cp=Math.cos(p.pitch||0),fx=-Math.sin(p.yaw||0)*cp,fy=Math.sin(p.pitch||0),fz=-Math.cos(p.yaw||0)*cp,n=dist||1,dot=(fx*dx+fy*dy+fz*dz)/n,front=.12+.88*Math.max(0,(dot+1)/2),power=clamp((1-dist/radius)*front,0,1);if(power<.035)continue;
       const durationMs=Math.round(650+power*2850),existingPower=activeFlashPower(p,now);
       if(power>=existingPower){p.flashPower=power;p.flashDurationMs=durationMs;p.flashUntil=now+durationMs;}
@@ -1965,26 +1966,34 @@ export class GameRoom {
       p.ads=false;socket.serializeAttachment(p);
       sendJson(socket,{t:'flashEffect',power,durationMs});
     }
-    for(const b of this.bots){if(b.hp<=0)continue;const dx=b.x-g.x,dy=b.y+1.05-g.y,dz=b.z-g.z,dist=Math.hypot(dx,dy,dz);if(dist>radius||segmentFirstWorldOcclusionT(g.x,g.y,g.z,b.x,b.y+1.05,b.z)!=null)continue;const power=clamp(1-dist/radius,0,1);if(power<.05)continue;b.flashUntil=Math.max(finiteNumber(b.flashUntil,0),now+550+power*2600);b.flashSpin=(Math.random()<.5?-1:1)*(1.5+Math.random()*2.5);}
+    for(const b of this.bots){if(b.hp<=0)continue;const dx=b.x-g.x,dy=b.y+1.05-g.y,dz=b.z-g.z,dist=Math.hypot(dx,dy,dz);if(dist>radius||!blastHasLineOfSight(g.x,g.y,g.z,b.x,b.y+1.05,b.z))continue;const power=clamp(1-dist/radius,0,1);if(power<.05)continue;b.flashUntil=Math.max(finiteNumber(b.flashUntil,0),now+550+power*2600);b.flashSpin=(Math.random()<.5?-1:1)*(1.5+Math.random()*2.5);}
   }
   detonateSmoke(g,now){
     const cloud={id:g.id,x:g.x,y:g.y+.65,z:g.z,radius:SMOKE_RADIUS,expiresAt:now+SMOKE_DURATION_MS};this.smokeClouds.set(g.id,cloud);this.broadcast({t:'smokeDetonate',...cloud});
   }
+  blastDamage(maxDamage,distance,radius,edgeScale=.18,innerScale=.30){
+    const max=Math.max(1,finiteNumber(maxDamage,1)),r=Math.max(.1,finiteNumber(radius,.1)),d=Math.max(0,finiteNumber(distance,0));
+    if(d>=r)return Math.max(1,Math.round(max*Math.max(.05,edgeScale)));
+    const inner=r*Math.max(0,Math.min(.8,innerScale));if(d<=inner)return Math.round(max);
+    const t=clamp((d-inner)/Math.max(.001,r-inner),0,1),scale=1-(1-Math.max(.05,edgeScale))*t;
+    return Math.max(1,Math.round(max*scale));
+  }
+
   explodeThrowable(g,now,settings){
     const frag=g.kind==='frag',radius=frag?FRAG_RADIUS:STICKY_RADIUS,maxDamage=frag?FRAG_MAX_DAMAGE:STICKY_MAX_DAMAGE,weapon=frag?'frag':'sticky';
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;const self=p.clientId===g.ownerId;if(!self&&combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,p.clientId,p.team))continue;
-      const dx=p.x-g.x,dz=p.z-g.z,d=Math.hypot(dx,p.y+1-g.y,dz);if(d>radius||segmentFirstWorldOcclusionT(g.x,g.y,g.z,p.x,p.y+1,p.z)!=null)continue;
-      let damage=Math.max(12,Math.round(maxDamage*(1-d/radius)));if(self)damage=Math.round(damage*(frag?.68:.72));const n=Math.hypot(dx,dz)||1;this.damageHuman(socket,p,g.ownerId,damage,weapon,{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});
+      const dx=p.x-g.x,dz=p.z-g.z,d=Math.hypot(dx,p.y+1-g.y,dz);if(d>radius||!blastHasLineOfSight(g.x,g.y,g.z,p.x,p.y+1,p.z))continue;
+      let damage=this.blastDamage(maxDamage,d,radius,frag?.20:.18,frag?.30:.32);if(self)damage=Math.round(damage*(frag?.68:.72));const n=Math.hypot(dx,dz)||1;this.damageHuman(socket,p,g.ownerId,damage,weapon,{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});
     }
-    for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,b.id,b.team))continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius||segmentFirstWorldOcclusionT(g.x,g.y,g.z,b.x,b.y+1,b.z)!=null)continue;const damage=Math.max(12,Math.round(maxDamage*(1-d/radius))),n=Math.hypot(dx,dz)||1;this.damageBot(b,g.ownerId,damage,weapon,{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});}
+    for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,b.id,b.team))continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius||!blastHasLineOfSight(g.x,g.y,g.z,b.x,b.y+1,b.z))continue;const damage=this.blastDamage(maxDamage,d,radius,frag?.20:.18,frag?.30:.32),n=Math.hypot(dx,dz)||1;this.damageBot(b,g.ownerId,damage,weapon,{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});}
     this.broadcast({t:'explosion',id:g.id,x:g.x,y:g.y,z:g.z,kind:weapon,radius});
   }
 
 
   explodeProjectile(bullet,now,settings){
     const radius=Math.max(.1,finiteNumber(bullet.explosionRadius,0)),maxDamage=Math.max(1,finiteNumber(bullet.explosionDamage,0));if(radius<=.1)return;
-    const apply=(target,socket=null,isBot=false)=>{if(!target||target.hp<=0)return;const targetId=target.clientId||target.id,self=targetId===bullet.ownerId;if(!self&&combatantsAreFriendly(matchMode(this.metaCache?.match),bullet.ownerId,bullet.ownerTeam,targetId,target.team))return;const tx=target.x,ty=target.y+1,tz=target.z,dx=tx-bullet.x,dy=ty-bullet.y,dz=tz-bullet.z,d=Math.hypot(dx,dy,dz);if(d>radius||segmentFirstWorldOcclusionT(bullet.x,bullet.y,bullet.z,tx,ty,tz)!=null)return;let damage=Math.max(10,Math.round(maxDamage*(1-d/radius)));if(self)damage=Math.round(damage*.65);const horizontal=Math.hypot(dx,dz)||1,knockback={x:dx/horizontal*6.2,z:dz/horizontal*6.2,y:3.8};if(isBot)this.damageBot(target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d});else this.damageHuman(socket,target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d});};
+    const apply=(target,socket=null,isBot=false)=>{if(!target||target.hp<=0)return;const targetId=target.clientId||target.id,self=targetId===bullet.ownerId;if(!self&&combatantsAreFriendly(matchMode(this.metaCache?.match),bullet.ownerId,bullet.ownerTeam,targetId,target.team))return;const tx=target.x,ty=target.y+1,tz=target.z,dx=tx-bullet.x,dy=ty-bullet.y,dz=tz-bullet.z,d=Math.hypot(dx,dy,dz);if(d>radius||!blastHasLineOfSight(bullet.x,bullet.y,bullet.z,tx,ty,tz))return;let damage=this.blastDamage(maxDamage,d,radius,bullet.weapon==='rpg'?.22:.20,bullet.weapon==='rpg'?.34:.30);if(self)damage=Math.round(damage*.65);const horizontal=Math.hypot(dx,dz)||1,knockback={x:dx/horizontal*6.2,z:dz/horizontal*6.2,y:3.8};if(isBot)this.damageBot(target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d});else this.damageHuman(socket,target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d});};
     for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;apply(p,socket,false);}for(const bot of this.bots)apply(bot,null,true);
     this.broadcast({t:'explosion',id:bullet.id,x:bullet.x,y:bullet.y,z:bullet.z,kind:bullet.weapon,radius});
   }
@@ -2097,6 +2106,9 @@ export class GameRoom {
         if(!ended&&gravity>0)bullet.vy-=gravity*step;
       }
 
+      if(!ended&&bullet.explosionRadius>0&&now-bullet.lastBroadcast>=EXPLOSIVE_PROJECTILE_BROADCAST_MS){
+        bullet.lastBroadcast=now;this.broadcast({t:'projectileState',id:bullet.id,weapon:bullet.weapon,x:bullet.x,y:bullet.y,z:bullet.z,vx:bullet.vx,vy:bullet.vy,vz:bullet.vz,gravity:bullet.gravity,at:now});
+      }
       if (!ended && now >= lifeEnd) this.endBullet(id, "expired");
     }
   }
