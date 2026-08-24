@@ -1325,13 +1325,13 @@ export class GameRoom {
 
     if(payload.t==='loadout'){
       const next=normalizeLoadout(payload,{primaryWeapon:me.primaryWeapon,tactical:me.tactical,lethal:me.lethal});
-      if(matchAllowsLobbyEdits(meta.match)){
+      if(matchAllowsLobbyEdits(meta.match)||me.godMode){
         me.primaryWeapon=next.primaryWeapon;me.tactical=next.tactical;me.lethal=next.lethal;me.pendingLoadout=null;me.weapon=next.primaryWeapon;me.ammo=freshAmmo();me.equipment=freshEquipment(next.tactical,next.lethal);me.reloadAt=0;me.reloadWeapon='';me.weaponReadyAt=0;
         if(me.godMode)refreshUnlimitedResources(me);socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:false});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me)});return;
       }
-      // CoD-style mid-match class change: preserve the current life exactly.
-      // The queued class is consumed atomically by spawnedPlayerState on the
-      // next respawn/round spawn, so editing a class can never refill resources.
+      // Standard mid-match class changes preserve the current life exactly.
+      // God Mode returned above because it intentionally supports live loadout edits.
+      // Otherwise the queued class is consumed atomically on the next spawn.
       me.pendingLoadout=next;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:true,pendingLoadout:next});return;
     }
 
@@ -1402,6 +1402,14 @@ export class GameRoom {
       if(matchAllowsLobbyEdits(meta.match)){
         if(nextTeam!==currentTeam){const sameTeam=this.liveSockets(socket).filter(s=>safeTeam((s.deserializeAttachment()||{}).team)===nextTeam).length;const moved=spawnedPlayerState(me,spawnForTeam(this.world,nextTeam,sameTeam),nextTeam,now,{resetStats:false});moved.kills=me.kills;moved.deaths=me.deaths;me=moved;socket.serializeAttachment(me);}
         me.pendingTeam='';socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:true,pendingTeam:''});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me)});await this.updateDirectory(this.liveSockets().length,meta);return;
+      }
+      // God Mode is an explicit live-edit state: team changes take effect in place
+      // instead of killing/respawning or waiting for the next life.
+      if(me.godMode){
+        me.team=nextTeam;me.pendingTeam='';socket.serializeAttachment(me);
+        sendLoadout(socket,me,{action:'team',accepted:true,pendingTeam:''});
+        this.broadcast({t:'lobbyPlayer',player:publicPlayer(me)});
+        await this.updateDirectory(this.liveSockets().length,meta);return;
       }
       if(nextTeam===currentTeam){me.pendingTeam='';socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:true,pendingTeam:''});sendJson(socket,{t:'teamQueued',id:me.clientId,team:currentTeam,pendingTeam:''});return;}
       me.pendingTeam=nextTeam;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:true,pendingTeam:nextTeam});sendJson(socket,{t:'teamQueued',id:me.clientId,team:currentTeam,pendingTeam:nextTeam});return;
