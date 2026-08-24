@@ -846,9 +846,9 @@ export class GameRoom {
     rows.sort((a,b)=>(b.kills-a.kills)||(a.deaths-b.deaths)||a.name.localeCompare(b.name));return rows;
   }
 
-  prepareRound(meta,now=Date.now(),{increment=false}={}){
+  prepareRound(meta,now=Date.now()){
     const old=meta.match,mode=matchMode(old);
-    meta.match={...defaultMatchState(now,old),round:Math.max(1,old.round+(increment?1:0)),status:MATCH_STATUS.WARMUP,warmupEndsAt:now+MATCH_WARMUP_MS,mode,scoreLimit:old.scoreLimit,timeLimitMs:old.timeLimitMs,minimapRevealAll:!!old.minimapRevealAll};
+    meta.match={...defaultMatchState(now,old),round:1,status:MATCH_STATUS.WARMUP,warmupEndsAt:now+MATCH_WARMUP_MS,mode,scoreLimit:old.scoreLimit,timeLimitMs:old.timeLimitMs,minimapRevealAll:!!old.minimapRevealAll,minimapDirectional:!!old.minimapDirectional};
     this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.recentDeaths=[];this.recentSpawns=[];const players=[],assigned=[];let index=0;
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;
@@ -865,8 +865,20 @@ export class GameRoom {
     return true;
   }
 
-  resetRound(meta,now=Date.now()){return this.prepareRound(meta,now,{increment:true});}
-
+  returnMatchToLobby(meta,now=Date.now()){
+    const old=meta.match,mode=matchMode(old),players=[];
+    meta.match={...defaultMatchState(now,old),round:1,status:MATCH_STATUS.WAITING,mode,scoreLimit:old.scoreLimit,timeLimitMs:old.timeLimitMs,minimapRevealAll:!!old.minimapRevealAll,minimapDirectional:!!old.minimapDirectional};
+    this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.recentDeaths=[];this.recentSpawns=[];
+    for(const socket of this.ctx.getWebSockets()){
+      const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;
+      const team=matchUsesTeams(mode)&&p.pendingTeam?safeTeam(p.pendingTeam):safeTeam(p.team),support=this.world.geometry.worldSupportHeight(p.x,p.z,p.y,false);
+      const reset=spawnedPlayerState(p,{x:p.x,y:support,z:p.z},team,now,{resetStats:true});socket.serializeAttachment(reset);players.push(publicPlayer(reset));
+    }
+    this.matchDirty=true;
+    this.broadcast({t:'matchLobby',match:publicMatchState(meta.match,now),players,bots:(this.bots||[]).map(publicBot),custom:this.isCustomMatch(meta)});
+    void this.updateDirectory(this.liveSockets().length,meta).catch(()=>{});
+    return true;
+  }
 
   stepMatch(now,meta){
     const match=meta.match,mode=matchMode(match),spec=gameModeSpec(mode);
@@ -885,7 +897,7 @@ export class GameRoom {
       }
       return;
     }
-    if(match.status===MATCH_STATUS.ENDED&&match.restartAt&&now>=match.restartAt)this.resetRound(meta,now);
+    if(match.status===MATCH_STATUS.ENDED&&match.restartAt&&now>=match.restartAt)this.returnMatchToLobby(meta,now);
   }
 
   recordMatchKill(attackerId,victimId,now=Date.now()){
@@ -1365,7 +1377,7 @@ export class GameRoom {
     if(payload.t==='startMatch'){
       if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Only a lobby admin can start the match.'});return;}
       if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Match has already started.'});return;}
-      this.prepareRound(meta,now,{increment:false});await this.putMeta(meta);await this.ctx.storage.put('bots',this.bots);await this.updateDirectory(this.liveSockets().length,meta);return;
+      this.prepareRound(meta,now);await this.putMeta(meta);await this.ctx.storage.put('bots',this.bots);await this.updateDirectory(this.liveSockets().length,meta);return;
     }
 
     if (payload.t === "god") {
