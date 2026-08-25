@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.37.25';
+export const APP_VERSION = '1.37.26';
 export const PROTOCOL_VERSION = 56;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
@@ -121,7 +121,7 @@ export const MATCH_END_MS = 7000;
 
 export const DEFAULT_WORLD_SETTINGS = {
   movement: { runSpeed:8.4, walkSpeed:4.6, jumpHeight:1.6, gravity:23 },
-  combat: { regenDelayMs:5000, regenPerSecond:8, respawnMs:2800 },
+  combat: { regenDelayMs:5000, regenPerSecond:50, respawnMs:2800 },
   weapons: Object.fromEntries(WEAPON_ORDER.map((name) => {
     const spec = WEAPON_SPECS[name];
     return [name, { damage:spec.damage, speed:spec.bulletSpeed, reloadMs:spec.reloadMs, cooldownMs:spec.cooldownMs }];
@@ -136,7 +136,7 @@ export function normalizeWorldSettings(value) {
   const runSpeed=bounded(movement.runSpeed,3,16,DEFAULT_WORLD_SETTINGS.movement.runSpeed);
   return {
     movement:{runSpeed,walkSpeed:Math.min(runSpeed,bounded(movement.walkSpeed,1.5,9,DEFAULT_WORLD_SETTINGS.movement.walkSpeed)),jumpHeight:bounded(movement.jumpHeight,.4,5,DEFAULT_WORLD_SETTINGS.movement.jumpHeight),gravity:bounded(movement.gravity,8,40,DEFAULT_WORLD_SETTINGS.movement.gravity)},
-    combat:{regenDelayMs:Math.round(bounded(combat.regenDelayMs,0,15000,DEFAULT_WORLD_SETTINGS.combat.regenDelayMs)),regenPerSecond:bounded(combat.regenPerSecond,0,30,DEFAULT_WORLD_SETTINGS.combat.regenPerSecond),respawnMs:Math.round(bounded(combat.respawnMs,1000,10000,DEFAULT_WORLD_SETTINGS.combat.respawnMs))},
+    combat:{regenDelayMs:Math.round(bounded(combat.regenDelayMs,0,15000,DEFAULT_WORLD_SETTINGS.combat.regenDelayMs)),regenPerSecond:bounded(combat.regenPerSecond,0,100,DEFAULT_WORLD_SETTINGS.combat.regenPerSecond),respawnMs:Math.round(bounded(combat.respawnMs,1000,10000,DEFAULT_WORLD_SETTINGS.combat.respawnMs))},
     weapons:Object.fromEntries(WEAPON_ORDER.map(name=>[name,weapon(name)])),
   };
 }
