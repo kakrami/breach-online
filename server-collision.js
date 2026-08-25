@@ -83,8 +83,18 @@ export function projectileSegmentHitZone(target, x1, y1, z1, x2, y2, z2) {
   const headT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx, ty + 1.66 * scaleY, tz, 0.30, 0.30 * scaleY, 0.30);
   const torsoT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx, ty + 0.99 * scaleY, tz, 0.50, 0.57 * scaleY, 0.40);
   const lowerT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx, ty + 0.39 * scaleY, tz, 0.39, 0.40 * scaleY, 0.34);
+
+  // The rendered arms sit outside the torso at local X +/-0.44.  Previously
+  // those visible limb volumes were not part of the authoritative projectile
+  // hit model, so a clean shot through an arm could miss the player entirely.
+  // Rotate the arm centers with the actor yaw and treat limb hits as body hits.
+  const yaw = finite(target?.yaw, 0), sideX = Math.cos(yaw) * 0.44, sideZ = -Math.sin(yaw) * 0.44;
+  const armY = ty + 1.05 * scaleY, armRY = 0.37 * scaleY;
+  const leftArmT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx - sideX, armY, tz - sideZ, 0.17, armRY, 0.17);
+  const rightArmT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx + sideX, armY, tz + sideZ, 0.17, armRY, 0.17);
+
   let bodyT = torsoT;
-  if (lowerT != null && (bodyT == null || lowerT < bodyT)) bodyT = lowerT;
+  for (const t of [lowerT, leftArmT, rightArmT]) if (t != null && (bodyT == null || t < bodyT)) bodyT = t;
   if (headT != null && (bodyT == null || headT <= bodyT + 0.012)) return { zone: 'head', t: headT };
   if (bodyT != null) return { zone: 'body', t: bodyT };
   if (headT != null) return { zone: 'head', t: headT };

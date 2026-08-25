@@ -728,7 +728,7 @@ export class GameRoom {
       : type === 'state' ? { rate: 55, burst: 80 }
       : type === 'simTick' ? { rate: 40, burst: 60 }
       : type === 'fire' ? { rate: 24, burst: 30 }
-      : ['throw','reload','weapon','loadout','team','god','startMatch','lobbyMode','adminPlayer','adminSettings','adminMatch','adminBots','lobbyMap'].includes(type) ? { rate: 14, burst: 22 }
+      : ['throw','reload','weapon','loadout','team','god','startMatch','returnLobby','lobbyMode','adminPlayer','adminSettings','adminMatch','adminBots','lobbyMap'].includes(type) ? { rate: 14, burst: 22 }
       : type === 'ping' ? { rate: 8, burst: 12 }
       : type === 'chat' ? { rate: 1.5, burst: 4 }
       : { rate: 30, burst: 45 };
@@ -1378,6 +1378,14 @@ export class GameRoom {
       if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Only a lobby admin can start the match.'});return;}
       if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Match has already started.'});return;}
       this.prepareRound(meta,now);await this.putMeta(meta);await this.ctx.storage.put('bots',this.bots);await this.updateDirectory(this.liveSockets().length,meta);return;
+    }
+
+    if(payload.t==='returnLobby'){
+      // The room lobby is the persistent session boundary. Exiting gameplay
+      // ends the current match for the room but keeps every player connected,
+      // preserving room code, teams, loadouts, admins, bots and host settings.
+      if(matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',text:'Already in the lobby.'});return;}
+      this.returnMatchToLobby(meta,now);await this.putMeta(meta);await this.ctx.storage.put('bots',this.bots);return;
     }
 
     if (payload.t === "god") {
