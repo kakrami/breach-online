@@ -81,17 +81,17 @@ export function projectileSegmentHitZone(target, x1, y1, z1, x2, y2, z2) {
   const ty = finite(target?.y, terrainHeight(tx, tz));
   const scaleY = target?.crouched ? CROUCH_HEIGHT / PLAYER_HEIGHT : 1;
   const headT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx, ty + 1.66 * scaleY, tz, 0.30, 0.30 * scaleY, 0.30);
-  const torsoT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx, ty + 0.99 * scaleY, tz, 0.50, 0.57 * scaleY, 0.40);
-  const lowerT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx, ty + 0.39 * scaleY, tz, 0.39, 0.40 * scaleY, 0.34);
+  const torsoT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx, ty + 0.99 * scaleY, tz, 0.52, 0.59 * scaleY, 0.42);
+  const lowerT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx, ty + 0.39 * scaleY, tz, 0.42, 0.42 * scaleY, 0.37);
 
   // The rendered arms sit outside the torso at local X +/-0.44.  Previously
   // those visible limb volumes were not part of the authoritative projectile
   // hit model, so a clean shot through an arm could miss the player entirely.
   // Rotate the arm centers with the actor yaw and treat limb hits as body hits.
-  const yaw = finite(target?.yaw, 0), sideX = Math.cos(yaw) * 0.44, sideZ = -Math.sin(yaw) * 0.44;
-  const armY = ty + 1.05 * scaleY, armRY = 0.37 * scaleY;
-  const leftArmT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx - sideX, armY, tz - sideZ, 0.17, armRY, 0.17);
-  const rightArmT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx + sideX, armY, tz + sideZ, 0.17, armRY, 0.17);
+  const yaw = finite(target?.yaw, 0), sideX = Math.cos(yaw) * 0.43, sideZ = -Math.sin(yaw) * 0.43;
+  const armY = ty + 1.05 * scaleY, armRY = 0.39 * scaleY;
+  const leftArmT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx - sideX, armY, tz - sideZ, 0.19, armRY, 0.19);
+  const rightArmT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx + sideX, armY, tz + sideZ, 0.19, armRY, 0.19);
 
   let bodyT = torsoT;
   for (const t of [lowerT, leftArmT, rightArmT]) if (t != null && (bodyT == null || t < bodyT)) bodyT = t;

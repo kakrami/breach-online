@@ -47,6 +47,11 @@ const MOVE_BUDGET_INITIAL_SEC = 0.04;
 const MOVE_BUDGET_MAX_SEC = 0.26;
 const BOT_PERSIST_INTERVAL_MS = 10 * 1000;
 const BULLET_MAX_SEGMENT_DISTANCE = 6;
+const COMBAT_HISTORY_WINDOW_MS = 650;
+const COMBAT_HISTORY_MAX_SAMPLES = 40;
+const MAX_LAG_COMPENSATION_MS = 240;
+const MAX_CLIENT_COMBAT_CLOCK_LEAD_MS = 35;
+const MIN_PLAYER_PENETRATION_ENERGY = .12;
 const THROWABLE_BROADCAST_MS = 33;
 const EXPLOSIVE_PROJECTILE_BROADCAST_MS = 45;
 const SERVER_VERTICAL_MAX_CATCHUP_SEC = .40;
@@ -281,6 +286,21 @@ function spreadShotAngles(yaw, pitch, radius) {
     pitch: clamp(pitch + pitchOffset, -1.4, 1.4),
   };
 }
+
+function shotgunPelletAngles(yaw,pitch,radius,index,pellets,rotation=0){
+  if(index<=0||!(radius>0)||pellets<=1)return{yaw,pitch};
+  // Stable center-weighted pattern: one guaranteed center pellet, three inner
+  // pellets, then the remaining pellets on an outer ring. A random rotation
+  // keeps successive blasts organic without letting RNG decide whether a
+  // perfectly centered close-range pump shot registers enough pellets to kill.
+  const innerCount=Math.min(3,Math.max(0,pellets-1)),outerCount=Math.max(1,pellets-1-innerCount);
+  let radial,angle;
+  if(index<=innerCount){radial=.34*radius;angle=rotation+(index-1)*(Math.PI*2/innerCount);}
+  else{const outerIndex=index-innerCount-1;radial=.72*radius;angle=rotation+Math.PI/4+outerIndex*(Math.PI*2/outerCount);}
+  const yawScale=Math.max(.32,Math.cos(pitch));
+  return{yaw:yaw+Math.cos(angle)*radial/yawScale,pitch:clamp(pitch+Math.sin(angle)*radial,-1.4,1.4)};
+}
+function sanitizeCombatTimestamp(value,now){return clamp(finiteNumber(value,now),now-MAX_LAG_COMPENSATION_MS,now+MAX_CLIENT_COMBAT_CLOCK_LEAD_MS);}
 
 function normalizeAngle(value){let angle=Number(value)||0;while(angle>Math.PI)angle-=Math.PI*2;while(angle<-Math.PI)angle+=Math.PI*2;return angle;}
 function safeShotAim(me,payload){
@@ -682,7 +702,32 @@ export class GameRoom {
     this.matchDirty = false;
     this.recentDeaths = [];
     this.recentSpawns = [];
+    this.combatHistory = new Map();
     this.world = worldBundle(DEFAULT_MAP_ID);
+  }
+
+  recordCombatPose(actor, at=Date.now()) {
+    const id=actor?.clientId||actor?.id;if(!id)return;
+    const sample={at:finiteNumber(at,Date.now()),x:finiteNumber(actor.x,0),y:finiteNumber(actor.y,0),z:finiteNumber(actor.z,0),yaw:finiteNumber(actor.yaw,0),crouched:!!actor.crouched};
+    let history=this.combatHistory.get(id);if(!history){history=[];this.combatHistory.set(id,history);}
+    const last=history[history.length-1];
+    if(last&&sample.at<last.at-2)return;
+    if(last&&Math.abs(sample.at-last.at)<1)history[history.length-1]=sample;else history.push(sample);
+    const cutoff=sample.at-COMBAT_HISTORY_WINDOW_MS;while(history.length>2&&history[0].at<cutoff)history.shift();
+    if(history.length>COMBAT_HISTORY_MAX_SAMPLES)history.splice(0,history.length-COMBAT_HISTORY_MAX_SAMPLES);
+  }
+
+  combatPoseAt(actor, at) {
+    const id=actor?.clientId||actor?.id,history=id?this.combatHistory.get(id):null;
+    if(!history?.length)return actor;
+    const targetAt=finiteNumber(at,history[history.length-1].at);
+    if(targetAt<=history[0].at)return{...actor,...history[0]};
+    const last=history[history.length-1];if(targetAt>=last.at)return{...actor,...last};
+    for(let i=1;i<history.length;i++){
+      const b=history[i];if(targetAt>b.at)continue;const a=history[i-1],span=Math.max(1,b.at-a.at),t=clamp((targetAt-a.at)/span,0,1),yawDelta=normalizeAngle(b.yaw-a.yaw);
+      return{...actor,x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,z:a.z+(b.z-a.z)*t,yaw:a.yaw+yawDelta*t,crouched:t<.5?a.crouched:b.crouched};
+    }
+    return actor;
   }
 
   async getMeta() {
@@ -1220,9 +1265,10 @@ export class GameRoom {
           this.broadcast({t:'state',id:me.clientId,x:me.x,y:me.y,z:me.z,yaw:me.yaw,pitch:me.pitch,ads:false,crouched:false,traversal:''},socket);
           if(corrected)sendJson(socket,{t:'correction',x:me.x,y:me.y,z:me.z,vertical:false,verticalVelocity:0,grounded:true,crouched:false});
         } else {
-          const next = this.validateHumanState(me, payload, now, settings);
-          me = next.player;
+          const next = this.validateHumanState(me, payload, now, settings),combatAt=Math.min(now,sanitizeCombatTimestamp(payload.at,now));
+          me = {...next.player,lastCombatStateAt:combatAt};
           socket.serializeAttachment(me);
+          this.recordCombatPose(me,combatAt);
           const state = { t: "state", id: me.clientId, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched, traversal:me.traversal?.mode||'' };
           this.broadcast(state, socket);
           if (next.corrected) sendJson(socket,{
@@ -1272,17 +1318,17 @@ export class GameRoom {
       if(now<readyAt){const retryAfterMs=Math.max(1,Math.ceil(readyAt-now)),reason=switchReadyAt>=shotReadyAt?'weapon_switch':'cooldown';sendLoadout(socket,me,{action:'fire',accepted:false,reason,retryAfterMs});return;}
       if(!unlimited&&me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
 
-      const reticle=safeShotAim(me,payload),flashPower=activeFlashPower(me,now);let shotYaw=reticle.yaw,shotPitch=reticle.pitch;
+      const requestedShotAt=sanitizeCombatTimestamp(payload.shotAt,now),stateAt=finiteNumber(me.lastCombatStateAt,requestedShotAt),shotAt=clamp(requestedShotAt,stateAt-12,Math.min(now,stateAt+40)),shooterPose=this.combatPoseAt(me,shotAt),reticle=safeShotAim(me,payload),flashPower=activeFlashPower(me,now);let shotYaw=reticle.yaw,shotPitch=reticle.pitch;
       if(flashPower>.02){const flashSpread=.035+flashPower*.22;shotYaw+=(Math.random()-.5)*2*flashSpread;shotPitch=clamp(shotPitch+(Math.random()-.5)*1.5*flashSpread,-1.4,1.4);me.ads=false;}
       const preShotHeat=decayedFireHeat(me,weapon,now),adsAmount=me.ads?clamp(finiteNumber(payload.adsAmount,1),0,1):0,airborne=me.serverGrounded===false;
       me.fireReadyAt[weapon]=now+spec.cooldownMs;if(!unlimited)me.ammo[weapon]-=1;storeFireHeat(me,weapon,now,preShotHeat);
       const autoReloadStarted=!unlimited&&me.ammo[weapon]===0;if(autoReloadStarted){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;}
       socket.serializeAttachment(me);
-      const spreadRadius=weaponSpreadRadians(weapon,me.moveSpeed,settings.movement.runSpeed,adsAmount,!!me.crouched,airborne,preShotHeat),pellets=Math.max(1,Math.floor(WEAPON_SPECS[weapon]?.pellets||1));
-      const launcherPitchOffset=(Number(WEAPON_SPECS[weapon]?.launchPitchDeg)||0)*Math.PI/180;
+      const spreadRadius=weaponSpreadRadians(weapon,me.moveSpeed,settings.movement.runSpeed,adsAmount,!!me.crouched,airborne,preShotHeat),pellets=Math.max(1,Math.floor(WEAPON_SPECS[weapon]?.pellets||1)),shotgunPattern=weapon==='shotgun'||weapon==='semiShotgun',patternRotation=Math.random()*Math.PI*2;
+      const launcherPitchOffset=(Number(WEAPON_SPECS[weapon]?.launchPitchDeg)||0)*Math.PI/180,basePitch=clamp(shotPitch+launcherPitchOffset,-1.4,1.4);
       for(let i=0;i<pellets;i++){
-        const a=spreadShotAngles(shotYaw,clamp(shotPitch+launcherPitchOffset,-1.4,1.4),spreadRadius),launch=shotLaunchPose(me,a.yaw,a.pitch,!!me.crouched,weapon,this.world.serverCollision.segmentFirstWorldHitT);
-        this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage,weapon,lifetimeMs:WEAPON_SPECS[weapon].lifetimeMs,x:launch.x,y:launch.y,z:launch.z,vx:launch.dx*spec.speed,vy:launch.dy*spec.speed,vz:launch.dz*spec.speed,now,consumeAmmo:i===0&&!unlimited,primaryShot:i===0});
+        const a=shotgunPattern?shotgunPelletAngles(shotYaw,basePitch,spreadRadius,i,pellets,patternRotation):spreadShotAngles(shotYaw,basePitch,spreadRadius),launch=shotLaunchPose(shooterPose,a.yaw,a.pitch,!!shooterPose.crouched,weapon,this.world.serverCollision.segmentFirstWorldHitT),centerScale=i===0?Math.max(1,finiteNumber(WEAPON_SPECS[weapon]?.centerPelletDamageScale,1)):1;
+        this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage*centerScale,weapon,lifetimeMs:WEAPON_SPECS[weapon].lifetimeMs,x:launch.x,y:launch.y,z:launch.z,vx:launch.dx*spec.speed,vy:launch.dy*spec.speed,vz:launch.dz*spec.speed,now,shotAt,consumeAmmo:i===0&&!unlimited,primaryShot:i===0});
       }
       sendLoadout(socket,me,{action:'fire',accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
     }
@@ -1763,19 +1809,19 @@ export class GameRoom {
     }
   }
 
-  spawnBullet({ ownerId, ownerTeam, damage, weapon, lifetimeMs, x, y, z, vx, vy, vz, now, consumeAmmo=true, primaryShot=consumeAmmo }) {
+  spawnBullet({ ownerId, ownerTeam, damage, weapon, lifetimeMs, x, y, z, vx, vy, vz, now, shotAt=now, consumeAmmo=true, primaryShot=consumeAmmo }) {
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-    const safe = safeWeapon(weapon);
+    const safe = safeWeapon(weapon),bornAt=Math.min(now,sanitizeCombatTimestamp(shotAt,now));
     const weaponSpec=WEAPON_SPECS[safe],bullet = {
       id, ownerId, ownerTeam: safeTeam(ownerTeam), damage, weapon: safe,
-      penetrationPower: safe === "sniper" ? Math.max(1, damage) : 0,
+      penetrationEnergy:1,
       gravity:Math.max(0,finiteNumber(weaponSpec.projectileGravity,0)),explosionRadius:Math.max(0,finiteNumber(weaponSpec.explosionRadius,0)),explosionDamage:Math.max(0,finiteNumber(weaponSpec.explosionDamage,0)),
       hitTargets: new Set(),traveledDistance: 0,
-      lifetimeMs: lifetimeMs || weaponSpec.lifetimeMs, x, y, z, vx, vy, vz, born: now, lastAt: now, lastBroadcast: now,
+      lifetimeMs: lifetimeMs || weaponSpec.lifetimeMs, x, y, z, vx, vy, vz, born: bornAt, lastAt: bornAt, lastBroadcast: now,
       rpgBaseSpeed:safe==='rpg'?Math.max(1,Math.hypot(vx,vy,vz)):0,rpgBaseYaw:safe==='rpg'?Math.atan2(-vx,-vz):0,rpgBasePitch:safe==='rpg'?Math.asin(clamp(vy/Math.max(1,Math.hypot(vx,vy,vz)),-1,1)):0,rpgWanderPhase:safe==='rpg'?Math.random()*Math.PI*2:0,
     };
     this.bullets.set(id, bullet);
-    this.broadcast({ t: "shot", id, ownerId, ownerTeam: bullet.ownerTeam, damage, weapon: safe, lifetimeMs: bullet.lifetimeMs, gravity:bullet.gravity, x, y, z, vx, vy, vz, consumeAmmo, primaryShot:!!primaryShot, at: now });
+    this.broadcast({ t: "shot", id, ownerId, ownerTeam: bullet.ownerTeam, damage, weapon: safe, lifetimeMs: bullet.lifetimeMs, gravity:bullet.gravity, x, y, z, vx, vy, vz, consumeAmmo, primaryShot:!!primaryShot, at: bornAt });
   }
 
   async stepSimulation(now, meta) {
@@ -1846,7 +1892,7 @@ export class GameRoom {
       const actors=[...this.ctx.getWebSockets().map(s=>s.deserializeAttachment()||{}),...(this.bots||[])];
       const spawn=this.selectSpawn(mode,team,actors,Math.floor(Math.random()*this.world.spawns.spawnPointCount(mode,team)),player.clientId,now);
       const respawned=spawnedPlayerState(player,spawn,team,now);
-      socket.serializeAttachment(respawned);
+      socket.serializeAttachment(respawned);this.recordCombatPose(respawned,now);
       this.broadcast({ t: "respawn", player: publicPlayer(respawned) });
     }
   }
@@ -1987,13 +2033,15 @@ export class GameRoom {
         if((bot.ammo[botWeapon]||0)<=0){if(!bot.reloadAt){bot.reloadAt=now+weaponSettings.reloadMs;bot.reloadWeapon=botWeapon;}continue;}
         bot.nextShotAt=now+botFireDelay+profile.reactionBase+Math.floor(Math.random()*profile.reactionJitter);bot.ammo[botWeapon]-=1;if(bot.ammo[botWeapon]===0){bot.reloadAt=now+weaponSettings.reloadMs;bot.reloadWeapon=botWeapon;}
         const tx=finiteNumber(target.x,0)-bot.x,ty=(finiteNumber(target.y,this.world.geometry.terrainHeight(target.x||0,target.z||0))+1.05)-(bot.y+1.28),tz=finiteNumber(target.z,0)-bot.z,dist=Math.hypot(tx,ty,tz)||1;
-        const baseSpread=profile.spreadBase+Math.min(.09,d*profile.spreadDistance),spread=(botWeapon==='shotgun'||botWeapon==='semiShotgun')?Math.max(.052,baseSpread*2.15):botWeapon==='sniper'?baseSpread*.55:baseSpread,pellets=Math.max(1,Math.floor(WEAPON_SPECS[botWeapon]?.pellets||1));
+        const baseSpread=profile.spreadBase+Math.min(.09,d*profile.spreadDistance),spread=(botWeapon==='shotgun'||botWeapon==='semiShotgun')?Math.max(.052,baseSpread*2.15):botWeapon==='sniper'?baseSpread*.55:baseSpread,pellets=Math.max(1,Math.floor(WEAPON_SPECS[botWeapon]?.pellets||1)),shotgunPattern=botWeapon==='shotgun'||botWeapon==='semiShotgun',patternRotation=Math.random()*Math.PI*2,baseYaw=Math.atan2(-tx,-tz),basePitch=Math.asin(clamp(ty/dist,-1,1));
         for(let pellet=0;pellet<pellets;pellet++){
-          const fx=tx/dist+(Math.random()-.5)*spread,fy=ty/dist+(Math.random()-.5)*spread*.65,fz=tz/dist+(Math.random()-.5)*spread,norm=Math.hypot(fx,fy,fz)||1;
-          this.spawnBullet({ownerId:bot.id,ownerTeam:safeTeam(bot.team),damage:weaponSettings.damage,weapon:botWeapon,lifetimeMs:WEAPON_SPECS[botWeapon].lifetimeMs,x:bot.x+(fx/norm)*.55,y:bot.y+1.25,z:bot.z+(fz/norm)*.55,vx:(fx/norm)*weaponSettings.speed,vy:(fy/norm)*weaponSettings.speed,vz:(fz/norm)*weaponSettings.speed,now,consumeAmmo:pellet===0});
+          let fx,fy,fz;if(shotgunPattern){const a=shotgunPelletAngles(baseYaw,basePitch,spread,pellet,pellets,patternRotation),v=shotVector(a.yaw,a.pitch);fx=v.x;fy=v.y;fz=v.z;}else{fx=tx/dist+(Math.random()-.5)*spread;fy=ty/dist+(Math.random()-.5)*spread*.65;fz=tz/dist+(Math.random()-.5)*spread;}
+          const norm=Math.hypot(fx,fy,fz)||1,centerScale=pellet===0?Math.max(1,finiteNumber(WEAPON_SPECS[botWeapon]?.centerPelletDamageScale,1)):1;
+          this.spawnBullet({ownerId:bot.id,ownerTeam:safeTeam(bot.team),damage:weaponSettings.damage*centerScale,weapon:botWeapon,lifetimeMs:WEAPON_SPECS[botWeapon].lifetimeMs,x:bot.x+(fx/norm)*.55,y:bot.y+1.25,z:bot.z+(fz/norm)*.55,vx:(fx/norm)*weaponSettings.speed,vy:(fy/norm)*weaponSettings.speed,vz:(fz/norm)*weaponSettings.speed,now,consumeAmmo:pellet===0});
         }
       }
     }
+    for(const bot of this.bots||[])this.recordCombatPose(bot,now);
   }
 
 
@@ -2196,7 +2244,7 @@ export class GameRoom {
           const worldT = this.world.serverCollision.segmentFirstWorldHitT(previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
           let nearest = null;
           const consider = (kind, target, socket = null) => {
-            const hit = this.world.serverCollision.projectileSegmentHitZone(target,previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
+            const collisionTarget=this.combatPoseAt(target,segmentAt),hit=this.world.serverCollision.projectileSegmentHitZone(collisionTarget,previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
             if (!hit || bullet.hitTargets.has(target.clientId || target.id)) return;
             if (!nearest || hit.t < nearest.hit.t) nearest = { kind, target, socket, hit };
           };
@@ -2236,21 +2284,19 @@ export class GameRoom {
             this.explodeProjectile(bullet,now,settings);this.endBullet(id,'hit');ended=true;break;
           }
           bullet.hitTargets.add(targetId);
-          const horizontal = Math.hypot(bullet.vx, bullet.vz) || 1;
-          const targetHpBefore = Math.max(1, finiteNumber(target.hp, 100));
-          const baseDamage = bullet.weapon === "sniper" ? Math.max(1, bullet.penetrationPower) : bullet.damage;
-          const headshot = nearest.hit.zone === "head";
-          const hitDamage = weaponDamageAtDistance(bullet.weapon,baseDamage,bullet.traveledDistance,headshot);
-          const knockback={x:bullet.vx/horizontal*2.4,z:bullet.vz/horizontal*2.4,y:headshot?1.45:1.1};
-          let applied=true;
-          if(nearest.kind==='human')applied=this.damageHuman(nearest.socket,target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,distance:bullet.traveledDistance});
-          else this.damageBot(target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,distance:bullet.traveledDistance});
+          const horizontal = Math.hypot(bullet.vx, bullet.vz) || 1,energy=clamp(finiteNumber(bullet.penetrationEnergy,1),0,1);
+          const baseDamage=Math.max(0,finiteNumber(bullet.damage,0))*energy,headshot=nearest.hit.zone === "head",hitDamage=weaponDamageAtDistance(bullet.weapon,baseDamage,bullet.traveledDistance,headshot);
+          const knockback={x:bullet.vx/horizontal*2.4*energy,z:bullet.vz/horizontal*2.4*energy,y:(headshot?1.45:1.1)*Math.max(.35,energy)};
+          if(nearest.kind==='human')this.damageHuman(nearest.socket,target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,distance:bullet.traveledDistance,penetrationEnergy:energy});
+          else this.damageBot(target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,distance:bullet.traveledDistance,penetrationEnergy:energy});
 
-          if(!applied || bullet.weapon !== 'sniper'){
-            this.endBullet(id,applied?'hit':'blocked');ended=true;break;
-          }
-          bullet.penetrationPower=Math.max(0,bullet.penetrationPower-targetHpBefore);
-          if(bullet.penetrationPower<=0){this.endBullet(id,'spent');ended=true;break;}
+          // Every firearm uses the same player-penetration model. Energy loss is
+          // determined by the weapon, never by the victim's remaining HP. World
+          // geometry still hard-stops projectiles; material penetration is a
+          // separate feature and intentionally remains disabled here.
+          const retention=clamp(finiteNumber(WEAPON_SPECS[bullet.weapon]?.playerPenetrationRetention,0),0,1);
+          bullet.penetrationEnergy=energy*retention;
+          if(retention<=0||bullet.penetrationEnergy<MIN_PLAYER_PENETRATION_ENERGY){this.endBullet(id,'spent');ended=true;break;}
 
           // Advance a couple of millimeters beyond the actor surface before
           // looking for the next target/world hit in this same coarse segment.
