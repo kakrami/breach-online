@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.37.23';
+export const APP_VERSION = '1.37.24';
 export const PROTOCOL_VERSION = 56;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
@@ -20,11 +20,11 @@ export const WEAPON_ORDER = ['pistol','assault','ump','shotgun','semiShotgun','s
 export const PRIMARY_WEAPONS = ['assault','ump','shotgun','semiShotgun','sniper','grenadeLauncher','rpg'];
 export const WEAPON_SPECS = {
   pistol: { name:'PISTOL', short:'PST', mag:12, damage:35, playerPenetrationRetention:.42, reloadMs:900, cooldownMs:180, bulletSpeed:180, lifetimeMs:3200, adsFov:54, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:26, falloffEnd:60, minDamageScale:.72, recoilPitch:.0095, recoilYaw:.0030, recoilMaxPitch:.0240, recoilRecovery:15, recoilRecoveryDelayMs:50 },
-  assault: { name:'ASSAULT RIFLE', short:'AR', mag:30, damage:28, playerPenetrationRetention:.62, reloadMs:1450, cooldownMs:100, bulletSpeed:230, lifetimeMs:3000, adsFov:46, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:42, falloffEnd:92, minDamageScale:.76, recoilPitch:.0058, recoilYaw:.0026, recoilMaxPitch:.0300, recoilRecovery:11.5, recoilRecoveryDelayMs:55, automatic:true },
-  ump: { name:'UMP', short:'UMP', mag:30, damage:27, playerPenetrationRetention:.52, reloadMs:1320, cooldownMs:92, bulletSpeed:210, lifetimeMs:3000, adsFov:49, pellets:1, headshotMultiplier:1.45, headshotMinDamage:0, falloffStart:25, falloffEnd:62, minDamageScale:.68, recoilPitch:.0049, recoilYaw:.0034, recoilMaxPitch:.0280, recoilRecovery:13, recoilRecoveryDelayMs:45, automatic:true },
+  assault: { name:'ASSAULT RIFLE', short:'AR', mag:30, damage:52, playerPenetrationRetention:.68, reloadMs:1450, cooldownMs:100, bulletSpeed:230, lifetimeMs:3000, adsFov:46, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:42, falloffEnd:92, minDamageScale:.76, recoilPitch:.0058, recoilYaw:.0026, recoilMaxPitch:.0300, recoilRecovery:11.5, recoilRecoveryDelayMs:55, automatic:true },
+  ump: { name:'UMP', short:'UMP', mag:30, damage:52, playerPenetrationRetention:.55, reloadMs:1320, cooldownMs:92, bulletSpeed:210, lifetimeMs:3000, adsFov:49, pellets:1, headshotMultiplier:1.45, headshotMinDamage:0, falloffStart:18, falloffEnd:55, minDamageScale:.56, recoilPitch:.0049, recoilYaw:.0034, recoilMaxPitch:.0280, recoilRecovery:13, recoilRecoveryDelayMs:45, automatic:true },
   shotgun: { name:'PUMP SHOTGUN', short:'SG', mag:6, damage:16, playerPenetrationRetention:.22, centerPelletDamageScale:2.0, reloadMs:620, cooldownMs:800, bulletSpeed:200, lifetimeMs:1700, adsFov:52, pellets:8, headshotMultiplier:1.10, headshotMinDamage:0, falloffStart:10, falloffEnd:26, minDamageScale:.38, recoilPitch:.0175, recoilYaw:.0042, recoilMaxPitch:.0260, recoilRecovery:9.5, recoilRecoveryDelayMs:80, shellReload:true },
   semiShotgun: { name:'SEMI-AUTO SHOTGUN', short:'SAS', mag:8, damage:12, playerPenetrationRetention:.18, centerPelletDamageScale:1.0, reloadMs:1550, cooldownMs:330, bulletSpeed:200, lifetimeMs:1750, adsFov:51, pellets:8, headshotMultiplier:1.10, headshotMinDamage:0, falloffStart:9, falloffEnd:24, minDamageScale:.36, recoilPitch:.0135, recoilYaw:.0052, recoilMaxPitch:.0320, recoilRecovery:9, recoilRecoveryDelayMs:70 },
-  sniper: { name:'SNIPER', short:'SNP', mag:5, damage:110, playerPenetrationRetention:.82, reloadMs:1650, cooldownMs:1050, bulletSpeed:480, lifetimeMs:2400, adsFov:18, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:115, falloffEnd:190, minDamageScale:.92, recoilPitch:.0290, recoilYaw:.0048, recoilMaxPitch:.0380, recoilRecovery:8.2, recoilRecoveryDelayMs:90 },
+  sniper: { name:'SNIPER', short:'SNP', mag:5, damage:110, playerPenetrationRetention:.92, lowerBodyDamageScale:.82, armDamageScale:.82, reloadMs:1650, cooldownMs:1050, bulletSpeed:480, lifetimeMs:2400, adsFov:18, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:115, falloffEnd:190, minDamageScale:.92, recoilPitch:.0290, recoilYaw:.0048, recoilMaxPitch:.0380, recoilRecovery:8.2, recoilRecoveryDelayMs:90 },
   grenadeLauncher: { name:'GRENADE LAUNCHER', short:'GL', mag:1, damage:30, playerPenetrationRetention:0, reloadMs:1650, cooldownMs:1100, bulletSpeed:68, lifetimeMs:3000, adsFov:52, pellets:1, headshotMultiplier:1, headshotMinDamage:0, falloffStart:999, falloffEnd:1000, minDamageScale:1, recoilPitch:.0200, recoilYaw:.0038, recoilMaxPitch:.0300, recoilRecovery:8.4, recoilRecoveryDelayMs:100, projectileGravity:13.5, launchPitchDeg:5.0, explosionRadius:6.8, explosionDamage:140 },
   rpg: { name:'RPG', short:'RPG', mag:1, damage:35, playerPenetrationRetention:0, reloadMs:2200, cooldownMs:1450, bulletSpeed:100, lifetimeMs:4300, adsFov:50, pellets:1, headshotMultiplier:1, headshotMinDamage:0, falloffStart:999, falloffEnd:1000, minDamageScale:1, recoilPitch:.0240, recoilYaw:.0034, recoilMaxPitch:.0340, recoilRecovery:7.6, recoilRecoveryDelayMs:110, projectileGravity:0, explosionRadius:8.2, explosionDamage:165 },
 };
@@ -68,6 +68,13 @@ export function weaponDamageAtDistance(weapon,baseDamage,distance,headshot=false
   const t=Math.max(0,Math.min(1,(d-start)/(end-start))),scaled=base*(1-(1-minScale)*t);
   if(!headshot)return scaled;
   return Math.max(Number(spec.headshotMinDamage)||0,scaled*Math.max(1,Number(spec.headshotMultiplier)||1));
+}
+
+export function weaponZoneDamageScale(weapon,zone='upper'){
+  const spec=WEAPON_SPECS[weapon]||WEAPON_SPECS.pistol;
+  if(zone==='lower')return Math.max(0,Math.min(1,Number(spec.lowerBodyDamageScale) || 1));
+  if(zone==='arm')return Math.max(0,Math.min(1,Number(spec.armDamageScale) || 1));
+  return 1;
 }
 
 export const MOVEMENT_FEEL = Object.freeze({

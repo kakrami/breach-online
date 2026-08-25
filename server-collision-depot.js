@@ -93,11 +93,15 @@ export function projectileSegmentHitZone(target, x1, y1, z1, x2, y2, z2) {
   const leftArmT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx - sideX, armY, tz - sideZ, 0.19, armRY, 0.19);
   const rightArmT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx + sideX, armY, tz + sideZ, 0.19, armRY, 0.19);
 
-  let bodyT = torsoT;
-  for (const t of [lowerT, leftArmT, rightArmT]) if (t != null && (bodyT == null || t < bodyT)) bodyT = t;
-  if (headT != null && (bodyT == null || headT <= bodyT + 0.012)) return { zone: 'head', t: headT };
-  if (bodyT != null) return { zone: 'body', t: bodyT };
-  if (headT != null) return { zone: 'head', t: headT };
+  let bodyHit = torsoT == null ? null : { zone:'upper', t:torsoT };
+  for (const hit of [
+    lowerT == null ? null : { zone:'lower', t:lowerT },
+    leftArmT == null ? null : { zone:'arm', t:leftArmT },
+    rightArmT == null ? null : { zone:'arm', t:rightArmT },
+  ]) if (hit && (bodyHit == null || hit.t < bodyHit.t)) bodyHit = hit;
+  if (headT != null && (bodyHit == null || headT <= bodyHit.t + 0.012)) return { zone:'head', t:headT };
+  if (bodyHit != null) return bodyHit;
+  if (headT != null) return { zone:'head', t:headT };
   return null;
 }
 
