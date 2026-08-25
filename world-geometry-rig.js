@@ -32,8 +32,8 @@ export const STATIC_BOXES = [
   {x:15,z:15,w:7,d:2.6,h:1.45,kind:'barrier'},
   {x:-15,z:15,w:2.6,d:7,h:1.45,kind:'barrier'},
   {x:15,z:-15,w:2.6,d:7,h:1.45,kind:'barrier'},
-  {x:-31,z:15,w:6,d:2.5,h:1.35,kind:'barrier'},
-  {x:31,z:-15,w:6,d:2.5,h:1.35,kind:'barrier'},
+  {x:-26,z:15,w:6,d:2.5,h:1.35,kind:'barrier'},
+  {x:26,z:-15,w:6,d:2.5,h:1.35,kind:'barrier'},
   {x:-17,z:-38,w:2.5,d:6,h:1.35,kind:'barrier'},
   {x:17,z:38,w:2.5,d:6,h:1.35,kind:'barrier'},
 
@@ -169,7 +169,8 @@ export function naturalGroundBase(type,x,z,r){
 export function buildingWallOpenings(b,level,side){
   const windowBottom=.78,windowTop=Math.min(b.floorH-.38,2.62),windows=[];
   if(side==='front'||side==='back'){
-    const center=b.w*.285;
+    // Keep compact utility-building rear windows clear of the stair flight.
+    const center=b.w*((side==='back'&&b.w<=10.5)?.36:.285);
     windows.push({u:-center,w:2.05,bottom:windowBottom,top:windowTop,kind:'window'});
     windows.push({u:center,w:2.05,bottom:windowBottom,top:windowTop,kind:'window'});
     if(side==='front')windows.push({u:0,w:level===0?2.4:2.25,bottom:0,top:Math.min(b.floorH-.38,2.5),kind:'door'});

@@ -44,12 +44,15 @@ const SIM_MIN_STEP_MS = 16;
 const SIM_FIXED_STEP_MS = 1000 / 30;
 const SIM_MAX_CATCHUP_MS = 400;
 const MOVE_BUDGET_INITIAL_SEC = 0.04;
-const MOVE_BUDGET_MAX_SEC = 0.26;
+const MOVE_BUDGET_MAX_SEC = 0.18;
+const MAX_STATE_ELAPSED_SEC = 0.40;
 const BOT_PERSIST_INTERVAL_MS = 10 * 1000;
 const BULLET_MAX_SEGMENT_DISTANCE = 6;
 const COMBAT_HISTORY_WINDOW_MS = 650;
 const COMBAT_HISTORY_MAX_SAMPLES = 40;
+const COMBAT_HISTORY_EXTRAPOLATION_MS = 70;
 const MAX_LAG_COMPENSATION_MS = 240;
+const MAX_TARGET_REWIND_MS = 220;
 const MAX_CLIENT_COMBAT_CLOCK_LEAD_MS = 35;
 const MIN_PLAYER_PENETRATION_ENERGY = .12;
 const THROWABLE_BROADCAST_MS = 33;
@@ -361,7 +364,7 @@ function publicPlayer(attachment) {
     grounded: attachment.serverGrounded !== false,
     verticalVelocity: finiteNumber(attachment.verticalVelocity, 0),
     jumpSeq: Math.max(0, Math.floor(finiteNumber(attachment.lastJumpSeq, 0))),
-    traversal: attachment.traversal ? {mode:attachment.traversal.mode,role:attachment.traversal.role||'',seq:attachment.traversal.seq,startX:attachment.traversal.startX,startY:attachment.traversal.startY,startZ:attachment.traversal.startZ,endX:attachment.traversal.endX,endY:attachment.traversal.endY,endZ:attachment.traversal.endZ,peakY:attachment.traversal.peakY,startedAt:attachment.traversal.startedAt,durationMs:attachment.traversal.durationMs,endGrounded:attachment.traversal.endGrounded!==false,exitVelocityY:Number(attachment.traversal.exitVelocityY)||0,portalId:String(attachment.traversal.portalId||'')} : null,
+    traversal: attachment.traversal ? {mode:attachment.traversal.mode,role:attachment.traversal.role||'',seq:attachment.traversal.seq,startX:attachment.traversal.startX,startY:attachment.traversal.startY,startZ:attachment.traversal.startZ,endX:attachment.traversal.endX,endY:attachment.traversal.endY,endZ:attachment.traversal.endZ,peakY:attachment.traversal.peakY,startedAt:attachment.traversal.startedAt,durationMs:attachment.traversal.durationMs,endGrounded:attachment.traversal.endGrounded!==false,exitVelocityY:Number(attachment.traversal.exitVelocityY)||0,portalId:String(attachment.traversal.portalId||''),viewMaxY:Number.isFinite(Number(attachment.traversal.viewMaxY))?Number(attachment.traversal.viewMaxY):null,climbX:Number.isFinite(Number(attachment.traversal.climbX))?Number(attachment.traversal.climbX):null,climbZ:Number.isFinite(Number(attachment.traversal.climbZ))?Number(attachment.traversal.climbZ):null} : null,
   };
 }
 
@@ -387,7 +390,7 @@ function publicBot(bot) {
     reloadWeapon: bot.reloadWeapon || "",
     kills: Math.max(0, Math.floor(finiteNumber(bot.kills, 0))),
     deaths: Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))),
-    traversal: bot.traversal ? {mode:bot.traversal.mode,role:bot.traversal.role||'',seq:bot.traversal.seq,startX:bot.traversal.startX,startY:bot.traversal.startY,startZ:bot.traversal.startZ,endX:bot.traversal.endX,endY:bot.traversal.endY,endZ:bot.traversal.endZ,peakY:bot.traversal.peakY,startedAt:bot.traversal.startedAt,durationMs:bot.traversal.durationMs,endGrounded:bot.traversal.endGrounded!==false,exitVelocityY:Number(bot.traversal.exitVelocityY)||0,portalId:String(bot.traversal.portalId||'')} : null,
+    traversal: bot.traversal ? {mode:bot.traversal.mode,role:bot.traversal.role||'',seq:bot.traversal.seq,startX:bot.traversal.startX,startY:bot.traversal.startY,startZ:bot.traversal.startZ,endX:bot.traversal.endX,endY:bot.traversal.endY,endZ:bot.traversal.endZ,peakY:bot.traversal.peakY,startedAt:bot.traversal.startedAt,durationMs:bot.traversal.durationMs,endGrounded:bot.traversal.endGrounded!==false,exitVelocityY:Number(bot.traversal.exitVelocityY)||0,portalId:String(bot.traversal.portalId||''),viewMaxY:Number.isFinite(Number(bot.traversal.viewMaxY))?Number(bot.traversal.viewMaxY):null,climbX:Number.isFinite(Number(bot.traversal.climbX))?Number(bot.traversal.climbX):null,climbZ:Number.isFinite(Number(bot.traversal.climbZ))?Number(bot.traversal.climbZ):null} : null,
   };
 }
 
@@ -401,7 +404,7 @@ function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
     ...player,...spawn,team,pendingTeam:'',pendingLoadout:null,primaryWeapon:active.primaryWeapon,tactical:active.tactical,lethal:active.lethal,hp:100,wastedUntil:0,regenAt:0,
     weapon:active.primaryWeapon,ammo:freshAmmo(),equipment:freshEquipment(active.tactical,active.lethal),reloadAt:0,reloadWeapon:'',
     fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,ads:false,crouched:false,moveSpeed:0,
-    verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
+    verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
     flashUntil:0,flashPower:0,flashDurationMs:0,fireHeat:{},fireHeatAt:{},knockVelocityX:0,knockVelocityZ:0,traversal:null,lastTraverseSeq:0,
   };
   if(resetStats)Object.assign(next,{kills:0,deaths:0,multiKillCount:0,lastKillAt:0});
@@ -722,7 +725,13 @@ export class GameRoom {
     if(!history?.length)return actor;
     const targetAt=finiteNumber(at,history[history.length-1].at);
     if(targetAt<=history[0].at)return{...actor,...history[0]};
-    const last=history[history.length-1];if(targetAt>=last.at)return{...actor,...last};
+    const last=history[history.length-1];
+    if(targetAt>=last.at){
+      if(history.length<2)return{...actor,...last};
+      const prev=history[history.length-2],sampleDt=Math.max(.008,(last.at-prev.at)/1000),extraMs=Math.min(COMBAT_HISTORY_EXTRAPOLATION_MS,Math.max(0,targetAt-last.at)),extra=extraMs/1000;let vx=(last.x-prev.x)/sampleDt,vz=(last.z-prev.z)/sampleDt,vy=(last.y-prev.y)/sampleDt,planar=Math.hypot(vx,vz);
+      if(planar>16){const scale=16/planar;vx*=scale;vz*=scale;}vy=clamp(vy,-13,9);const yawRate=clamp(normalizeAngle(last.yaw-prev.yaw)/sampleDt,-7,7);
+      return{...actor,...last,at:last.at+extraMs,x:last.x+vx*extra,y:last.y+vy*extra,z:last.z+vz*extra,yaw:last.yaw+yawRate*extra};
+    }
     for(let i=1;i<history.length;i++){
       const b=history[i];if(targetAt>b.at)continue;const a=history[i-1],span=Math.max(1,b.at-a.at),t=clamp((targetAt-a.at)/span,0,1),yawDelta=normalizeAngle(b.yaw-a.yaw);
       return{...actor,x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,z:a.z+(b.z-a.z)*t,yaw:a.yaw+yawDelta*t,crouched:t<.5?a.crouched:b.crouched};
@@ -869,7 +878,7 @@ export class GameRoom {
 
   freezeHumanState(player,now=Date.now()){
     const support=this.world.geometry.worldSupportHeight(player.x,player.z,player.y,false);
-    return {...player,y:support,ads:false,crouched:false,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,traversal:null,knockVelocityX:0,knockVelocityZ:0};
+    return {...player,y:support,ads:false,crouched:false,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,traversal:null,knockVelocityX:0,knockVelocityZ:0};
   }
 
   broadcastMatch(meta,now=Date.now(),extra={}){this.broadcast({t:'match',match:publicMatchState(meta.match,now),custom:this.isCustomMatch(meta),...extra});}
@@ -930,7 +939,7 @@ export class GameRoom {
     if(match.status===MATCH_STATUS.WAITING)return;
     if(match.status===MATCH_STATUS.WARMUP&&match.warmupEndsAt&&now>=match.warmupEndsAt){
       Object.assign(match,{status:MATCH_STATUS.ACTIVE,startedAt:now,endsAt:spec.timeLimitMs>0?now+match.timeLimitMs:0,warmupEndsAt:0,winner:'',winnerId:'',winnerName:'',reason:'',updatedAt:now});
-      for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;socket.serializeAttachment({...p,lastStateAt:now,lastVerticalAt:now,lastGroundedAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,moveSpeed:0,verticalVelocity:0,serverGrounded:true,knockVelocityX:0,knockVelocityZ:0,traversal:null});}
+      for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;socket.serializeAttachment({...p,lastStateAt:now,lastVerticalAt:now,lastGroundedAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,moveSpeed:0,verticalVelocity:0,serverGrounded:true,knockVelocityX:0,knockVelocityZ:0,traversal:null});}
       this.matchDirty=true;this.broadcastMatch(meta,now);return;
     }
     if(match.status===MATCH_STATUS.ACTIVE&&spec.scoreType!=='none'&&match.endsAt&&now>=match.endsAt){
@@ -1188,6 +1197,7 @@ export class GameRoom {
       traversal:null,lastTraverseSeq:Math.max(0,Math.floor(finiteNumber(preserved?.lastTraverseSeq,0))),
       lastVerticalAt: Date.now(),
       lastStateAt: Date.now(),
+      movementClockAt: Date.now(),
       moveBudgetSec: MOVE_BUDGET_INITIAL_SEC,
       knockVelocityX: 0, knockVelocityZ: 0,
     };
@@ -1260,19 +1270,20 @@ export class GameRoom {
           const requestedX=clamp(finiteNumber(payload.x,me.x),-ARENA_LIMIT,ARENA_LIMIT),requestedY=finiteNumber(payload.y,me.y),requestedZ=clamp(finiteNumber(payload.z,me.z),-ARENA_LIMIT,ARENA_LIMIT);
           const corrected=Math.hypot(requestedX-me.x,requestedZ-me.z)>.01||Math.abs(requestedY-me.y)>.05||!!payload.crouched||!!payload.ads;
           const support=this.world.geometry.worldSupportHeight(me.x,me.z,me.y,false),incomingJumpSeq=Math.max(0,Math.floor(finiteNumber(payload.jumpSeq,me.lastJumpSeq||0)));
-          me={...me,y:support,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,lastJumpSeq:incomingJumpSeq,traversal:null,knockVelocityX:0,knockVelocityZ:0};
+          me={...me,y:support,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,lastJumpSeq:incomingJumpSeq,traversal:null,knockVelocityX:0,knockVelocityZ:0};
           socket.serializeAttachment(me);
-          this.broadcast({t:'state',id:me.clientId,x:me.x,y:me.y,z:me.z,yaw:me.yaw,pitch:me.pitch,ads:false,crouched:false,traversal:''},socket);
-          if(corrected)sendJson(socket,{t:'correction',x:me.x,y:me.y,z:me.z,vertical:false,verticalVelocity:0,grounded:true,crouched:false});
+          const stateSeq=Math.max(0,Math.floor(finiteNumber(payload.seq,0))),stateAt=Math.min(now,sanitizeCombatTimestamp(payload.at,now));
+          this.broadcast({t:'state',id:me.clientId,at:stateAt,x:me.x,y:me.y,z:me.z,yaw:me.yaw,pitch:me.pitch,ads:false,crouched:false,traversal:''},socket);
+          if(corrected)sendJson(socket,{t:'correction',seq:stateSeq,x:me.x,y:me.y,z:me.z,vertical:false,verticalVelocity:0,grounded:true,crouched:false});
         } else {
-          const next = this.validateHumanState(me, payload, now, settings),combatAt=Math.min(now,sanitizeCombatTimestamp(payload.at,now));
+          const next = this.validateHumanState(me, payload, now, settings),combatAt=Math.min(now,sanitizeCombatTimestamp(payload.at,now)),stateSeq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));
           me = {...next.player,lastCombatStateAt:combatAt};
           socket.serializeAttachment(me);
           this.recordCombatPose(me,combatAt);
-          const state = { t: "state", id: me.clientId, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched, traversal:me.traversal?.mode||'' };
+          const state = { t: "state", id: me.clientId, at:combatAt, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched, traversal:me.traversal?.mode||'' };
           this.broadcast(state, socket);
           if (next.corrected) sendJson(socket,{
-            t:"correction",x:me.x,y:me.y,z:me.z,vertical:next.verticalCorrected,
+            t:"correction",seq:stateSeq,x:me.x,y:me.y,z:me.z,vertical:next.verticalCorrected,
             verticalVelocity:finiteNumber(me.verticalVelocity,0),grounded:me.serverGrounded!==false,crouched:!!me.crouched,
           });
         }
@@ -1290,7 +1301,7 @@ export class GameRoom {
       const playerHeight=me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT,candidate=this.world.worldCollision.findTraversalCandidate({x:me.x,y:me.y,z:me.z,dirX,dirZ,height:playerHeight,radius:PLAYER_RADIUS,airborne:me.serverGrounded===false});
       const solidActors=this.solidActors(me.clientId,now);
       if(!candidate||this.actorBlocksAt(candidate.endX,candidate.endZ,candidate.endY,me.x,me.z,solidActors,playerHeight)){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
-      const plan=createTraversalPlan(candidate,me.x,me.y,me.z,now,seq);if(!plan){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
+      const requestedAt=sanitizeCombatTimestamp(payload.at,now),stateAt=finiteNumber(me.lastCombatStateAt,requestedAt),traversalAt=clamp(requestedAt,stateAt-12,Math.min(now,stateAt+40)),plan=createTraversalPlan(candidate,me.x,me.y,me.z,traversalAt,seq);if(!plan){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
       me={...me,traversal:plan,lastTraverseSeq:seq,verticalVelocity:0,serverGrounded:false,ads:false,moveSpeed:0};socket.serializeAttachment(me);
       const event={t:'traverse',id:me.clientId,accepted:true,...plan};sendJson(socket,event);this.broadcast(event,socket);return;
     }
@@ -1318,7 +1329,7 @@ export class GameRoom {
       if(now<readyAt){const retryAfterMs=Math.max(1,Math.ceil(readyAt-now)),reason=switchReadyAt>=shotReadyAt?'weapon_switch':'cooldown';sendLoadout(socket,me,{action:'fire',accepted:false,reason,retryAfterMs});return;}
       if(!unlimited&&me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
 
-      const requestedShotAt=sanitizeCombatTimestamp(payload.shotAt,now),stateAt=finiteNumber(me.lastCombatStateAt,requestedShotAt),shotAt=clamp(requestedShotAt,stateAt-12,Math.min(now,stateAt+40)),shooterPose=this.combatPoseAt(me,shotAt),reticle=safeShotAim(me,payload),flashPower=activeFlashPower(me,now);let shotYaw=reticle.yaw,shotPitch=reticle.pitch;
+      const requestedShotAt=sanitizeCombatTimestamp(payload.shotAt,now),stateAt=finiteNumber(me.lastCombatStateAt,requestedShotAt),shotAt=clamp(requestedShotAt,stateAt-12,Math.min(now,stateAt+40)),shooterPose=this.combatPoseAt(me,shotAt),reticle=safeShotAim(me,payload),flashPower=activeFlashPower(me,now),targetRewindMs=(weapon==='grenadeLauncher'||weapon==='rpg')?0:clamp(finiteNumber(payload.viewDelayMs,0),0,MAX_TARGET_REWIND_MS);let shotYaw=reticle.yaw,shotPitch=reticle.pitch;
       if(flashPower>.02){const flashSpread=.035+flashPower*.22;shotYaw+=(Math.random()-.5)*2*flashSpread;shotPitch=clamp(shotPitch+(Math.random()-.5)*1.5*flashSpread,-1.4,1.4);me.ads=false;}
       const preShotHeat=decayedFireHeat(me,weapon,now),adsAmount=me.ads?clamp(finiteNumber(payload.adsAmount,1),0,1):0,airborne=me.serverGrounded===false;
       me.fireReadyAt[weapon]=now+spec.cooldownMs;if(!unlimited)me.ammo[weapon]-=1;storeFireHeat(me,weapon,now,preShotHeat);
@@ -1328,7 +1339,7 @@ export class GameRoom {
       const launcherPitchOffset=(Number(WEAPON_SPECS[weapon]?.launchPitchDeg)||0)*Math.PI/180,basePitch=clamp(shotPitch+launcherPitchOffset,-1.4,1.4);
       for(let i=0;i<pellets;i++){
         const a=shotgunPattern?shotgunPelletAngles(shotYaw,basePitch,spreadRadius,i,pellets,patternRotation):spreadShotAngles(shotYaw,basePitch,spreadRadius),launch=shotLaunchPose(shooterPose,a.yaw,a.pitch,!!shooterPose.crouched,weapon,this.world.serverCollision.segmentFirstWorldHitT),centerScale=i===0?Math.max(1,finiteNumber(WEAPON_SPECS[weapon]?.centerPelletDamageScale,1)):1;
-        this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage*centerScale,weapon,lifetimeMs:WEAPON_SPECS[weapon].lifetimeMs,x:launch.x,y:launch.y,z:launch.z,vx:launch.dx*spec.speed,vy:launch.dy*spec.speed,vz:launch.dz*spec.speed,now,shotAt,consumeAmmo:i===0&&!unlimited,primaryShot:i===0});
+        this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage*centerScale,weapon,lifetimeMs:WEAPON_SPECS[weapon].lifetimeMs,x:launch.x,y:launch.y,z:launch.z,vx:launch.dx*spec.speed,vy:launch.dy*spec.speed,vz:launch.dz*spec.speed,now,shotAt,targetRewindMs,consumeAmmo:i===0&&!unlimited,primaryShot:i===0});
       }
       sendLoadout(socket,me,{action:'fire',accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
     }
@@ -1416,7 +1427,7 @@ export class GameRoom {
       }
       this.bots=makeBots(this.world,meta.blueBots||0,meta.redBots||0,mode);
       await this.ctx.storage.put('bots',this.bots);await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);
-      this.broadcast({t:'map',mapId:nextMap,players,bots:this.bots.map(publicBot),by:me.clientId});
+      this.broadcast({t:'map',mapId:nextMap,players,bots:this.bots.map(publicBot),by:me.clientId,serverTime:now});
       return;
     }
 
@@ -1626,18 +1637,23 @@ export class GameRoom {
     if(!me?.traversal)return me;
     const pose=traversalPose(me.traversal,now);if(!pose){return {...me,traversal:null};}
     const next={...me,x:pose.x,y:pose.y,z:pose.z,verticalVelocity:0,serverGrounded:false,moveSpeed:0,lastVerticalAt:now};
-    if(pose.done){const finished=me.traversal;next.x=finished.endX;next.y=finished.endY;next.z=finished.endZ;next.traversal=null;next.serverGrounded=finished.endGrounded!==false;next.verticalVelocity=next.serverGrounded?0:(Number.isFinite(Number(finished.exitVelocityY))?Number(finished.exitVelocityY):-1.15);if(next.serverGrounded)next.lastGroundedAt=now;next.moveBudgetSec=MOVE_BUDGET_INITIAL_SEC;}
+    if(pose.done){const finished=me.traversal;next.x=finished.endX;next.y=finished.endY;next.z=finished.endZ;next.traversal=null;next.serverGrounded=finished.endGrounded!==false;next.verticalVelocity=next.serverGrounded?0:(Number.isFinite(Number(finished.exitVelocityY))?Number(finished.exitVelocityY):-1.15);if(next.serverGrounded)next.lastGroundedAt=now;next.movementClockAt=now;next.moveBudgetSec=MOVE_BUDGET_INITIAL_SEC;}
     return next;
   }
 
   validateHumanState(me, payload, now, settings) {
     const desiredX = clamp(finiteNumber(payload.x, me.x), -ARENA_LIMIT, ARENA_LIMIT);
     const desiredZ = clamp(finiteNumber(payload.z, me.z), -ARENA_LIMIT, ARENA_LIMIT);
+    // Movement credit advances only on the server's monotonic wall clock. Client
+    // timestamps are useful for combat/history alignment, but can never mint
+    // movement time. This preserves a hard long-term speed invariant under
+    // jitter, packet bunching, stale clocks, or deliberately forged timestamps.
+    const previousMovementClock=finiteNumber(me.movementClockAt,finiteNumber(me.lastStateAt,now));
+    const elapsed=clamp((now-previousMovementClock)/1000,0,MAX_STATE_ELAPSED_SEC),movementClockAt=Math.max(previousMovementClock,now);
     if(me.traversal){
       const desiredY=finiteNumber(payload.y,me.y),error=Math.hypot(desiredX-me.x,desiredY-me.y,desiredZ-me.z);
-      return {corrected:error>.18,verticalCorrected:false,player:{...me,lastStateAt:now,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,moveSpeed:0}};
+      return {corrected:error>.18,verticalCorrected:false,player:{...me,lastStateAt:now,movementClockAt,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,moveSpeed:0}};
     }
-    const elapsed = clamp((now - finiteNumber(me.lastStateAt, now)) / 1000, 0, 0.25);
     const flashPower = activeFlashPower(me, now);
     const ads = flashPower > 0.12 ? false : !!payload.ads;
     let crouched = !!payload.crouched;
@@ -1750,7 +1766,7 @@ export class GameRoom {
     // Do not emit a correction merely because an internal sweep touched a wall.
     // If the client independently stopped at the same surface there is nothing
     // to reconcile. Only real position divergence is sent back.
-    const corrected = speedViolation || verticalCorrected || horizontalError > 0.10;
+    const corrected = verticalCorrected || horizontalError > 0.10 || (speedViolation && horizontalError > 0.10);
     const actualTravel = Math.hypot(x - me.x, z - me.z);
 
     return {
@@ -1773,6 +1789,7 @@ export class GameRoom {
         lastVerticalAt: now,
         lastJumpSeq: Math.max(previousJumpSeq, incomingJumpSeq),
         lastStateAt: now,
+        movementClockAt,
         yaw: nextYaw,
         pitch: clamp(finiteNumber(payload.pitch, me.pitch), -1.4, 1.4),
       },
@@ -1809,12 +1826,12 @@ export class GameRoom {
     }
   }
 
-  spawnBullet({ ownerId, ownerTeam, damage, weapon, lifetimeMs, x, y, z, vx, vy, vz, now, shotAt=now, consumeAmmo=true, primaryShot=consumeAmmo }) {
+  spawnBullet({ ownerId, ownerTeam, damage, weapon, lifetimeMs, x, y, z, vx, vy, vz, now, shotAt=now, targetRewindMs=0, consumeAmmo=true, primaryShot=consumeAmmo }) {
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
     const safe = safeWeapon(weapon),bornAt=Math.min(now,sanitizeCombatTimestamp(shotAt,now));
     const weaponSpec=WEAPON_SPECS[safe],bullet = {
       id, ownerId, ownerTeam: safeTeam(ownerTeam), damage, weapon: safe,
-      penetrationEnergy:1,
+      penetrationEnergy:1,targetRewindMs:clamp(finiteNumber(targetRewindMs,0),0,MAX_TARGET_REWIND_MS),
       gravity:Math.max(0,finiteNumber(weaponSpec.projectileGravity,0)),explosionRadius:Math.max(0,finiteNumber(weaponSpec.explosionRadius,0)),explosionDamage:Math.max(0,finiteNumber(weaponSpec.explosionDamage,0)),
       hitTargets: new Set(),traveledDistance: 0,
       lifetimeMs: lifetimeMs || weaponSpec.lifetimeMs, x, y, z, vx, vy, vz, born: bornAt, lastAt: bornAt, lastBroadcast: now,
@@ -1865,7 +1882,7 @@ export class GameRoom {
 
     if (now - this.lastBotBroadcastAt >= 50) {
       this.lastBotBroadcastAt = now;
-      if (this.bots.length) this.broadcast({ t: "botState", bots: this.bots.map(publicBot) });
+      if (this.bots.length) this.broadcast({ t: "botState", at:now, bots: this.bots.map(publicBot) });
     }
     if (now - this.lastPersistAt >= BOT_PERSIST_INTERVAL_MS) {
       this.lastPersistAt = now;
@@ -2244,7 +2261,7 @@ export class GameRoom {
           const worldT = this.world.serverCollision.segmentFirstWorldHitT(previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
           let nearest = null;
           const consider = (kind, target, socket = null) => {
-            const collisionTarget=this.combatPoseAt(target,segmentAt),hit=this.world.serverCollision.projectileSegmentHitZone(collisionTarget,previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
+            const collisionTarget=this.combatPoseAt(target,segmentAt-finiteNumber(bullet.targetRewindMs,0)),hit=this.world.serverCollision.projectileSegmentHitZone(collisionTarget,previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
             if (!hit || bullet.hitTargets.has(target.clientId || target.id)) return;
             if (!nearest || hit.t < nearest.hit.t) nearest = { kind, target, socket, hit };
           };
