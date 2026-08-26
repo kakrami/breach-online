@@ -409,7 +409,7 @@ function publicBot(bot) {
   };
 }
 
-function sendLoadout(socket, me, extra = {}) { sendJson(socket,{t:'loadout',weapon:safeWeapon(me.weapon),primaryWeapon:safePrimaryWeapon(me.primaryWeapon),tactical:safeTactical(me.tactical),lethal:safeLethal(me.lethal),pendingLoadout:me.pendingLoadout?normalizeLoadout(me.pendingLoadout,{primaryWeapon:me.primaryWeapon,tactical:me.tactical,lethal:me.lethal}):null,ammo:me.ammo,equipment:me.equipment,reloadAt:me.reloadAt||0,reloadWeapon:me.reloadWeapon||'',rev:0,...extra}); }
+function sendLoadout(socket, me, extra = {}) { sendJson(socket,{t:'loadout',weapon:safeWeapon(me.weapon),primaryWeapon:safePrimaryWeapon(me.primaryWeapon),tactical:safeTactical(me.tactical),lethal:safeLethal(me.lethal),pendingLoadout:me.pendingLoadout?normalizeLoadout(me.pendingLoadout,{primaryWeapon:me.primaryWeapon,tactical:me.tactical,lethal:me.lethal}):null,ammo:me.ammo,equipment:me.equipment,reloadAt:me.reloadAt||0,reloadWeapon:me.reloadWeapon||'',...extra}); }
 
 function spawnForTeam(world,team,index){return world.spawns.spawnForMode('tdm',safeTeam(team),index,world.geometry.terrainHeight);}
 function spawnForMode(world,mode,team,index){return world.spawns.spawnForMode(normalizeGameMode(mode),safeTeam(team),index,world.geometry.terrainHeight);}
@@ -803,7 +803,7 @@ export class GameRoom {
       : type === 'state' ? { rate: 55, burst: 80 }
       : type === 'simTick' ? { rate: 40, burst: 60 }
       : type === 'fire' ? { rate: 24, burst: 30 }
-      : ['throw','reload','weapon','loadout','team','god','startMatch','returnLobby','lobbyMode','adminPlayer','adminSettings','adminMatch','adminBots','lobbyMap'].includes(type) ? { rate: 14, burst: 22 }
+      : ['throw','reload','weapon','loadout','team','god','startMatch','returnLobby','adminPlayer','adminSettings','adminBots'].includes(type) ? { rate: 14, burst: 22 }
       : type === 'ping' ? { rate: 8, burst: 12 }
       : type === 'chat' ? { rate: 1.5, burst: 4 }
       : { rate: 30, burst: 45 };
@@ -949,7 +949,7 @@ export class GameRoom {
       this.bots.push(makeBot(this.world,team,i,mode,botSpawnIndex++,spawn));
     }
     this.matchDirty=true;
-    this.broadcast({t:'matchReset',match:publicMatchState(meta.match,now),players,bots:this.bots.map(publicBot),custom:this.isCustomMatch(meta)});
+    this.broadcast({t:'matchReset',match:publicMatchState(meta.match,now),players,bots:this.bots.map(publicBot),mapId:meta.mapId,settings:normalizeWorldSettings(meta.settings),botConfig:{blueBots:meta.blueBots||0,redBots:meta.redBots||0,difficulty:safeBotDifficulty(meta.botDifficulty)},custom:this.isCustomMatch(meta)});
     return true;
   }
 
@@ -1452,59 +1452,27 @@ export class GameRoom {
     }
 
     if(payload.t==='loadout'){
-      const next=normalizeLoadout(payload,{primaryWeapon:me.primaryWeapon,tactical:me.tactical,lethal:me.lethal});
+      const rev=Math.max(0,Math.floor(finiteNumber(payload.rev,0))),next=normalizeLoadout(payload,{primaryWeapon:me.primaryWeapon,tactical:me.tactical,lethal:me.lethal});
       if(matchAllowsLobbyEdits(meta.match)||me.godMode){
         me.primaryWeapon=next.primaryWeapon;me.tactical=next.tactical;me.lethal=next.lethal;me.pendingLoadout=null;me.weapon=next.primaryWeapon;me.ammo=freshAmmo();me.equipment=freshEquipment(next.tactical,next.lethal);me.reloadAt=0;me.reloadWeapon='';me.weaponReadyAt=0;
-        if(me.godMode)refreshUnlimitedResources(me);socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:false});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me)});return;
+        if(me.godMode)refreshUnlimitedResources(me);socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:false,rev});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me),rev});return;
       }
       // Standard mid-match class changes preserve the current life exactly.
       // God Mode returned above because it intentionally supports live loadout edits.
       // Otherwise the queued class is consumed atomically on the next spawn.
-      me.pendingLoadout=next;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:true,pendingLoadout:next});return;
-    }
-
-    if(payload.t==='lobbyMode'){
-      if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Admin access required.'});return;}
-      if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Game mode can only be changed in the lobby.'});return;}
-      const mode=normalizeGameMode(payload.mode),spec=gameModeSpec(mode);meta.match={...meta.match,mode,blueScore:0,redScore:0,scoreLimit:spec.scoreLimit,timeLimitMs:spec.timeLimitMs,winner:'',winnerId:'',winnerName:'',reason:'',updatedAt:now};
-      for(const s of this.ctx.getWebSockets()){const p=s.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;p.pendingTeam='';s.serializeAttachment(p);}
-      this.bots=reconcileBots(this.world,this.bots,meta.blueBots||0,meta.redBots||0,mode);await this.ctx.storage.put('bots',this.bots);
-      await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);this.broadcastMatch(meta,now,{rulesUpdated:true,by:me.clientId});this.broadcast({t:'bots',config:{blueBots:meta.blueBots||0,redBots:meta.redBots||0,difficulty:safeBotDifficulty(meta.botDifficulty)},bots:this.bots.map(publicBot)});return;
-    }
-
-    if(payload.t==='lobbyMinimap'){
-      if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Admin access required.'});return;}
-      if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Minimap settings can only be changed in the lobby.'});return;}
-      const next={...meta.match,updatedAt:now};
-      if(Object.prototype.hasOwnProperty.call(payload,'revealAll'))next.minimapRevealAll=!!payload.revealAll;
-      if(Object.prototype.hasOwnProperty.call(payload,'directional'))next.minimapDirectional=!!payload.directional;
-      meta.match=normalizeMatchState(next,now,next);
-      await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);this.broadcastMatch(meta,now,{rulesUpdated:true,by:me.clientId});return;
-    }
-
-    if(payload.t==='lobbyMap'){
-      if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Admin access required.'});return;}
-      if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Map can only be changed in the lobby.'});return;}
-      const nextMap=normalizeMapId(payload.mapId);
-      if(nextMap===normalizeMapId(meta.mapId)){sendJson(socket,{t:'notice',text:`Map already set to ${mapSpec(nextMap).name}.`});return;}
-      meta.mapId=nextMap;this.world=worldBundle(nextMap);
-      this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.recentDeaths=[];this.recentSpawns=[];this.recentGunfire=[];this.recentExplosions=[];
-      const mode=matchMode(meta.match),players=[];let playerIndex=0;
-      for(const s of this.ctx.getWebSockets()){
-        const p=s.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;
-        const team=safeTeam(p.team),spawn=spawnForMode(this.world,mode,team,playerIndex++),reset=spawnedPlayerState(p,spawn,team,now,{resetStats:false});
-        reset.kills=Math.max(0,Math.floor(finiteNumber(p.kills,0)));reset.deaths=Math.max(0,Math.floor(finiteNumber(p.deaths,0)));reset.godMode=!!p.godMode;reset.admin=isRoomAdmin(meta,p.clientId);
-        s.serializeAttachment(reset);players.push(publicPlayer(reset));
-      }
-      this.bots=makeBots(this.world,meta.blueBots||0,meta.redBots||0,mode);
-      await this.ctx.storage.put('bots',this.bots);await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);
-      this.broadcast({t:'map',mapId:nextMap,players,bots:this.bots.map(publicBot),by:me.clientId,serverTime:now});
-      return;
+      me.pendingLoadout=next;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:true,pendingLoadout:next,rev});return;
     }
 
     if(payload.t==='startMatch'){
       if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Only a lobby admin can start the match.'});return;}
       if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Match has already started.'});return;}
+      const setup=payload.setup&&typeof payload.setup==='object'?payload.setup:null;
+      if(!setup||!setup.rules||!setup.bots||!setup.minimap||!setup.settings){sendJson(socket,{t:'notice',tone:'error',text:'Complete match setup is required.'});return;}
+      const mode=normalizeGameMode(setup.mode),rules=normalizeMatchRules({mode,scoreLimit:setup.rules.scoreLimit,timeLimitMs:setup.rules.timeLimitMs,minimapRevealAll:!!setup.minimap.revealAll,minimapDirectional:!!setup.minimap.directional});
+      const blueBots=clamp(Math.floor(finiteNumber(setup.bots.blueBots,0)),0,MAX_BOTS),redBots=clamp(Math.floor(finiteNumber(setup.bots.redBots,0)),0,MAX_BOTS);
+      if(blueBots+redBots>MAX_BOTS){sendJson(socket,{t:'notice',tone:'error',text:`Maximum ${MAX_BOTS} bots per match.`});return;}
+      meta.mapId=normalizeMapId(setup.mapId);this.world=worldBundle(meta.mapId);meta.settings=normalizeWorldSettings(setup.settings);meta.blueBots=blueBots;meta.redBots=redBots;meta.botDifficulty=safeBotDifficulty(setup.bots.difficulty);meta.match=defaultMatchState(now,rules);
+      if(setup.loadout&&typeof setup.loadout==='object'){me.pendingLoadout=normalizeLoadout(setup.loadout,{primaryWeapon:me.primaryWeapon,tactical:me.tactical,lethal:me.lethal});socket.serializeAttachment(me);}
       this.prepareRound(meta,now);await this.putMeta(meta);await this.ctx.storage.put('bots',this.bots);await this.updateDirectory(this.liveSockets().length,meta);return;
     }
 
@@ -1608,6 +1576,7 @@ export class GameRoom {
     }
 
     if (payload.t === "adminSettings") {
+      if (matchAllowsLobbyEdits(meta.match)) {sendJson(socket,{t:'notice',tone:'error',text:'Use lobby setup and Start Match for pre-match tuning.'});return;}
       if (!isRoomAdmin(meta, me.clientId)) {
         sendJson(socket,{t:"notice",tone:"error",text:"Admin access required."});
         return;
@@ -1626,28 +1595,8 @@ export class GameRoom {
       return;
     }
 
-    if (payload.t === "adminMatch") {
-      if (!isRoomAdmin(meta, me.clientId)) {
-        sendJson(socket,{t:"notice",tone:"error",text:"Admin access required."});
-        return;
-      }
-      const rules=normalizeMatchRules({...payload.rules,mode:matchMode(meta.match),minimapRevealAll:!!meta.match.minimapRevealAll,minimapDirectional:!!meta.match.minimapDirectional});
-      const match=normalizeMatchState(meta.match,now,rules);
-      match.scoreLimit=rules.scoreLimit;match.timeLimitMs=rules.timeLimitMs;
-      if(matchAllowsCombat(match)&&match.startedAt)match.endsAt=match.timeLimitMs>0?match.startedAt+match.timeLimitMs:0;
-      match.updatedAt = now; meta.match = match;
-      this.matchDirty = true; await this.putMeta(meta); this.matchDirty = false;
-      this.broadcastMatch(meta, now, {rulesUpdated:true,by:me.clientId}); await this.updateDirectory(this.liveSockets().length, meta);
-      if(matchAllowsCombat(match)&&gameModeSpec(match.mode).scoreType==='team'&&(match.blueScore>=match.scoreLimit||match.redScore>=match.scoreLimit)){
-        const winner=match.blueScore===match.redScore?'draw':match.blueScore>match.redScore?'blue':'red';this.finishMatch(meta,winner,'score',now);
-      }else if(matchAllowsCombat(match)&&gameModeSpec(match.mode).scoreType==='player'){
-        const leader=this.individualLeaders()[0];if(leader&&leader.kills>=match.scoreLimit)this.finishMatch(meta,{winnerId:leader.id,winnerName:leader.name},'score',now);
-      }
-      return;
-    }
-
-
     if (payload.t === "adminBots") {
+      if (matchAllowsLobbyEdits(meta.match)) {sendJson(socket,{t:'notice',tone:'error',text:'Use lobby setup and Start Match for pre-match bots.'});return;}
       if (!isRoomAdmin(meta, me.clientId)) {
         sendJson(socket,{t:"notice",tone:"error",text:"Admin access required."});
         return;

@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.37.35';
-export const PROTOCOL_VERSION = 60;
+export const APP_VERSION = '1.37.40';
+export const PROTOCOL_VERSION = 62;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -19,14 +19,14 @@ export function mapSpec(value){return MAPS[normalizeMapId(value)];}
 export const WEAPON_ORDER = ['pistol','assault','ump','shotgun','semiShotgun','sniper','grenadeLauncher','rpg'];
 export const PRIMARY_WEAPONS = ['assault','ump','shotgun','semiShotgun','sniper','grenadeLauncher','rpg'];
 export const WEAPON_SPECS = {
-  pistol: { name:'PISTOL', short:'PST', mag:12, damage:35, playerPenetrationRetention:.42, reloadMs:900, cooldownMs:180, bulletSpeed:180, lifetimeMs:3200, adsFov:54, sprintOutMs:115, sprintAdsMs:95, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:26, falloffEnd:60, minDamageScale:.72, recoilPitch:.0095, recoilYaw:.0030, recoilMaxPitch:.0240, recoilRecovery:15, recoilRecoveryDelayMs:50 },
-  assault: { name:'ASSAULT RIFLE', short:'AR', mag:30, damage:52, playerPenetrationRetention:.68, reloadMs:1450, cooldownMs:100, bulletSpeed:230, lifetimeMs:3000, adsFov:46, sprintOutMs:180, sprintAdsMs:145, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:42, falloffEnd:92, minDamageScale:.76, recoilPitch:.0058, recoilYaw:.0026, recoilMaxPitch:.0300, recoilRecovery:11.5, recoilRecoveryDelayMs:55, automatic:true },
-  ump: { name:'UMP', short:'UMP', mag:30, damage:52, playerPenetrationRetention:.55, reloadMs:1320, cooldownMs:92, bulletSpeed:210, lifetimeMs:3000, adsFov:49, sprintOutMs:145, sprintAdsMs:115, pellets:1, headshotMultiplier:1.45, headshotMinDamage:0, falloffStart:18, falloffEnd:55, minDamageScale:.56, recoilPitch:.0049, recoilYaw:.0034, recoilMaxPitch:.0280, recoilRecovery:13, recoilRecoveryDelayMs:45, automatic:true },
-  shotgun: { name:'PUMP SHOTGUN', short:'SG', mag:6, damage:16, playerPenetrationRetention:.22, centerPelletDamageScale:2.0, reloadMs:620, cooldownMs:800, bulletSpeed:200, lifetimeMs:1700, adsFov:52, sprintOutMs:220, sprintAdsMs:175, pellets:8, headshotMultiplier:1.10, headshotMinDamage:0, falloffStart:10, falloffEnd:26, minDamageScale:.38, recoilPitch:.0175, recoilYaw:.0042, recoilMaxPitch:.0260, recoilRecovery:9.5, recoilRecoveryDelayMs:80, shellReload:true },
-  semiShotgun: { name:'SEMI-AUTO SHOTGUN', short:'SAS', mag:8, damage:12, playerPenetrationRetention:.18, centerPelletDamageScale:1.0, reloadMs:1550, cooldownMs:330, bulletSpeed:200, lifetimeMs:1750, adsFov:51, sprintOutMs:205, sprintAdsMs:165, pellets:8, headshotMultiplier:1.10, headshotMinDamage:0, falloffStart:9, falloffEnd:24, minDamageScale:.36, recoilPitch:.0135, recoilYaw:.0052, recoilMaxPitch:.0320, recoilRecovery:9, recoilRecoveryDelayMs:70 },
-  sniper: { name:'SNIPER', short:'SNP', mag:5, damage:110, playerPenetrationRetention:.92, lowerBodyDamageScale:.82, armDamageScale:.82, reloadMs:1650, cooldownMs:1050, bulletSpeed:480, lifetimeMs:2400, adsFov:18, sprintOutMs:285, sprintAdsMs:235, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:115, falloffEnd:190, minDamageScale:.92, recoilPitch:.0290, recoilYaw:.0048, recoilMaxPitch:.0380, recoilRecovery:8.2, recoilRecoveryDelayMs:90 },
-  grenadeLauncher: { name:'GRENADE LAUNCHER', short:'GL', mag:1, damage:30, playerPenetrationRetention:0, reloadMs:1650, cooldownMs:1100, bulletSpeed:34, lifetimeMs:3000, adsFov:52, sprintOutMs:245, sprintAdsMs:200, pellets:1, headshotMultiplier:1, headshotMinDamage:0, falloffStart:999, falloffEnd:1000, minDamageScale:1, recoilPitch:.0200, recoilYaw:.0038, recoilMaxPitch:.0300, recoilRecovery:8.4, recoilRecoveryDelayMs:100, projectileGravity:13.5, launchPitchDeg:5.0, explosionRadius:6.8, explosionDamage:140 },
-  rpg: { name:'RPG', short:'RPG', mag:1, damage:35, playerPenetrationRetention:0, reloadMs:2200, cooldownMs:1450, bulletSpeed:50, lifetimeMs:4300, adsFov:50, sprintOutMs:310, sprintAdsMs:255, pellets:1, headshotMultiplier:1, headshotMinDamage:0, falloffStart:999, falloffEnd:1000, minDamageScale:1, recoilPitch:.0240, recoilYaw:.0034, recoilMaxPitch:.0340, recoilRecovery:7.6, recoilRecoveryDelayMs:110, projectileGravity:0, explosionRadius:8.2, explosionDamage:165 },
+  pistol: { name:'PISTOL', short:'PST', mag:12, damage:35, playerPenetrationRetention:.42, reloadMs:900, cooldownMs:180, bulletSpeed:180, lifetimeMs:3200, adsFov:54, sprintOutMs:115, sprintAdsMs:95, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:26, falloffEnd:60, minDamageScale:.72, recoilPitch:.0095, recoilYaw:.0030, firstShotRecoilScale:.52, recoilMaxPitch:.0240, recoilRecovery:15, recoilRecoveryDelayMs:50 },
+  assault: { name:'ASSAULT RIFLE', short:'AR', mag:30, damage:52, playerPenetrationRetention:.68, reloadMs:1450, cooldownMs:100, bulletSpeed:230, lifetimeMs:3000, adsFov:46, sprintOutMs:180, sprintAdsMs:145, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:42, falloffEnd:92, minDamageScale:.76, recoilPitch:.0073, recoilYaw:.0034, firstShotRecoilScale:.25, recoilMaxPitch:.0950, recoilMaxYaw:.0240, recoilRecovery:10.0, recoilRecoveryDelayMs:60, automatic:true },
+  ump: { name:'UMP', short:'UMP', mag:30, damage:42, playerPenetrationRetention:.55, reloadMs:1320, cooldownMs:80, bulletSpeed:210, lifetimeMs:3000, adsFov:49, sprintOutMs:145, sprintAdsMs:115, pellets:1, headshotMultiplier:1.45, headshotMinDamage:0, falloffStart:18, falloffEnd:55, minDamageScale:.56, recoilPitch:.0040, recoilYaw:.0018, firstShotRecoilScale:.22, recoilMaxPitch:.0520, recoilMaxYaw:.0110, recoilRecovery:15.0, recoilRecoveryDelayMs:45, automatic:true },
+  shotgun: { name:'PUMP SHOTGUN', short:'SG', mag:6, damage:16, playerPenetrationRetention:.22, centerPelletDamageScale:2.0, reloadMs:620, cooldownMs:800, bulletSpeed:200, lifetimeMs:1700, adsFov:52, sprintOutMs:220, sprintAdsMs:175, pellets:8, headshotMultiplier:1.10, headshotMinDamage:0, falloffStart:10, falloffEnd:26, minDamageScale:.38, recoilPitch:.0175, recoilYaw:.0042, firstShotRecoilScale:.78, recoilMaxPitch:.0260, recoilRecovery:9.5, recoilRecoveryDelayMs:80, shellReload:true },
+  semiShotgun: { name:'SEMI-AUTO SHOTGUN', short:'SAS', mag:8, damage:12, playerPenetrationRetention:.18, centerPelletDamageScale:1.0, reloadMs:1550, cooldownMs:330, bulletSpeed:200, lifetimeMs:1750, adsFov:51, sprintOutMs:205, sprintAdsMs:165, pellets:8, headshotMultiplier:1.10, headshotMinDamage:0, falloffStart:9, falloffEnd:24, minDamageScale:.36, recoilPitch:.0135, recoilYaw:.0052, firstShotRecoilScale:.56, recoilMaxPitch:.0320, recoilRecovery:9, recoilRecoveryDelayMs:70 },
+  sniper: { name:'SNIPER', short:'SNP', mag:5, damage:110, playerPenetrationRetention:.92, lowerBodyDamageScale:.82, armDamageScale:.82, reloadMs:1650, cooldownMs:1050, bulletSpeed:480, lifetimeMs:2400, adsFov:18, sprintOutMs:285, sprintAdsMs:235, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:115, falloffEnd:190, minDamageScale:.92, recoilPitch:.0290, recoilYaw:.0048, firstShotRecoilScale:.82, recoilMaxPitch:.0380, recoilRecovery:8.2, recoilRecoveryDelayMs:90 },
+  grenadeLauncher: { name:'GRENADE LAUNCHER', short:'GL', mag:1, damage:30, playerPenetrationRetention:0, reloadMs:1650, cooldownMs:1100, bulletSpeed:34, lifetimeMs:3000, adsFov:52, sprintOutMs:245, sprintAdsMs:200, pellets:1, headshotMultiplier:1, headshotMinDamage:0, falloffStart:999, falloffEnd:1000, minDamageScale:1, recoilPitch:.0200, recoilYaw:.0038, firstShotRecoilScale:.76, recoilMaxPitch:.0300, recoilRecovery:8.4, recoilRecoveryDelayMs:100, projectileGravity:13.5, launchPitchDeg:5.0, explosionRadius:6.8, explosionDamage:140 },
+  rpg: { name:'RPG', short:'RPG', mag:1, damage:35, playerPenetrationRetention:0, reloadMs:2200, cooldownMs:1450, bulletSpeed:50, lifetimeMs:4300, adsFov:50, sprintOutMs:310, sprintAdsMs:255, pellets:1, headshotMultiplier:1, headshotMinDamage:0, falloffStart:999, falloffEnd:1000, minDamageScale:1, recoilPitch:.0240, recoilYaw:.0034, firstShotRecoilScale:.82, recoilMaxPitch:.0340, recoilRecovery:7.6, recoilRecoveryDelayMs:110, projectileGravity:0, explosionRadius:8.2, explosionDamage:165 },
 };
 // Accuracy is centered on the reticle. Movement, stance, airborne state and
 // sustained-fire heat widen the cone around that center; they never offset the
@@ -87,11 +87,12 @@ export const MOVEMENT_FEEL = Object.freeze({
   sprintSpeedMultiplier:1.28,
   sprintMinForward:0.35,
   sprintMinInput:0.55,
-  slideDurationMs:650,
-  slideStartSpeedMultiplier:1.32,
-  slideEndSpeedMultiplier:0.68,
-  slideSteer:0.18,
-  slideServerGraceMs:820,
+  slideDurationMs:500,
+  slideStartSpeedMultiplier:1.55,
+  slideEndSpeedMultiplier:0.10,
+  slideSteer:0.12,
+  slideRecoveryMs:200,
+  slideServerGraceMs:700,
 });
 
 export const WEAPON_SWITCH_MS = 120;
