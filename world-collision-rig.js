@@ -1,4 +1,4 @@
-import { ARENA_LIMIT, PLAYER_HEIGHT, PLAYER_RADIUS, WORLD_PLAYER_COLLIDERS, BUILDING_WINDOW_PORTALS, LADDERS, worldSupportHeight } from './world-geometry-rig.js?v=1.37.26';
+import { ARENA_LIMIT, PLAYER_HEIGHT, PLAYER_RADIUS, WORLD_PLAYER_COLLIDERS, BUILDING_WINDOW_PORTALS, worldSupportHeight } from './world-geometry-rig.js?v=1.37.27';
 
 const CELL_SIZE = 8;
 const CELL_HEIGHT = 3;
@@ -142,29 +142,6 @@ export function worldHeightExpansionBlockedAt(x,z,y,fromHeight,toHeight,radius=P
 }
 
 
-function findLadderCandidate(x,y,z,dx,dz,height,radius){
-  if(!Array.isArray(LADDERS)||!LADDERS.length)return null;
-  for(const ladder of LADDERS){
-    const relX=x-ladder.x,relZ=z-ladder.z,normalDistance=relX*ladder.nx+relZ*ladder.nz,lateral=relX*ladder.tx+relZ*ladder.tz;
-    if(Math.abs(lateral)>ladder.width/2+radius*.30)continue;
-    const approach=dx*ladder.nx+dz*ladder.nz;
-    const climbX=ladder.x+ladder.nx*(radius+.10),climbZ=ladder.z+ladder.nz*(radius+.10);
-    // Up: approach the ladder from its outside face while standing near its foot.
-    if(normalDistance>=-.08&&normalDistance<=1.45&&approach<-.24&&Math.abs(y-ladder.bottomY)<=.78){
-      const endX=ladder.x-ladder.nx*(radius+.30),endZ=ladder.z-ladder.nz*(radius+.30),endY=ladder.topY;
-      if(!clearStandingAt(endX,endZ,endY,height,radius))continue;
-      return {mode:'ladder',role:'ladder',portalId:`ladder:${ladder.id}`,endX,endY,endZ,peakY:endY+.04,endGrounded:true,exitVelocityY:0,climbX,climbZ,dirX:dx,dirZ:dz};
-    }
-    // Down: walk toward the ladder from the upper landing. Traversal moves the body over
-    // the lip first, then descends on the outside face.
-    if(normalDistance<=.38&&normalDistance>=-1.35&&approach>.24&&Math.abs(y-ladder.topY)<=.72){
-      const endX=ladder.x+ladder.nx*(radius+.34),endZ=ladder.z+ladder.nz*(radius+.34),endY=ladder.bottomY;
-      if(!clearStandingAt(endX,endZ,endY,height,radius))continue;
-      return {mode:'ladder',role:'ladder',portalId:`ladder:${ladder.id}`,endX,endY,endZ,peakY:y+.04,endGrounded:true,exitVelocityY:0,climbX,climbZ,dirX:dx,dirZ:dz};
-    }
-  }
-  return null;
-}
 function findWindowPortalCandidate(x,y,z,dx,dz,height,radius){
   let best=null;
   for(const portal of BUILDING_WINDOW_PORTALS){
@@ -279,7 +256,6 @@ export function findTraversalCandidate({x,y,z,dirX,dirZ,height=PLAYER_HEIGHT,rad
   let dx=Number(dirX)||0,dz=Number(dirZ)||0;const len=Math.hypot(dx,dz);
   if(!Number.isFinite(px)||!Number.isFinite(py)||!Number.isFinite(pz)||len<.35)return null;
   dx/=len;dz/=len;
-  const ladder=findLadderCandidate(px,py,pz,dx,dz,h,r);if(ladder)return ladder;
   const windowPortal=findWindowPortalCandidate(px,py,pz,dx,dz,h,r);if(windowPortal)return windowPortal;
   const hit=findFrontBlocker(px,py,pz,dx,dz,h,r);if(!hit)return null;
   const c=hit.collider,mode=c.traversal||'';if(!mode)return null;

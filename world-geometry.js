@@ -127,8 +127,8 @@ export function terrainHeight(x,z){
   return d+(1-fx)*(c-d)+(1-fz)*(b-d);
 }
 
-// Functional ladder traversal anchors. The ladder itself is non-solid; the wall/roof it serves
-// remains authoritative collision, and traversal is validated on both client and server.
+// Standalone ladder anchors. Ladders are non-solid interaction volumes; the wall/roof
+// remains authoritative collision, while ladder mount/climb/dismount is validated separately.
 export const LADDERS = Object.freeze([Object.freeze({id:'highlands-west-roof',x:-17.08,z:28,nx:-1,nz:0,tx:0,tz:1,width:1.20,bottomY:terrainHeight(-18.0,28),topY:terrainHeight(-8,28)+6.50})]);
 
 export function terrainMinAround(x,z,r){

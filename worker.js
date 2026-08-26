@@ -14,7 +14,7 @@ import * as HighlandsSpawns from './spawn-director.js';
 import * as DepotSpawns from './spawn-director-depot.js';
 import * as YardSpawns from './spawn-director-yard.js';
 import * as RigSpawns from './spawn-director-rig.js';
-import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback, sweepHorizontalMovement, createTraversalPlan, traversalPose, tacticalThrowVelocity } from './movement-model.js';
+import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback, sweepHorizontalMovement, createTraversalPlan, traversalPose, tacticalThrowVelocity, LADDER_CLIMB_SPEED, ladderById, ladderClimbPoint, findLadderEntry, createLadderMountState, createLadderDismountState, ladderTransitionPose, ladderClimbStep } from './movement-model.js';
 import * as HighlandsServerCollision from './server-collision.js';
 import * as DepotServerCollision from './server-collision-depot.js';
 import * as YardServerCollision from './server-collision-yard.js';
@@ -44,6 +44,7 @@ const SIM_MIN_STEP_MS = 16;
 const SIM_FIXED_STEP_MS = 1000 / 30;
 const SIM_MAX_CATCHUP_MS = 400;
 const MOVE_BUDGET_INITIAL_SEC = 0.04;
+const LADDER_BUDGET_INITIAL_SEC = 0.09;
 const MOVE_BUDGET_MAX_SEC = 0.18;
 const MAX_STATE_ELAPSED_SEC = 0.40;
 const BOT_PERSIST_INTERVAL_MS = 10 * 1000;
@@ -330,6 +331,11 @@ function shotLaunchPose(me,yaw,pitch,crouched=false,weapon='pistol',segmentFirst
 function decayedFireHeat(me,weapon,now){const heats=me.fireHeat&&typeof me.fireHeat==='object'?me.fireHeat:{},times=me.fireHeatAt&&typeof me.fireHeatAt==='object'?me.fireHeatAt:{},last=Math.max(0,finiteNumber(times[weapon],0));return weaponHeatAfterDelay(weapon,finiteNumber(heats[weapon],0),last?now-last:0);}
 function storeFireHeat(me,weapon,now,preShotHeat){me.fireHeat={...(me.fireHeat&&typeof me.fireHeat==='object'?me.fireHeat:{}),[weapon]:weaponHeatAfterShot(weapon,preShotHeat)};me.fireHeatAt={...(me.fireHeatAt&&typeof me.fireHeatAt==='object'?me.fireHeatAt:{}),[weapon]:now};}
 
+function publicLadderState(value){
+  const ladder=value&&typeof value==='object'?value:null;if(!ladder||!ladder.id)return null;
+  return {id:String(ladder.id),seq:Math.max(0,Math.floor(finiteNumber(ladder.seq,0))),phase:String(ladder.phase||'climb'),entry:String(ladder.entry||''),startedAt:finiteNumber(ladder.startedAt,0),durationMs:Math.max(0,finiteNumber(ladder.durationMs,0)),startX:finiteNumber(ladder.startX,0),startY:finiteNumber(ladder.startY,0),startZ:finiteNumber(ladder.startZ,0),endX:finiteNumber(ladder.endX,0),endY:finiteNumber(ladder.endY,0),endZ:finiteNumber(ladder.endZ,0),startYaw:Number.isFinite(Number(ladder.startYaw))?Number(ladder.startYaw):null,endYaw:Number.isFinite(Number(ladder.endYaw))?Number(ladder.endYaw):null};
+}
+
 function publicPlayer(attachment) {
   return {
     id: attachment.clientId,
@@ -364,7 +370,8 @@ function publicPlayer(attachment) {
     grounded: attachment.serverGrounded !== false,
     verticalVelocity: finiteNumber(attachment.verticalVelocity, 0),
     jumpSeq: Math.max(0, Math.floor(finiteNumber(attachment.lastJumpSeq, 0))),
-    traversal: attachment.traversal ? {mode:attachment.traversal.mode,role:attachment.traversal.role||'',seq:attachment.traversal.seq,startX:attachment.traversal.startX,startY:attachment.traversal.startY,startZ:attachment.traversal.startZ,endX:attachment.traversal.endX,endY:attachment.traversal.endY,endZ:attachment.traversal.endZ,peakY:attachment.traversal.peakY,startedAt:attachment.traversal.startedAt,durationMs:attachment.traversal.durationMs,endGrounded:attachment.traversal.endGrounded!==false,exitVelocityY:Number(attachment.traversal.exitVelocityY)||0,portalId:String(attachment.traversal.portalId||''),viewMaxY:Number.isFinite(Number(attachment.traversal.viewMaxY))?Number(attachment.traversal.viewMaxY):null,climbX:Number.isFinite(Number(attachment.traversal.climbX))?Number(attachment.traversal.climbX):null,climbZ:Number.isFinite(Number(attachment.traversal.climbZ))?Number(attachment.traversal.climbZ):null} : null,
+    traversal: attachment.traversal ? {mode:attachment.traversal.mode,role:attachment.traversal.role||'',seq:attachment.traversal.seq,startX:attachment.traversal.startX,startY:attachment.traversal.startY,startZ:attachment.traversal.startZ,endX:attachment.traversal.endX,endY:attachment.traversal.endY,endZ:attachment.traversal.endZ,peakY:attachment.traversal.peakY,startedAt:attachment.traversal.startedAt,durationMs:attachment.traversal.durationMs,endGrounded:attachment.traversal.endGrounded!==false,exitVelocityY:Number(attachment.traversal.exitVelocityY)||0,portalId:String(attachment.traversal.portalId||''),viewMaxY:Number.isFinite(Number(attachment.traversal.viewMaxY))?Number(attachment.traversal.viewMaxY):null} : null,
+    ladder: publicLadderState(attachment.ladder),
   };
 }
 
@@ -390,7 +397,8 @@ function publicBot(bot) {
     reloadWeapon: bot.reloadWeapon || "",
     kills: Math.max(0, Math.floor(finiteNumber(bot.kills, 0))),
     deaths: Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))),
-    traversal: bot.traversal ? {mode:bot.traversal.mode,role:bot.traversal.role||'',seq:bot.traversal.seq,startX:bot.traversal.startX,startY:bot.traversal.startY,startZ:bot.traversal.startZ,endX:bot.traversal.endX,endY:bot.traversal.endY,endZ:bot.traversal.endZ,peakY:bot.traversal.peakY,startedAt:bot.traversal.startedAt,durationMs:bot.traversal.durationMs,endGrounded:bot.traversal.endGrounded!==false,exitVelocityY:Number(bot.traversal.exitVelocityY)||0,portalId:String(bot.traversal.portalId||''),viewMaxY:Number.isFinite(Number(bot.traversal.viewMaxY))?Number(bot.traversal.viewMaxY):null,climbX:Number.isFinite(Number(bot.traversal.climbX))?Number(bot.traversal.climbX):null,climbZ:Number.isFinite(Number(bot.traversal.climbZ))?Number(bot.traversal.climbZ):null} : null,
+    traversal: bot.traversal ? {mode:bot.traversal.mode,role:bot.traversal.role||'',seq:bot.traversal.seq,startX:bot.traversal.startX,startY:bot.traversal.startY,startZ:bot.traversal.startZ,endX:bot.traversal.endX,endY:bot.traversal.endY,endZ:bot.traversal.endZ,peakY:bot.traversal.peakY,startedAt:bot.traversal.startedAt,durationMs:bot.traversal.durationMs,endGrounded:bot.traversal.endGrounded!==false,exitVelocityY:Number(bot.traversal.exitVelocityY)||0,portalId:String(bot.traversal.portalId||''),viewMaxY:Number.isFinite(Number(bot.traversal.viewMaxY))?Number(bot.traversal.viewMaxY):null} : null,
+    ladder: publicLadderState(bot.ladder),
   };
 }
 
@@ -405,7 +413,7 @@ function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
     weapon:active.primaryWeapon,ammo:freshAmmo(),equipment:freshEquipment(active.tactical,active.lethal),reloadAt:0,reloadWeapon:'',
     fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,ads:false,crouched:false,moveSpeed:0,
     verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
-    flashUntil:0,flashPower:0,flashDurationMs:0,fireHeat:{},fireHeatAt:{},knockVelocityX:0,knockVelocityZ:0,traversal:null,lastTraverseSeq:0,
+    flashUntil:0,flashPower:0,flashDurationMs:0,fireHeat:{},fireHeatAt:{},knockVelocityX:0,knockVelocityZ:0,traversal:null,lastTraverseSeq:0,ladder:null,lastLadderSeq:0,
   };
   if(resetStats)Object.assign(next,{kills:0,deaths:0,multiKillCount:0,lastKillAt:0});
   return next;
@@ -435,6 +443,8 @@ function makeBot(world,team, teamIndex, mode='tdm', spawnIndex=teamIndex, spawnO
     deaths: 0,
     traversal: null,
     traverseSeq: 0,
+    ladder: null,
+    ladderSeq: 0,
     lastSeenTargetId:'',lastSeenAt:0,lastKnownX:spawn.x,lastKnownZ:spawn.z,patrolX:spawn.x,patrolZ:spawn.z,patrolUntil:0,patrolNodeIndex:-1,
   };
 }
@@ -878,7 +888,7 @@ export class GameRoom {
 
   freezeHumanState(player,now=Date.now()){
     const support=this.world.geometry.worldSupportHeight(player.x,player.z,player.y,false);
-    return {...player,y:support,ads:false,crouched:false,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,traversal:null,knockVelocityX:0,knockVelocityZ:0};
+    return {...player,y:support,ads:false,crouched:false,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0};
   }
 
   broadcastMatch(meta,now=Date.now(),extra={}){this.broadcast({t:'match',match:publicMatchState(meta.match,now),custom:this.isCustomMatch(meta),...extra});}
@@ -939,7 +949,7 @@ export class GameRoom {
     if(match.status===MATCH_STATUS.WAITING)return;
     if(match.status===MATCH_STATUS.WARMUP&&match.warmupEndsAt&&now>=match.warmupEndsAt){
       Object.assign(match,{status:MATCH_STATUS.ACTIVE,startedAt:now,endsAt:spec.timeLimitMs>0?now+match.timeLimitMs:0,warmupEndsAt:0,winner:'',winnerId:'',winnerName:'',reason:'',updatedAt:now});
-      for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;socket.serializeAttachment({...p,lastStateAt:now,lastVerticalAt:now,lastGroundedAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,moveSpeed:0,verticalVelocity:0,serverGrounded:true,knockVelocityX:0,knockVelocityZ:0,traversal:null});}
+      for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;socket.serializeAttachment({...p,lastStateAt:now,lastVerticalAt:now,lastGroundedAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,moveSpeed:0,verticalVelocity:0,serverGrounded:true,knockVelocityX:0,knockVelocityZ:0,traversal:null,ladder:null});}
       this.matchDirty=true;this.broadcastMatch(meta,now);return;
     }
     if(match.status===MATCH_STATUS.ACTIVE&&spec.scoreType!=='none'&&match.endsAt&&now>=match.endsAt){
@@ -1194,7 +1204,7 @@ export class GameRoom {
       serverGrounded: preserved?.serverGrounded !== false,
       lastGroundedAt: preserved?.serverGrounded !== false ? Date.now() : Math.max(0,finiteNumber(preserved?.lastGroundedAt,0)),
       lastJumpSeq: Math.max(0, Math.floor(finiteNumber(preserved?.lastJumpSeq, 0))),
-      traversal:null,lastTraverseSeq:Math.max(0,Math.floor(finiteNumber(preserved?.lastTraverseSeq,0))),
+      traversal:null,lastTraverseSeq:Math.max(0,Math.floor(finiteNumber(preserved?.lastTraverseSeq,0))),ladder:null,lastLadderSeq:Math.max(0,Math.floor(finiteNumber(preserved?.lastLadderSeq,0))),
       lastVerticalAt: Date.now(),
       lastStateAt: Date.now(),
       movementClockAt: Date.now(),
@@ -1260,8 +1270,8 @@ export class GameRoom {
     const settings = meta.settings;
 
     me = this.advanceReloadForSocket(socket, me, now, settings);
-    if(matchAllowsMovement(meta.match))me=this.advanceTraversalState(me,now);
-    else if(me.traversal)me={...me,traversal:null,verticalVelocity:0,moveSpeed:0};
+    if(matchAllowsMovement(meta.match)){me=this.advanceTraversalState(me,now);me=this.advanceLadderState(me,now);}
+    else if(me.traversal||me.ladder)me={...me,traversal:null,ladder:null,verticalVelocity:0,moveSpeed:0};
     socket.serializeAttachment(me);
 
     if (payload.t === "state") {
@@ -1270,17 +1280,17 @@ export class GameRoom {
           const requestedX=clamp(finiteNumber(payload.x,me.x),-ARENA_LIMIT,ARENA_LIMIT),requestedY=finiteNumber(payload.y,me.y),requestedZ=clamp(finiteNumber(payload.z,me.z),-ARENA_LIMIT,ARENA_LIMIT);
           const corrected=Math.hypot(requestedX-me.x,requestedZ-me.z)>.01||Math.abs(requestedY-me.y)>.05||!!payload.crouched||!!payload.ads;
           const support=this.world.geometry.worldSupportHeight(me.x,me.z,me.y,false),incomingJumpSeq=Math.max(0,Math.floor(finiteNumber(payload.jumpSeq,me.lastJumpSeq||0)));
-          me={...me,y:support,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,lastJumpSeq:incomingJumpSeq,traversal:null,knockVelocityX:0,knockVelocityZ:0};
+          me={...me,y:support,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,lastJumpSeq:incomingJumpSeq,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0};
           socket.serializeAttachment(me);
           const stateSeq=Math.max(0,Math.floor(finiteNumber(payload.seq,0))),stateAt=Math.min(now,sanitizeCombatTimestamp(payload.at,now));
-          this.broadcast({t:'state',id:me.clientId,at:stateAt,x:me.x,y:me.y,z:me.z,yaw:me.yaw,pitch:me.pitch,ads:false,crouched:false,traversal:''},socket);
+          this.broadcast({t:'state',id:me.clientId,at:stateAt,x:me.x,y:me.y,z:me.z,yaw:me.yaw,pitch:me.pitch,ads:false,crouched:false,traversal:'',ladderId:'',ladderPhase:''},socket);
           if(corrected)sendJson(socket,{t:'correction',seq:stateSeq,x:me.x,y:me.y,z:me.z,vertical:false,verticalVelocity:0,grounded:true,crouched:false});
         } else {
           const next = this.validateHumanState(me, payload, now, settings),combatAt=Math.min(now,sanitizeCombatTimestamp(payload.at,now)),stateSeq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));
           me = {...next.player,lastCombatStateAt:combatAt};
           socket.serializeAttachment(me);
           this.recordCombatPose(me,combatAt);
-          const state = { t: "state", id: me.clientId, at:combatAt, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched, traversal:me.traversal?.mode||'' };
+          const state = { t: "state", id: me.clientId, at:combatAt, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched, traversal:me.traversal?.mode||'', ladderId:me.ladder?.id||'', ladderPhase:me.ladder?.phase||'' };
           this.broadcast(state, socket);
           if (next.corrected) sendJson(socket,{
             t:"correction",seq:stateSeq,x:me.x,y:me.y,z:me.z,vertical:next.verticalCorrected,
@@ -1293,9 +1303,41 @@ export class GameRoom {
     }
 
 
+    if (payload.t === "ladder") {
+      const action=String(payload.action||''),seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0))),previousSeq=Math.max(0,Math.floor(finiteNumber(me.lastLadderSeq,0)));
+      const reject=()=>sendJson(socket,{t:'ladder',id:me.clientId,seq,accepted:false,action,x:me.x,y:me.y,z:me.z,ladder:publicLadderState(me.ladder)});
+      if(!matchAllowsMovement(meta.match)||me.hp<=0||now<me.wastedUntil||me.traversal){reject();return;}
+      if(action==='attach'){
+        if(seq<=previousSeq||me.ladder){reject();return;}
+        let dirX=clamp(finiteNumber(payload.dirX,0),-1,1),dirZ=clamp(finiteNumber(payload.dirZ,0),-1,1),len=Math.hypot(dirX,dirZ);if(len<.35){reject();return;}dirX/=len;dirZ/=len;
+        const faceX=-Math.sin(me.yaw),faceZ=-Math.cos(me.yaw),entry=findLadderEntry({ladders:this.world.geometry.LADDERS,x:me.x,y:me.y,z:me.z,dirX,dirZ,faceX,faceZ,radius:PLAYER_RADIUS,grounded:me.serverGrounded!==false});
+        if(!entry||String(payload.ladderId||'')!==entry.ladderId){reject();return;}
+        const solidActors=this.solidActors(me.clientId,now);if(this.actorBlocksAt(entry.attachX,entry.attachZ,entry.attachY,me.x,me.z,solidActors,PLAYER_HEIGHT)){reject();return;}
+        const requestedAt=sanitizeCombatTimestamp(payload.at,now),stateAt=finiteNumber(me.lastCombatStateAt,requestedAt),ladderAt=clamp(requestedAt,stateAt-12,Math.min(now,stateAt+40));
+        const state=createLadderMountState(entry,me.x,me.y,me.z,ladderAt,seq,me.yaw);if(!state){reject();return;}
+        me={...me,ladder:state,lastLadderSeq:seq,traversal:null,verticalVelocity:0,serverGrounded:false,ads:false,crouched:false,moveSpeed:0,movementClockAt:ladderAt,moveBudgetSec:LADDER_BUDGET_INITIAL_SEC};socket.serializeAttachment(me);
+        const event={t:'ladder',id:me.clientId,seq,accepted:true,action:'attach',ladder:publicLadderState(state)};sendJson(socket,event);this.broadcast(event,socket);return;
+      }
+      if(action==='dismount'){
+        if(!me.ladder||me.ladder.phase!=='climb'||seq<=previousSeq){reject();return;}const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);if(!ladder){me={...me,ladder:null};socket.serializeAttachment(me);reject();return;}
+        const end=payload.end==='top'?'top':'bottom',nearEnd=end==='top'?me.y>=ladder.topY-.30:me.y<=ladder.bottomY+.20;if(!nearEnd){reject();return;}
+        const requestedAt=sanitizeCombatTimestamp(payload.at,now),stateAt=finiteNumber(me.lastCombatStateAt,requestedAt),dismountAt=clamp(requestedAt,stateAt-12,Math.min(now,stateAt+40)),state=createLadderDismountState(ladder,end,me.x,me.y,me.z,dismountAt,seq,PLAYER_RADIUS);if(!state){reject();return;}
+        const solidActors=this.solidActors(me.clientId,now);if(this.world.worldCollision.worldBlockedAt(state.endX,state.endZ,state.endY,PLAYER_HEIGHT,PLAYER_RADIUS)||this.actorBlocksAt(state.endX,state.endZ,state.endY,me.x,me.z,solidActors,PLAYER_HEIGHT)){reject();return;}
+        me={...me,ladder:state,lastLadderSeq:seq,verticalVelocity:0,serverGrounded:false,ads:false,moveSpeed:0,movementClockAt:now};socket.serializeAttachment(me);
+        const event={t:'ladder',id:me.clientId,seq,accepted:true,action:'dismount',ladder:publicLadderState(state)};sendJson(socket,event);this.broadcast(event,socket);return;
+      }
+      if(action==='detach'){
+        if(!me.ladder||me.ladder.phase!=='climb'||seq<=previousSeq){reject();return;}const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);if(!ladder){reject();return;}const cp=ladderClimbPoint(ladder,PLAYER_RADIUS),x=cp.x+Number(ladder.nx)*.24,z=cp.z+Number(ladder.nz)*.24;
+        if(this.world.worldCollision.worldBlockedAt(x,z,me.y,PLAYER_HEIGHT,PLAYER_RADIUS)){reject();return;}
+        me={...me,x,z,ladder:null,lastLadderSeq:seq,verticalVelocity:2.15,serverGrounded:false,lastVerticalAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC};socket.serializeAttachment(me);
+        const event={t:'ladder',id:me.clientId,seq,accepted:true,action:'detach',x:me.x,y:me.y,z:me.z,verticalVelocity:me.verticalVelocity,ladder:null};sendJson(socket,event);this.broadcast(event,socket);return;
+      }
+      reject();return;
+    }
+
     if (payload.t === "traverse") {
       const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0))),previousSeq=Math.max(0,Math.floor(finiteNumber(me.lastTraverseSeq,0)));
-      if(seq<=previousSeq||me.traversal||!matchAllowsMovement(meta.match)||me.hp<=0||now<me.wastedUntil){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
+      if(seq<=previousSeq||me.traversal||me.ladder||!matchAllowsMovement(meta.match)||me.hp<=0||now<me.wastedUntil){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
       let dirX=clamp(finiteNumber(payload.dirX,0),-1,1),dirZ=clamp(finiteNumber(payload.dirZ,0),-1,1),dirLen=Math.hypot(dirX,dirZ);
       if(dirLen<.35){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}dirX/=dirLen;dirZ/=dirLen;
       const playerHeight=me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT,candidate=this.world.worldCollision.findTraversalCandidate({x:me.x,y:me.y,z:me.z,dirX,dirZ,height:playerHeight,radius:PLAYER_RADIUS,airborne:me.serverGrounded===false});
@@ -1321,7 +1363,7 @@ export class GameRoom {
       if(requestedWeapon!==me.weapon){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'weapon_mismatch'});return;}
       const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon],unlimited=!!me.godMode;
       if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'dead'});return;}
-      if(me.traversal){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'traversing'});return;}
+      if(me.traversal||me.ladder){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'traversing'});return;}
       const interruptShotgunReload=!unlimited&&!!me.reloadAt&&weapon==='shotgun'&&me.ammo.shotgun>0;
       if(!unlimited&&me.reloadAt&&!interruptShotgunReload){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'reloading'});return;}
       if(interruptShotgunReload){me.reloadAt=0;me.reloadWeapon='';this.broadcast({t:'reload',id:me.clientId,weapon:'shotgun',reloadAt:0},socket);}
@@ -1349,7 +1391,7 @@ export class GameRoom {
       const kind=safeEquipmentKind(payload.kind),unlimited=!!me.godMode;
       const requestedId=safeClientId(payload.id).slice(0,24),id=requestedId&&!this.throwables.has(requestedId)?requestedId:crypto.randomUUID().replace(/-/g,'').slice(0,16);
       if(kind!==safeTactical(me.tactical)&&kind!==safeLethal(me.lethal)){sendJson(socket,{t:'throwAck',id:requestedId||id,accepted:false,reason:'loadout'});return;}
-      if(me.hp<=0||now<me.wastedUntil||me.traversal||now<finiteNumber(me.equipmentReadyAt,0)||(!unlimited&&me.equipment[kind]<=0)){sendJson(socket,{t:'throwAck',id:requestedId||id,accepted:false});return;}
+      if(me.hp<=0||now<me.wastedUntil||me.traversal||me.ladder||now<finiteNumber(me.equipmentReadyAt,0)||(!unlimited&&me.equipment[kind]<=0)){sendJson(socket,{t:'throwAck',id:requestedId||id,accepted:false});return;}
       me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.25,1.15);
       const flashPower=activeFlashPower(me,now);let throwYaw=me.yaw,throwPitch=me.pitch;
       if(flashPower>.02){const flashSpread=.025+flashPower*.16;throwYaw+=(Math.random()-.5)*2*flashSpread;throwPitch=clamp(throwPitch+(Math.random()-.5)*1.4*flashSpread,-1.25,1.15);me.ads=false;}
@@ -1364,7 +1406,7 @@ export class GameRoom {
       if(requestedWeapon!==me.weapon){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'weapon_mismatch'});return;}
       const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon];
       if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'dead'});return;}
-      if(me.traversal){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'traversing'});return;}
+      if(me.traversal||me.ladder){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'traversing'});return;}
       if(me.godMode){sendLoadout(socket,me,{action:'reload',accepted:true,reason:'unlimited',unlimited:true});return;}
       if(me.reloadAt){sendLoadout(socket,me,{action:'reload',accepted:true,reason:'already'});return;}
       if(me.ammo[weapon]>=WEAPON_SPECS[weapon].mag){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'full'});return;}
@@ -1373,7 +1415,7 @@ export class GameRoom {
 
     if (payload.t === "weapon") {
       if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'weapon',accepted:false,reason:'dead'});return;}
-      if(me.traversal){sendLoadout(socket,me,{action:'weapon',accepted:false,reason:'traversing'});return;}
+      if(me.traversal||me.ladder){sendLoadout(socket,me,{action:'weapon',accepted:false,reason:'traversing'});return;}
       const weapon=safeWeapon(payload.weapon);
       if(!playerCanEquip(me,weapon)){sendLoadout(socket,me,{action:'weapon',accepted:false,reason:'loadout'});return;}
       if(weapon!==me.weapon){me.weapon=weapon;me.reloadAt=0;me.reloadWeapon="";me.weaponReadyAt=now+WEAPON_SWITCH_LOCK_MS;socket.serializeAttachment(me);this.broadcast({t:'weapon',id:me.clientId,weapon},socket);}
@@ -1637,7 +1679,22 @@ export class GameRoom {
     if(!me?.traversal)return me;
     const pose=traversalPose(me.traversal,now);if(!pose){return {...me,traversal:null};}
     const next={...me,x:pose.x,y:pose.y,z:pose.z,verticalVelocity:0,serverGrounded:false,moveSpeed:0,lastVerticalAt:now};
-    if(pose.done){const finished=me.traversal;next.x=finished.endX;next.y=finished.endY;next.z=finished.endZ;next.traversal=null;next.serverGrounded=finished.endGrounded!==false;next.verticalVelocity=next.serverGrounded?0:(Number.isFinite(Number(finished.exitVelocityY))?Number(finished.exitVelocityY):-1.15);if(next.serverGrounded)next.lastGroundedAt=now;next.movementClockAt=now;next.moveBudgetSec=MOVE_BUDGET_INITIAL_SEC;}
+    if(pose.done){const finished=me.traversal;next.x=finished.endX;next.y=finished.endY;next.z=finished.endZ;next.traversal=null;next.serverGrounded=finished.endGrounded!==false;next.verticalVelocity=next.serverGrounded?0:(Number.isFinite(Number(finished.exitVelocityY))?Number(finished.exitVelocityY):-1.15);if(next.serverGrounded)next.lastGroundedAt=now;next.movementClockAt=now;next.moveBudgetSec=LADDER_BUDGET_INITIAL_SEC;}
+    return next;
+  }
+
+  advanceLadderState(me, now) {
+    if(!me?.ladder)return me;
+    const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);if(!ladder)return {...me,ladder:null};
+    if(me.ladder.phase==='climb'){
+      const cp=ladderClimbPoint(ladder,PLAYER_RADIUS);return {...me,x:cp.x,z:cp.z,y:clamp(finiteNumber(me.y,ladder.bottomY),ladder.bottomY,ladder.topY-.10),verticalVelocity:0,serverGrounded:false,moveSpeed:0,lastVerticalAt:now};
+    }
+    const pose=ladderTransitionPose(me.ladder,now);if(!pose)return {...me,ladder:null};
+    const next={...me,x:pose.x,y:pose.y,z:pose.z,yaw:Number.isFinite(Number(pose.yaw))?Number(pose.yaw):me.yaw,verticalVelocity:0,serverGrounded:false,moveSpeed:0,lastVerticalAt:now};
+    if(pose.done){
+      if(me.ladder.phase==='mount'){const climbStartAt=Math.min(now,finiteNumber(me.ladder.startedAt,now)+Math.max(0,finiteNumber(me.ladder.durationMs,0)));next.ladder={id:String(me.ladder.id),seq:Math.max(0,Math.floor(finiteNumber(me.ladder.seq,0))),phase:'climb',entry:String(me.ladder.entry||''),startedAt:climbStartAt,durationMs:0,startX:pose.x,startY:pose.y,startZ:pose.z,endX:pose.x,endY:pose.y,endZ:pose.z};next.movementClockAt=now;next.moveBudgetSec=MOVE_BUDGET_INITIAL_SEC;}
+      else{next.ladder=null;next.serverGrounded=true;next.verticalVelocity=0;next.lastGroundedAt=now;next.movementClockAt=now;next.moveBudgetSec=MOVE_BUDGET_INITIAL_SEC;}
+    }
     return next;
   }
 
@@ -1653,6 +1710,28 @@ export class GameRoom {
     if(me.traversal){
       const desiredY=finiteNumber(payload.y,me.y),error=Math.hypot(desiredX-me.x,desiredY-me.y,desiredZ-me.z);
       return {corrected:error>.18,verticalCorrected:false,player:{...me,lastStateAt:now,movementClockAt,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,moveSpeed:0}};
+    }
+    if(me.ladder){
+      const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);
+      if(!ladder)return {corrected:true,verticalCorrected:true,player:{...me,ladder:null,lastStateAt:now,movementClockAt}};
+      const desiredY=finiteNumber(payload.y,me.y),cp=ladderClimbPoint(ladder,PLAYER_RADIUS);
+      if(me.ladder.phase!=='climb'){
+        const error=Math.hypot(desiredX-me.x,desiredY-me.y,desiredZ-me.z);
+        return {corrected:error>.20,verticalCorrected:false,player:{...me,lastStateAt:now,movementClockAt,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,moveSpeed:0,verticalVelocity:0,serverGrounded:false}};
+      }
+      const ladderMove=clamp(finiteNumber(payload.ladderMove,0),-1,1),reportedDeltaY=desiredY-me.y,reportedDistance=Math.abs(reportedDeltaY);
+      // Ladder movement uses the same monotonic server-time token budget as
+      // horizontal movement. The client reports the position it actually
+      // simulated at this packet's sample time; the server accepts only the
+      // portion reachable at LADDER_CLIMB_SPEED. This keeps local prediction
+      // aligned under latency/turns without ever trusting client timestamps to
+      // mint climb time or allowing a forged y-position to increase speed.
+      let moveBudgetSec=clamp(finiteNumber(me.moveBudgetSec,LADDER_BUDGET_INITIAL_SEC)+elapsed,0,MOVE_BUDGET_MAX_SEC);
+      if(Math.abs(ladderMove)<.05&&reportedDistance<.005)moveBudgetSec=Math.min(moveBudgetSec,LADDER_BUDGET_INITIAL_SEC);
+      const maxDistance=LADDER_CLIMB_SPEED*moveBudgetSec,acceptedDistance=Math.min(maxDistance,reportedDistance),acceptedDelta=reportedDistance>1e-7?Math.sign(reportedDeltaY)*acceptedDistance:0;
+      if(LADDER_CLIMB_SPEED>1e-6)moveBudgetSec=Math.max(0,moveBudgetSec-acceptedDistance/LADDER_CLIMB_SPEED);
+      const nextY=clamp(me.y+acceptedDelta,ladder.bottomY,ladder.topY-.10),speedViolation=reportedDistance>maxDistance+.06,horizontalError=Math.hypot(desiredX-cp.x,desiredZ-cp.z);
+      return {corrected:speedViolation||horizontalError>.10,verticalCorrected:speedViolation,player:{...me,x:cp.x,y:nextY,z:cp.z,lastStateAt:now,lastVerticalAt:now,movementClockAt,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,moveSpeed:Math.abs(ladderMove)*LADDER_CLIMB_SPEED,verticalVelocity:0,serverGrounded:false,moveBudgetSec}};
     }
     const flashPower = activeFlashPower(me, now);
     const ads = flashPower > 0.12 ? false : !!payload.ads;
@@ -1950,7 +2029,7 @@ export class GameRoom {
       if (bot.hp <= 0) {
         if (now >= bot.wastedUntil) {
           const mode=matchMode(meta.match),actors=[...humans.map(({target})=>target),...this.bots],spawn=this.selectSpawn(mode,bot.team,actors,i+Math.floor(Math.random()*this.world.spawns.spawnPointCount(mode,bot.team)),bot.id,now),primary=safePrimaryWeapon(bot.primaryWeapon||bot.weapon);
-          Object.assign(bot,spawn,{hp:100,wastedUntil:0,regenAt:0,weapon:primary,primaryWeapon:primary,ammo:freshAmmo(),reloadAt:0,reloadWeapon:'',flashUntil:0,flashSpin:0,traversal:null,lastSeenTargetId:'',lastSeenAt:0,lastKnownX:spawn.x,lastKnownZ:spawn.z,patrolX:spawn.x,patrolZ:spawn.z,patrolUntil:0,patrolNodeIndex:-1});
+          Object.assign(bot,spawn,{hp:100,wastedUntil:0,regenAt:0,weapon:primary,primaryWeapon:primary,ammo:freshAmmo(),reloadAt:0,reloadWeapon:'',flashUntil:0,flashSpin:0,traversal:null,ladder:null,lastSeenTargetId:'',lastSeenAt:0,lastKnownX:spawn.x,lastKnownZ:spawn.z,patrolX:spawn.x,patrolZ:spawn.z,patrolUntil:0,patrolNodeIndex:-1});
           this.broadcast({t:'respawn',player:publicBot(bot)});
         }
         continue;
@@ -1959,6 +2038,20 @@ export class GameRoom {
         const pose=traversalPose(bot.traversal,now);
         if(pose){bot.x=pose.x;bot.y=pose.y;bot.z=pose.z;if(pose.done){bot.x=bot.traversal.endX;bot.y=bot.traversal.endY;bot.z=bot.traversal.endZ;bot.traversal=null;}else continue;}
         else bot.traversal=null;
+      }
+
+      if(bot.ladder){
+        const ladder=ladderById(this.world.geometry.LADDERS,bot.ladder.id);
+        if(!ladder)bot.ladder=null;
+        else if(bot.ladder.phase==='climb'){
+          const cp=ladderClimbPoint(ladder,.34),dir=Number(bot.ladder.climbDir)||1;bot.x=cp.x;bot.z=cp.z;bot.y=ladderClimbStep(ladder,bot.y,dir,dt);bot.moveSpeed=LADDER_CLIMB_SPEED;
+          if(dir>0&&bot.y>=ladder.topY-.105){const state=createLadderDismountState(ladder,'top',bot.x,bot.y,bot.z,now,++bot.ladderSeq,.34);if(state){state.climbDir=dir;bot.ladder=state;this.broadcast({t:'ladder',id:bot.id,seq:state.seq,accepted:true,action:'dismount',ladder:publicLadderState(state)});}}
+          else if(dir<0&&bot.y<=ladder.bottomY+.005){const state=createLadderDismountState(ladder,'bottom',bot.x,bot.y,bot.z,now,++bot.ladderSeq,.34);if(state){state.climbDir=dir;bot.ladder=state;this.broadcast({t:'ladder',id:bot.id,seq:state.seq,accepted:true,action:'dismount',ladder:publicLadderState(state)});}}
+          continue;
+        }else{
+          const pose=ladderTransitionPose(bot.ladder,now);if(!pose){bot.ladder=null;}
+          else{bot.x=pose.x;bot.y=pose.y;bot.z=pose.z;if(Number.isFinite(Number(pose.yaw)))bot.yaw=Number(pose.yaw);if(pose.done){if(bot.ladder.phase==='mount'){bot.ladder={id:String(bot.ladder.id),seq:bot.ladder.seq,phase:'climb',entry:String(bot.ladder.entry||''),climbDir:Number(bot.ladder.climbDir)||1,startedAt:now,durationMs:0,startX:pose.x,startY:pose.y,startZ:pose.z,endX:pose.x,endY:pose.y,endZ:pose.z};}else bot.ladder=null;}if(bot.ladder)continue;}
+        }
       }
 
       const botWeapon=safePrimaryWeapon(bot.primaryWeapon||bot.weapon);bot.primaryWeapon=botWeapon;bot.weapon=botWeapon;
@@ -1978,8 +2071,12 @@ export class GameRoom {
 
       const solidActors=this.solidActors(bot.id,now);
       const tryTraverse=(ax,az)=>{
-        const len=Math.hypot(ax,az);if(len<.2||bot.traversal)return false;
-        const dirX=ax/len,dirZ=az/len,candidate=this.world.worldCollision.findTraversalCandidate({x:bot.x,y:bot.y,z:bot.z,dirX,dirZ,height:PLAYER_HEIGHT,radius:PLAYER_RADIUS,airborne:false});
+        const len=Math.hypot(ax,az);if(len<.2||bot.traversal||bot.ladder)return false;
+        const dirX=ax/len,dirZ=az/len,ladderEntry=findLadderEntry({ladders:this.world.geometry.LADDERS,x:bot.x,y:bot.y,z:bot.z,dirX,dirZ,radius:.34,grounded:true});
+        if(ladderEntry&&!this.actorBlocksAt(ladderEntry.attachX,ladderEntry.attachZ,ladderEntry.attachY,bot.x,bot.z,solidActors,PLAYER_HEIGHT)){
+          const state=createLadderMountState(ladderEntry,bot.x,bot.y,bot.z,now,++bot.ladderSeq,bot.yaw);if(state){state.climbDir=ladderEntry.entry==='top'?-1:1;bot.ladder=state;this.broadcast({t:'ladder',id:bot.id,seq:state.seq,accepted:true,action:'attach',ladder:publicLadderState(state)});return true;}
+        }
+        const candidate=this.world.worldCollision.findTraversalCandidate({x:bot.x,y:bot.y,z:bot.z,dirX,dirZ,height:PLAYER_HEIGHT,radius:PLAYER_RADIUS,airborne:false});
         if(!candidate||candidate.endGrounded===false||this.actorBlocksAt(candidate.endX,candidate.endZ,candidate.endY,bot.x,bot.z,solidActors,PLAYER_HEIGHT))return false;
         const plan=createTraversalPlan(candidate,bot.x,bot.y,bot.z,now,++bot.traverseSeq);if(!plan)return false;
         bot.traversal=plan;this.broadcast({t:'traverse',id:bot.id,accepted:true,...plan});return true;

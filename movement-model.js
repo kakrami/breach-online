@@ -119,19 +119,18 @@ export function sweepHorizontalMovement({
 
 export function createTraversalPlan(candidate, startX, startY, startZ, startedAt, seq=0) {
   if(!candidate)return null;
-  const mode=candidate.mode==='vault'?'vault':candidate.mode==='ladder'?'ladder':'mantle';
+  const mode=candidate.mode==='vault'?'vault':'mantle';
   const sx=Number(startX)||0,sy=Number(startY)||0,sz=Number(startZ)||0;
   const ex=Number(candidate.endX),ey=Number(candidate.endY),ez=Number(candidate.endZ);
   if(!Number.isFinite(ex)||!Number.isFinite(ey)||!Number.isFinite(ez))return null;
-  const distance=Math.hypot(ex-sx,ez-sz),rise=Math.max(0,ey-sy),verticalDistance=Math.abs(ey-sy);
-  const durationMs=mode==='vault'?Math.round(Math.max(300,Math.min(430,300+distance*34))):mode==='ladder'?Math.round(Math.max(720,Math.min(2200,360+verticalDistance*225))):Math.round(Math.max(380,Math.min(540,390+rise*72+distance*24)));
+  const distance=Math.hypot(ex-sx,ez-sz),rise=Math.max(0,ey-sy);
+  const durationMs=mode==='vault'?Math.round(Math.max(300,Math.min(430,300+distance*34))):Math.round(Math.max(380,Math.min(540,390+rise*72+distance*24)));
   return {
     seq:Math.max(0,Math.floor(Number(seq)||0)),mode,role:String(candidate.role||''),portalId:String(candidate.portalId||''),
     startX:sx,startY:sy,startZ:sz,endX:ex,endY:ey,endZ:ez,
     peakY:Math.max(Number(candidate.peakY)||ey,ey+.08),startedAt:Number(startedAt)||0,durationMs,
     endGrounded:candidate.endGrounded!==false,exitVelocityY:Number.isFinite(Number(candidate.exitVelocityY))?Number(candidate.exitVelocityY):0,
     viewMaxY:candidate.viewMaxY!=null&&Number.isFinite(Number(candidate.viewMaxY))?Number(candidate.viewMaxY):null,
-    climbX:Number.isFinite(Number(candidate.climbX))?Number(candidate.climbX):null,climbZ:Number.isFinite(Number(candidate.climbZ))?Number(candidate.climbZ):null,
   };
 }
 
@@ -142,16 +141,7 @@ export function traversalPose(plan, now) {
   const duration=Math.max(1,Number(plan.durationMs)||1),raw=(Number(now)-Number(plan.startedAt))/duration,p=Math.max(0,Math.min(1,raw));
   const eased=smooth01(p),sx=Number(plan.startX)||0,sy=Number(plan.startY)||0,sz=Number(plan.startZ)||0,ex=Number(plan.endX)||0,ey=Number(plan.endY)||0,ez=Number(plan.endZ)||0;
   let x,z,y;
-  if(plan.mode==='ladder'){
-    const cx=Number.isFinite(Number(plan.climbX))?Number(plan.climbX):sx,cz=Number.isFinite(Number(plan.climbZ))?Number(plan.climbZ):sz,ascending=ey>=sy;
-    if(ascending){
-      const attach=smooth01(Math.min(1,p/.18)),climb=smooth01(Math.max(0,Math.min(1,(p-.12)/.72))),dismount=smooth01(Math.max(0,(p-.82)/.18));
-      x=sx+(cx-sx)*attach+(ex-cx)*dismount;z=sz+(cz-sz)*attach+(ez-cz)*dismount;y=sy+(ey-sy)*climb;
-    }else{
-      const attach=smooth01(Math.min(1,p/.18)),climb=smooth01(Math.max(0,Math.min(1,(p-.18)/.70))),settle=smooth01(Math.max(0,(p-.86)/.14));
-      x=sx+(cx-sx)*attach+(ex-cx)*settle;z=sz+(cz-sz)*attach+(ez-cz)*settle;y=sy+(ey-sy)*climb;
-    }
-  }else if(plan.mode==='vault'&&plan.role==='window'){
+  if(plan.mode==='vault'&&plan.role==='window'){
     const lift=smooth01(Math.min(1,p/.34)),cross=smooth01(Math.max(0,Math.min(1,(p-.18)/.64))),settle=smooth01(Math.max(0,(p-.72)/.28));
     const clearanceY=Math.max(Number(plan.peakY)||sy,sy,ey);
     x=sx+(ex-sx)*cross;z=sz+(ez-sz)*cross;y=sy+(clearanceY-sy)*lift+(ey-clearanceY)*settle;
@@ -178,4 +168,61 @@ export function tacticalThrowVelocity(yaw, pitch, speed, loft) {
   const fx = -Math.sin(throwYaw) * cp;
   const fz = -Math.cos(throwYaw) * cp;
   return { yaw:throwYaw, pitch:throwPitch, fx, fz, vx:fx*throwSpeed, vy:Math.sin(throwPitch)*throwSpeed+throwLoft, vz:fz*throwSpeed };
+}
+
+
+export const LADDER_CLIMB_SPEED = 3.15;
+export const LADDER_MOUNT_MS = 170;
+export const LADDER_DISMOUNT_MS = 230;
+export const LADDER_ATTACH_MIN_NORMAL = 0.16;
+export const LADDER_ATTACH_MAX_NORMAL = 0.88;
+export const LADDER_TOP_ATTACH_MAX_NORMAL = 0.92;
+
+function ladderSmooth01(value){const t=Math.max(0,Math.min(1,Number(value)||0));return t*t*(3-2*t);}
+export function ladderById(ladders,id){return (Array.isArray(ladders)?ladders:[]).find(ladder=>String(ladder?.id||'')===String(id||''))||null;}
+export function ladderClimbPoint(ladder,radius=0.34){const r=Math.max(.05,Number(radius)||.34);return{x:Number(ladder.x)+Number(ladder.nx)*(r+.08),z:Number(ladder.z)+Number(ladder.nz)*(r+.08)};}
+export function ladderBottomExitPoint(ladder,radius=0.34){const r=Math.max(.05,Number(radius)||.34);return{x:Number(ladder.x)+Number(ladder.nx)*(r+.34),y:Number(ladder.bottomY),z:Number(ladder.z)+Number(ladder.nz)*(r+.34)};}
+export function ladderTopExitPoint(ladder,radius=0.34){const r=Math.max(.05,Number(radius)||.34);return{x:Number(ladder.x)-Number(ladder.nx)*(r+.32),y:Number(ladder.topY),z:Number(ladder.z)-Number(ladder.nz)*(r+.32)};}
+export function findLadderEntry({ladders,x,y,z,dirX,dirZ,faceX=null,faceZ=null,radius=.34,grounded=true}={}){
+  if(!grounded||!Array.isArray(ladders)||!ladders.length)return null;
+  const px=Number(x),py=Number(y),pz=Number(z),r=Math.max(.05,Number(radius)||.34);let dx=Number(dirX)||0,dz=Number(dirZ)||0;const len=Math.hypot(dx,dz);
+  if(!Number.isFinite(px)||!Number.isFinite(py)||!Number.isFinite(pz)||len<.25)return null;dx/=len;dz/=len;
+  let fx=Number(faceX),fz=Number(faceZ),faceLen=Math.hypot(fx,fz),hasFacing=Number.isFinite(fx)&&Number.isFinite(fz)&&faceLen>.20;if(hasFacing){fx/=faceLen;fz/=faceLen;}
+  let best=null;
+  for(const ladder of ladders){
+    const nx=Number(ladder.nx)||0,nz=Number(ladder.nz)||0,tx=Number(ladder.tx)||0,tz=Number(ladder.tz)||0,width=Math.max(.5,Number(ladder.width)||1),bottomY=Number(ladder.bottomY),topY=Number(ladder.topY);
+    if(!Number.isFinite(bottomY)||!Number.isFinite(topY)||topY<=bottomY+.5)continue;
+    const relX=px-Number(ladder.x),relZ=pz-Number(ladder.z),normal=relX*nx+relZ*nz,lateral=relX*tx+relZ*tz,approach=dx*nx+dz*nz,faceNormal=hasFacing?fx*nx+fz*nz:0,faceYaw=Math.atan2(nx,nz);
+    if(Math.abs(lateral)>width/2+r*.14)continue;
+    if(Math.abs(py-bottomY)<=.42&&normal>=LADDER_ATTACH_MIN_NORMAL&&normal<=LADDER_ATTACH_MAX_NORMAL&&approach<-.38&&(!hasFacing||faceNormal<-.18)){
+      const cp=ladderClimbPoint(ladder,r),score=Math.abs(normal-(r+.08))+Math.abs(lateral)*.35;
+      const candidate={ladderId:String(ladder.id),entry:'bottom',attachX:cp.x,attachY:bottomY,attachZ:cp.z,faceYaw,score};if(!best||score<best.score)best=candidate;
+    }
+    if(Math.abs(py-topY)<=.42&&normal<=-.10&&normal>=-LADDER_TOP_ATTACH_MAX_NORMAL&&approach>.38&&(!hasFacing||faceNormal>.18)){
+      const cp=ladderClimbPoint(ladder,r),score=Math.abs(normal+.35)+Math.abs(lateral)*.35;
+      const candidate={ladderId:String(ladder.id),entry:'top',attachX:cp.x,attachY:topY-.10,attachZ:cp.z,faceYaw,score};if(!best||score<best.score)best=candidate;
+    }
+  }
+  return best;
+}
+function ladderAngleDelta(to,from){let d=(Number(to)||0)-(Number(from)||0);while(d>Math.PI)d-=Math.PI*2;while(d<-Math.PI)d+=Math.PI*2;return d;}
+export function createLadderMountState(entry,startX,startY,startZ,startedAt,seq=0,startYaw=0){
+  if(!entry||!entry.ladderId)return null;const sx=Number(startX),sy=Number(startY),sz=Number(startZ),ex=Number(entry.attachX),ey=Number(entry.attachY),ez=Number(entry.attachZ),syaw=Number(startYaw)||0,eyaw=Number.isFinite(Number(entry.faceYaw))?Number(entry.faceYaw):syaw;
+  if(![sx,sy,sz,ex,ey,ez].every(Number.isFinite))return null;
+  return{seq:Math.max(0,Math.floor(Number(seq)||0)),id:String(entry.ladderId),phase:'mount',entry:entry.entry==='top'?'top':'bottom',startedAt:Number(startedAt)||0,durationMs:LADDER_MOUNT_MS,startX:sx,startY:sy,startZ:sz,endX:ex,endY:ey,endZ:ez,startYaw:syaw,endYaw:syaw+ladderAngleDelta(eyaw,syaw)};
+}
+export function createLadderDismountState(ladder,end,startX,startY,startZ,startedAt,seq=0,radius=.34){
+  if(!ladder)return null;const target=end==='top'?ladderTopExitPoint(ladder,radius):ladderBottomExitPoint(ladder,radius),sx=Number(startX),sy=Number(startY),sz=Number(startZ);
+  if(![sx,sy,sz,target.x,target.y,target.z].every(Number.isFinite))return null;
+  return{seq:Math.max(0,Math.floor(Number(seq)||0)),id:String(ladder.id),phase:end==='top'?'dismountTop':'dismountBottom',entry:'',startedAt:Number(startedAt)||0,durationMs:LADDER_DISMOUNT_MS,startX:sx,startY:sy,startZ:sz,endX:target.x,endY:target.y,endZ:target.z};
+}
+export function ladderTransitionPose(state,now){
+  if(!state||state.phase==='climb')return null;const duration=Math.max(1,Number(state.durationMs)||1),raw=(Number(now)-Number(state.startedAt))/duration,p=Math.max(0,Math.min(1,raw)),t=ladderSmooth01(p);
+  const sx=Number(state.startX)||0,sy=Number(state.startY)||0,sz=Number(state.startZ)||0,ex=Number(state.endX)||0,ey=Number(state.endY)||0,ez=Number(state.endZ)||0;
+  const hasYaw=state.startYaw!=null&&state.endYaw!=null,startYaw=hasYaw?Number(state.startYaw):NaN,endYaw=hasYaw?Number(state.endYaw):NaN,yaw=Number.isFinite(startYaw)&&Number.isFinite(endYaw)?startYaw+(endYaw-startYaw)*t:null;
+  return{x:sx+(ex-sx)*t,y:sy+(ey-sy)*t,z:sz+(ez-sz)*t,yaw,progress:p,done:raw>=1};
+}
+export function ladderClimbStep(ladder,y,input,dt){
+  const low=Number(ladder?.bottomY),high=Number(ladder?.topY)-.10,current=Number(y);if(!Number.isFinite(low)||!Number.isFinite(high)||!Number.isFinite(current))return current;
+  const step=Math.max(0,Math.min(.15,Number(dt)||0)),amount=Math.max(-1,Math.min(1,Number(input)||0));return Math.max(low,Math.min(high,current+amount*LADDER_CLIMB_SPEED*step));
 }

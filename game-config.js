@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.37.26';
-export const PROTOCOL_VERSION = 56;
+export const APP_VERSION = '1.37.27';
+export const PROTOCOL_VERSION = 57;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
