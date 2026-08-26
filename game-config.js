@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.37.29';
+export const APP_VERSION = '1.37.30';
 export const PROTOCOL_VERSION = 58;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
