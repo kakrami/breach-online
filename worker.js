@@ -357,6 +357,8 @@ function publicPlayer(attachment) {
     pitch: attachment.pitch,
     ads: !!attachment.ads,
     crouched: !!attachment.crouched,
+    sprinting: !!attachment.sprinting,
+    sliding: !!attachment.sliding,
     weapon: safeWeapon(attachment.weapon),
     primaryWeapon: safePrimaryWeapon(attachment.primaryWeapon),
     tactical: safeTactical(attachment.tactical),
@@ -416,7 +418,7 @@ function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
   const next={
     ...player,...spawn,team,spawnProtectedUntil:Math.max(0,finiteNumber(spawn?.spawnProtectedUntil,0)),pendingTeam:'',pendingLoadout:null,primaryWeapon:active.primaryWeapon,tactical:active.tactical,lethal:active.lethal,hp:100,wastedUntil:0,regenAt:0,
     weapon:active.primaryWeapon,ammo:freshAmmo(),equipment:freshEquipment(active.tactical,active.lethal),reloadAt:0,reloadWeapon:'',
-    fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,
+    fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,sprintFireReadyAt:0,ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,
     verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
     flashUntil:0,flashPower:0,flashDurationMs:0,fireHeat:{},fireHeatAt:{},knockVelocityX:0,knockVelocityZ:0,velocityX:0,velocityZ:0,traversal:null,lastTraverseSeq:0,ladder:null,lastLadderSeq:0,
   };
@@ -1310,14 +1312,14 @@ export class GameRoom {
           me={...me,y:support,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,lastJumpSeq:incomingJumpSeq,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0};
           socket.serializeAttachment(me);
           const stateSeq=Math.max(0,Math.floor(finiteNumber(payload.seq,0))),stateAt=Math.min(now,sanitizeCombatTimestamp(payload.at,now));
-          this.broadcast({t:'state',id:me.clientId,at:stateAt,x:me.x,y:me.y,z:me.z,yaw:me.yaw,pitch:me.pitch,ads:false,crouched:false,traversal:'',ladderId:'',ladderPhase:''},socket);
+          this.broadcast({t:'state',id:me.clientId,at:stateAt,x:me.x,y:me.y,z:me.z,yaw:me.yaw,pitch:me.pitch,ads:false,crouched:false,sprinting:false,sliding:false,traversal:'',ladderId:'',ladderPhase:''},socket);
           if(corrected)sendJson(socket,{t:'correction',seq:stateSeq,x:me.x,y:me.y,z:me.z,vertical:false,verticalVelocity:0,grounded:true,crouched:false});
         } else {
           const next = this.validateHumanState(me, payload, now, settings),combatAt=Math.min(now,sanitizeCombatTimestamp(payload.at,now)),stateSeq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));
           me = {...next.player,lastCombatStateAt:combatAt};
           socket.serializeAttachment(me);
           this.recordCombatPose(me,combatAt);
-          const state = { t: "state", id: me.clientId, at:combatAt, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched, traversal:me.traversal?.mode||'', ladderId:me.ladder?.id||'', ladderPhase:me.ladder?.phase||'' };
+          const state = { t: "state", id: me.clientId, at:combatAt, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched, sprinting:!!me.sprinting, sliding:!!me.sliding, traversal:me.traversal?.mode||'', ladderId:me.ladder?.id||'', ladderPhase:me.ladder?.phase||'' };
           this.broadcast(state, socket);
           if (next.corrected) sendJson(socket,{
             t:"correction",seq:stateSeq,x:me.x,y:me.y,z:me.z,vertical:next.verticalCorrected,
@@ -1393,8 +1395,8 @@ export class GameRoom {
       const interruptShotgunReload=!unlimited&&!!me.reloadAt&&weapon==='shotgun'&&me.ammo.shotgun>0;
       if(!unlimited&&me.reloadAt&&!interruptShotgunReload){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'reloading'});return;}
       if(interruptShotgunReload){me.reloadAt=0;me.reloadWeapon='';this.broadcast({t:'reload',id:me.clientId,weapon:'shotgun',reloadAt:0},socket);}
-      const switchReadyAt=finiteNumber(me.weaponReadyAt,0),shotReadyAt=finiteNumber(me.fireReadyAt[weapon],0),readyAt=Math.max(switchReadyAt,shotReadyAt);
-      if(now<readyAt){const retryAfterMs=Math.max(1,Math.ceil(readyAt-now)),reason=switchReadyAt>=shotReadyAt?'weapon_switch':'cooldown';sendLoadout(socket,me,{action:'fire',accepted:false,reason,retryAfterMs});return;}
+      const switchReadyAt=finiteNumber(me.weaponReadyAt,0),shotReadyAt=finiteNumber(me.fireReadyAt[weapon],0),sprintReadyAt=finiteNumber(me.sprintFireReadyAt,0),readyAt=Math.max(switchReadyAt,shotReadyAt,sprintReadyAt);
+      if(now<readyAt){const retryAfterMs=Math.max(1,Math.ceil(readyAt-now)),reason=sprintReadyAt>=switchReadyAt&&sprintReadyAt>=shotReadyAt?'sprint_out':switchReadyAt>=shotReadyAt?'weapon_switch':'cooldown';sendLoadout(socket,me,{action:'fire',accepted:false,reason,retryAfterMs});return;}
       if(!unlimited&&me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
 
       const requestedShotAt=sanitizeCombatTimestamp(payload.shotAt,now),stateAt=finiteNumber(me.lastCombatStateAt,requestedShotAt),shotAt=clamp(requestedShotAt,stateAt-12,Math.min(now,stateAt+40)),shooterPose=this.combatPoseAt(me,shotAt),reticle=safeShotAim(me,payload),flashPower=activeFlashPower(me,now),targetRewindMs=(weapon==='grenadeLauncher'||weapon==='rpg')?0:clamp(finiteNumber(payload.viewDelayMs,0),0,MAX_TARGET_REWIND_MS);let shotYaw=reticle.yaw,shotPitch=reticle.pitch;
@@ -1404,7 +1406,7 @@ export class GameRoom {
       me.fireReadyAt[weapon]=now+spec.cooldownMs;if(!unlimited)me.ammo[weapon]-=1;storeFireHeat(me,weapon,now,preShotHeat);
       const autoReloadStarted=!unlimited&&me.ammo[weapon]===0;if(autoReloadStarted){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;}
       socket.serializeAttachment(me);
-      const spreadRadius=weaponSpreadRadians(weapon,me.moveSpeed,settings.movement.runSpeed,adsAmount,!!me.crouched,airborne,preShotHeat),pellets=Math.max(1,Math.floor(WEAPON_SPECS[weapon]?.pellets||1)),shotgunPattern=weapon==='shotgun'||weapon==='semiShotgun',patternRotation=Math.random()*Math.PI*2;
+      const spreadRadius=weaponSpreadRadians(weapon,me.moveSpeed,settings.movement.runSpeed,adsAmount,!!me.crouched,airborne,preShotHeat,!!me.sliding),pellets=Math.max(1,Math.floor(WEAPON_SPECS[weapon]?.pellets||1)),shotgunPattern=weapon==='shotgun'||weapon==='semiShotgun',patternRotation=Math.random()*Math.PI*2;
       const launcherPitchOffset=(Number(WEAPON_SPECS[weapon]?.launchPitchDeg)||0)*Math.PI/180,basePitch=clamp(shotPitch+launcherPitchOffset,-1.4,1.4);
       for(let i=0;i<pellets;i++){
         const a=shotgunPattern?shotgunPelletAngles(shotYaw,basePitch,spreadRadius,i,pellets,patternRotation):spreadShotAngles(shotYaw,basePitch,spreadRadius),launch=shotLaunchPose(shooterPose,a.yaw,a.pitch,!!shooterPose.crouched,weapon,this.world.serverCollision.segmentFirstWorldHitT),centerScale=i===0?Math.max(1,finiteNumber(WEAPON_SPECS[weapon]?.centerPelletDamageScale,1)):1;
@@ -1768,6 +1770,7 @@ export class GameRoom {
     const sliding=requestedSlide&&(!!me.sliding||canStartSlide)&&now<=slideUntil;
     const sprinting=!sliding&&requestedSprint;
     if(!sliding)slideUntil=0;
+    let sprintFireReadyAt=Math.max(0,finiteNumber(me.sprintFireReadyAt,0));if(me.sprinting&&!sprinting&&!sliding){const sprintOutMs=Math.max(0,finiteNumber(WEAPON_SPECS[safeWeapon(me.weapon)]?.sprintOutMs,0));sprintFireReadyAt=Math.max(sprintFireReadyAt,now+sprintOutMs);}
 
     const playerHeight = crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
     const baseSpeed = ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
@@ -1886,6 +1889,7 @@ export class GameRoom {
         sprinting,
         sliding,
         slideUntil,
+        sprintFireReadyAt,
         moveSpeed: elapsed > 0 ? actualTravel / elapsed : 0,
         velocityX: elapsed > 0 ? (x-me.x)/elapsed : 0,
         velocityZ: elapsed > 0 ? (z-me.z)/elapsed : 0,
