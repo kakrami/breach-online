@@ -1,9 +1,5 @@
-const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
-const finite=(value,fallback=0)=>Number.isFinite(Number(value))?Number(value):fallback;
-const safeTeam=value=>value==='red'?'red':'blue';
+import { spawnPointCountFor, spawnForModeFromPoints, scoreSpawnCandidate as scoreCandidate, chooseSafeSpawnFromPoints } from './spawn-scoring.js';
 
-// Dust Rig uses a ring of spawn candidates behind peripheral cover. The center
-// remains a contested power position and is never used as a normal spawn.
 export const TEAM_SPAWN_POINTS = Object.freeze({
   blue:Object.freeze([[-46,-43],[-45,-28],[-46,-10],[-31,-45],[-16,-46],[-45,11],[-41,29],[-28,43],[-10,46],[-43,42]]),
   red:Object.freeze([[46,43],[45,28],[46,10],[31,45],[16,46],[45,-11],[45,-27],[28,-43],[10,-46],[43,-42]]),
@@ -14,49 +10,54 @@ export const FFA_SPAWN_POINTS = Object.freeze([
 ]);
 
 export const SPAWN_POLICY = Object.freeze({
+  allowTeamFlip:true,
+  minActorSeparation:2.2,
+  occupiedSpawnPenalty:750000,
   minEnemyDistance:16,
   lineOfSightDistance:44,
   facingThreatDistance:48,
-  facingThreatCos:Math.cos(58*Math.PI/180),
-  recentDeathWindowMs:9000,
+  approachThreatDistance:52,
+  nearEnemyDistance:21,
+  zoneRadius:34,
   recentDeathRadius:14,
-  recentSpawnWindowMs:6500,
   recentSpawnRadius:12,
   projectileThreatRadius:9,
   throwableThreatRadius:11,
+  gunfireRadius:25,
+  explosionRadius:20,
+  enemyDistanceCap:120,
+  enemyDistanceWeight:190,
+  visibleEnemyPenalty:62000,
+  facingEnemyPenalty:16000,
+  approachingEnemyPenalty:22000,
+  nearEnemyPenalty:8500,
+  zoneControlWeight:13000,
+  allyIdealMin:8,
+  allyIdealMax:19,
+  allySupportWeight:7000,
+  allyTooCloseDistance:4,
+  emergencyProtectionMs:800,
+  facingThreatCos:Math.cos(58*Math.PI/180),
+  approachThreatCos:.32,
+  recentDeathWindowMs:9000,
+  recentSpawnWindowMs:6500,
+  projectileThreatWeight:30000,
+  throwableThreatWeight:38000,
+  gunfireWindowMs:3000,
+  gunfireWeight:28000,
+  explosionWindowMs:4200,
+  explosionWeight:40000,
+  recentDeathWeight:52000,
+  recentSpawnWeight:18000,
+  anyDistanceCap:45,
+  anyDistanceWeight:8,
+  allySupportFade:30,
+  allyTooClosePenalty:9000,
+  projectileLookaheadSec:.38,
+  throwableLookaheadSec:.65,
 });
 
-export function spawnPointCount(mode,team='blue'){
-  return String(mode||'').toLowerCase()==='ffa'?FFA_SPAWN_POINTS.length:TEAM_SPAWN_POINTS[safeTeam(team)].length;
-}
-export function spawnForMode(mode,team,index,terrainHeight){
-  const points=String(mode||'').toLowerCase()==='ffa'?FFA_SPAWN_POINTS:TEAM_SPAWN_POINTS[safeTeam(team)];
-  const p=points[Math.abs(Math.floor(finite(index,0)))%points.length],x=p[0],z=p[1];
-  return{x,y:finite(terrainHeight?.(x,z),0),z};
-}
-function actorId(actor){return String(actor?.id||actor?.clientId||'');}
-function actorAlive(actor,now){return !!actor&&finite(actor.hp,100)>0&&now>=finite(actor.wastedUntil,0)&&!actor.replaced;}
-function enemyFor(mode,team,actor){return String(mode||'').toLowerCase()==='ffa'||safeTeam(actor?.team)!==safeTeam(team);}
-function distance2d(a,b){return Math.hypot(finite(a?.x)-finite(b?.x),finite(a?.z)-finite(b?.z));}
-function facingThreat(actor,x,z){const dx=x-finite(actor.x),dz=z-finite(actor.z),distance=Math.hypot(dx,dz);if(distance<1e-6)return 1;const yaw=finite(actor.yaw,0),fx=-Math.sin(yaw),fz=-Math.cos(yaw);return clamp((fx*dx+fz*dz)/distance,-1,1);}
-function recentPenalty(entries,x,z,now,windowMs,radius,weight){let penalty=0;for(const item of entries||[]){const age=now-finite(item?.at,0);if(age<0||age>windowMs)continue;const d=Math.hypot(x-finite(item?.x),z-finite(item?.z));if(d>=radius)continue;penalty+=(1-d/radius)*(1-age/windowMs)*weight;}return penalty;}
-function threatPenalty(threats,x,z,radius,weight){let penalty=0;for(const threat of threats||[]){const d=Math.hypot(x-finite(threat?.x),z-finite(threat?.z));if(d<radius)penalty+=(1-d/radius)*weight;}return penalty;}
-export function scoreSpawnCandidate({mode,team,x,y,z,actors=[],excludeId='',recentDeaths=[],recentSpawns=[],projectiles=[],throwables=[],now=Date.now(),lineOfSight,}){
-  const live=(actors||[]).filter(actor=>actorId(actor)!==excludeId&&actorAlive(actor,now));
-  const enemies=live.filter(actor=>enemyFor(mode,team,actor));
-  let minEnemy=enemies.length?Infinity:120,minAny=live.length?Infinity:45,visibleEnemies=0,facingEnemies=0,nearEnemies=0;
-  for(const actor of live){const d=distance2d({x,z},actor);minAny=Math.min(minAny,d);if(!enemyFor(mode,team,actor))continue;minEnemy=Math.min(minEnemy,d);if(d<21)nearEnemies++;if(d<=SPAWN_POLICY.lineOfSightDistance&&lineOfSight?.({x,y,z},actor))visibleEnemies++;if(d<=SPAWN_POLICY.facingThreatDistance&&facingThreat(actor,x,z)>=SPAWN_POLICY.facingThreatCos)facingEnemies++;}
-  const safe=minEnemy>=SPAWN_POLICY.minEnemyDistance;let score=safe?1_000_000:0;
-  score+=Math.min(minEnemy,120)*185+Math.min(minAny,45)*8;
-  score-=visibleEnemies*58_000+facingEnemies*16_000+nearEnemies*8_000;
-  score-=recentPenalty(recentDeaths,x,z,now,SPAWN_POLICY.recentDeathWindowMs,SPAWN_POLICY.recentDeathRadius,56_000);
-  score-=recentPenalty(recentSpawns,x,z,now,SPAWN_POLICY.recentSpawnWindowMs,SPAWN_POLICY.recentSpawnRadius,20_000);
-  score-=threatPenalty(projectiles,x,z,SPAWN_POLICY.projectileThreatRadius,30_000);
-  score-=threatPenalty(throwables,x,z,SPAWN_POLICY.throwableThreatRadius,38_000);
-  return{score,safe,minEnemy,minAny,visibleEnemies,facingEnemies,nearEnemies};
-}
-export function chooseSafeSpawn({mode,team,actors=[],index=0,excludeId='',recentDeaths=[],recentSpawns=[],projectiles=[],throwables=[],now=Date.now(),terrainHeight,blockedAt,lineOfSight,}){
-  const points=String(mode||'').toLowerCase()==='ffa'?FFA_SPAWN_POINTS:TEAM_SPAWN_POINTS[safeTeam(team)];let best=null;
-  for(let offset=0;offset<points.length;offset++){const p=points[(Math.abs(Math.floor(finite(index,0)))+offset)%points.length],x=p[0],z=p[1],y=finite(terrainHeight?.(x,z),0);if(blockedAt?.(x,z,y))continue;const detail=scoreSpawnCandidate({mode,team,x,y,z,actors,excludeId,recentDeaths,recentSpawns,projectiles,throwables,now,lineOfSight});const score=detail.score-offset*.01;if(!best||score>best.score)best={score,x,y,z,detail};}
-  return best||{...spawnForMode(mode,team,index,terrainHeight),score:-Infinity,detail:null};
-}
+export function spawnPointCount(mode,team='blue'){return spawnPointCountFor(mode,team,TEAM_SPAWN_POINTS,FFA_SPAWN_POINTS);}
+export function spawnForMode(mode,team,index,terrainHeight){return spawnForModeFromPoints(mode,team,index,terrainHeight,TEAM_SPAWN_POINTS,FFA_SPAWN_POINTS);}
+export function scoreSpawnCandidate(args){return scoreCandidate(SPAWN_POLICY,args);}
+export function chooseSafeSpawn(args){return chooseSafeSpawnFromPoints(SPAWN_POLICY,TEAM_SPAWN_POINTS,FFA_SPAWN_POINTS,args);}
