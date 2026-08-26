@@ -206,10 +206,11 @@ export function findLadderEntry({ladders,x,y,z,dirX,dirZ,faceX=null,faceZ=null,r
   return best;
 }
 function ladderAngleDelta(to,from){let d=(Number(to)||0)-(Number(from)||0);while(d>Math.PI)d-=Math.PI*2;while(d<-Math.PI)d+=Math.PI*2;return d;}
-export function createLadderMountState(entry,startX,startY,startZ,startedAt,seq=0,startYaw=0){
+export function createLadderMountState(entry,startX,startY,startZ,startedAt,seq=0,startYaw=0,preserveYaw=false){
   if(!entry||!entry.ladderId)return null;const sx=Number(startX),sy=Number(startY),sz=Number(startZ),ex=Number(entry.attachX),ey=Number(entry.attachY),ez=Number(entry.attachZ),syaw=Number(startYaw)||0,eyaw=Number.isFinite(Number(entry.faceYaw))?Number(entry.faceYaw):syaw;
   if(![sx,sy,sz,ex,ey,ez].every(Number.isFinite))return null;
-  return{seq:Math.max(0,Math.floor(Number(seq)||0)),id:String(entry.ladderId),phase:'mount',entry:entry.entry==='top'?'top':'bottom',startedAt:Number(startedAt)||0,durationMs:LADDER_MOUNT_MS,startX:sx,startY:sy,startZ:sz,endX:ex,endY:ey,endZ:ez,startYaw:syaw,endYaw:syaw+ladderAngleDelta(eyaw,syaw)};
+  const endYaw=preserveYaw?syaw:syaw+ladderAngleDelta(eyaw,syaw);
+  return{seq:Math.max(0,Math.floor(Number(seq)||0)),id:String(entry.ladderId),phase:'mount',entry:entry.entry==='top'?'top':'bottom',startedAt:Number(startedAt)||0,durationMs:LADDER_MOUNT_MS,startX:sx,startY:sy,startZ:sz,endX:ex,endY:ey,endZ:ez,startYaw:syaw,endYaw};
 }
 export function createLadderDismountState(ladder,end,startX,startY,startZ,startedAt,seq=0,radius=.34){
   if(!ladder)return null;const target=end==='top'?ladderTopExitPoint(ladder,radius):ladderBottomExitPoint(ladder,radius),sx=Number(startX),sy=Number(startY),sz=Number(startZ);

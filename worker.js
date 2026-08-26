@@ -1314,7 +1314,7 @@ export class GameRoom {
         if(!entry||String(payload.ladderId||'')!==entry.ladderId){reject();return;}
         const solidActors=this.solidActors(me.clientId,now);if(this.actorBlocksAt(entry.attachX,entry.attachZ,entry.attachY,me.x,me.z,solidActors,PLAYER_HEIGHT)){reject();return;}
         const requestedAt=sanitizeCombatTimestamp(payload.at,now),stateAt=finiteNumber(me.lastCombatStateAt,requestedAt),ladderAt=clamp(requestedAt,stateAt-12,Math.min(now,stateAt+40));
-        const state=createLadderMountState(entry,me.x,me.y,me.z,ladderAt,seq,me.yaw);if(!state){reject();return;}
+        const state=createLadderMountState(entry,me.x,me.y,me.z,ladderAt,seq,me.yaw,true);if(!state){reject();return;}
         me={...me,ladder:state,lastLadderSeq:seq,traversal:null,verticalVelocity:0,serverGrounded:false,ads:false,crouched:false,moveSpeed:0,movementClockAt:ladderAt,moveBudgetSec:LADDER_BUDGET_INITIAL_SEC};socket.serializeAttachment(me);
         const event={t:'ladder',id:me.clientId,seq,accepted:true,action:'attach',ladder:publicLadderState(state)};sendJson(socket,event);this.broadcast(event,socket);return;
       }
@@ -1363,7 +1363,7 @@ export class GameRoom {
       if(requestedWeapon!==me.weapon){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'weapon_mismatch'});return;}
       const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon],unlimited=!!me.godMode;
       if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'dead'});return;}
-      if(me.traversal||me.ladder){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'traversing'});return;}
+      if(me.traversal||(me.ladder&&me.ladder.phase!=='climb')){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'traversing'});return;}
       const interruptShotgunReload=!unlimited&&!!me.reloadAt&&weapon==='shotgun'&&me.ammo.shotgun>0;
       if(!unlimited&&me.reloadAt&&!interruptShotgunReload){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'reloading'});return;}
       if(interruptShotgunReload){me.reloadAt=0;me.reloadWeapon='';this.broadcast({t:'reload',id:me.clientId,weapon:'shotgun',reloadAt:0},socket);}
