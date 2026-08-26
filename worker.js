@@ -2363,6 +2363,7 @@ export class GameRoom {
             if (worldT != null) {
               bullet.x=previousX+(segmentEndX-previousX)*worldT;bullet.y=previousY+(segmentEndY-previousY)*worldT;bullet.z=previousZ+(segmentEndZ-previousZ)*worldT;bullet.traveledDistance+=segmentDistance*worldT;
               if(bullet.explosionRadius>0)this.explodeProjectile(bullet,now,settings);
+              else this.broadcast({t:'bulletImpact',id:bullet.id,ownerId:bullet.ownerId,weapon:bullet.weapon,kind:'world',x:bullet.x,y:bullet.y,z:bullet.z});
               this.endBullet(id, "world"); ended = true; break;
             }
             bullet.x=segmentEndX;bullet.y=segmentEndY;bullet.z=segmentEndZ;bullet.traveledDistance+=segmentDistance;
@@ -2387,8 +2388,8 @@ export class GameRoom {
           const horizontal = Math.hypot(bullet.vx, bullet.vz) || 1,energy=clamp(finiteNumber(bullet.penetrationEnergy,1),0,1),hitZone=String(nearest.hit.zone||'upper');
           const zoneScale=weaponZoneDamageScale(bullet.weapon,hitZone),baseDamage=Math.max(0,finiteNumber(bullet.damage,0))*energy*zoneScale,headshot=hitZone === 'head',hitDamage=weaponDamageAtDistance(bullet.weapon,baseDamage,bullet.traveledDistance,headshot);
           const knockback={x:bullet.vx/horizontal*2.4*energy,z:bullet.vz/horizontal*2.4*energy,y:(headshot?1.45:1.1)*Math.max(.35,energy)};
-          if(nearest.kind==='human')this.damageHuman(nearest.socket,target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy});
-          else this.damageBot(target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy});
+          const damageApplied=nearest.kind==='human'?this.damageHuman(nearest.socket,target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy}):this.damageBot(target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy});
+          this.broadcast({t:'bulletImpact',id:bullet.id,ownerId:bullet.ownerId,targetId,weapon:bullet.weapon,kind:damageApplied?'player':'blocked',headshot,x:bullet.x,y:bullet.y,z:bullet.z});
 
           // Every firearm uses the same player-penetration model. Energy loss is
           // determined by the weapon, never by the victim's remaining HP. World
@@ -2509,6 +2510,7 @@ export class GameRoom {
       wasted, respawnAt: bot.wastedUntil || 0, knockback,
     });
     if (wasted) this.broadcast(this.killEvent(attackerId, bot.id, weapon, now, { headshot, distance, multiKill }));
+    return true;
   }
 
   findCombatant(id) {
