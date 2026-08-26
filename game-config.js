@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.37.40';
-export const PROTOCOL_VERSION = 62;
+export const APP_VERSION = '1.37.42';
+export const PROTOCOL_VERSION = 63;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -134,7 +134,7 @@ export const DEFAULT_WORLD_SETTINGS = {
   combat: { regenDelayMs:5000, regenPerSecond:50, respawnMs:2800 },
   weapons: Object.fromEntries(WEAPON_ORDER.map((name) => {
     const spec = WEAPON_SPECS[name];
-    return [name, { damage:spec.damage, speed:spec.bulletSpeed, reloadMs:spec.reloadMs, cooldownMs:spec.cooldownMs }];
+    return [name, { damage:spec.damage, speed:spec.bulletSpeed, reloadMs:spec.reloadMs, cooldownMs:spec.cooldownMs, recoilScale:100 }];
   })),
 };
 
@@ -142,7 +142,7 @@ export function normalizeWorldSettings(value) {
   const v=value&&typeof value==='object'?value:{},movement=v.movement&&typeof v.movement==='object'?v.movement:{},combat=v.combat&&typeof v.combat==='object'?v.combat:{},weapons=v.weapons&&typeof v.weapons==='object'?v.weapons:{};
   const number=(value,fallback)=>Number.isFinite(Number(value))?Number(value):fallback;
   const bounded=(value,min,max,fallback)=>Math.max(min,Math.min(max,number(value,fallback)));
-  const weapon=(name)=>{const src=weapons[name]&&typeof weapons[name]==='object'?weapons[name]:{},def=DEFAULT_WORLD_SETTINGS.weapons[name];return{damage:bounded(src.damage,1,400,def.damage),speed:bounded(src.speed,10,800,def.speed),reloadMs:Math.round(bounded(src.reloadMs,100,5000,def.reloadMs)),cooldownMs:Math.round(bounded(src.cooldownMs,50,2500,def.cooldownMs))}};
+  const weapon=(name)=>{const src=weapons[name]&&typeof weapons[name]==='object'?weapons[name]:{},def=DEFAULT_WORLD_SETTINGS.weapons[name];return{damage:bounded(src.damage,1,400,def.damage),speed:bounded(src.speed,10,800,def.speed),reloadMs:Math.round(bounded(src.reloadMs,100,5000,def.reloadMs)),cooldownMs:Math.round(bounded(src.cooldownMs,50,2500,def.cooldownMs)),recoilScale:bounded(src.recoilScale,0,300,def.recoilScale)}};
   const runSpeed=bounded(movement.runSpeed,3,16,DEFAULT_WORLD_SETTINGS.movement.runSpeed);
   return {
     movement:{runSpeed,walkSpeed:Math.min(runSpeed,bounded(movement.walkSpeed,1.5,9,DEFAULT_WORLD_SETTINGS.movement.walkSpeed)),jumpHeight:bounded(movement.jumpHeight,.4,5,DEFAULT_WORLD_SETTINGS.movement.jumpHeight),gravity:bounded(movement.gravity,8,40,DEFAULT_WORLD_SETTINGS.movement.gravity)},
