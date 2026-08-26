@@ -46,6 +46,11 @@ const SIM_MAX_CATCHUP_MS = 400;
 const MOVE_BUDGET_INITIAL_SEC = 0.04;
 const LADDER_BUDGET_INITIAL_SEC = 0.09;
 const MOVE_BUDGET_MAX_SEC = 0.18;
+const SPRINT_SPEED_MULTIPLIER = MOVEMENT_FEEL.sprintSpeedMultiplier;
+const SPRINT_MIN_FORWARD = MOVEMENT_FEEL.sprintMinForward;
+const SPRINT_MIN_INPUT = MOVEMENT_FEEL.sprintMinInput;
+const SLIDE_START_SPEED_MULTIPLIER = MOVEMENT_FEEL.slideStartSpeedMultiplier;
+const SLIDE_SERVER_GRACE_MS = MOVEMENT_FEEL.slideServerGraceMs;
 const MAX_STATE_ELAPSED_SEC = 0.40;
 const BOT_PERSIST_INTERVAL_MS = 10 * 1000;
 const BULLET_MAX_SEGMENT_DISTANCE = 6;
@@ -411,7 +416,7 @@ function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
   const next={
     ...player,...spawn,team,spawnProtectedUntil:Math.max(0,finiteNumber(spawn?.spawnProtectedUntil,0)),pendingTeam:'',pendingLoadout:null,primaryWeapon:active.primaryWeapon,tactical:active.tactical,lethal:active.lethal,hp:100,wastedUntil:0,regenAt:0,
     weapon:active.primaryWeapon,ammo:freshAmmo(),equipment:freshEquipment(active.tactical,active.lethal),reloadAt:0,reloadWeapon:'',
-    fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,ads:false,crouched:false,moveSpeed:0,
+    fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,
     verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
     flashUntil:0,flashPower:0,flashDurationMs:0,fireHeat:{},fireHeatAt:{},knockVelocityX:0,knockVelocityZ:0,velocityX:0,velocityZ:0,traversal:null,lastTraverseSeq:0,ladder:null,lastLadderSeq:0,
   };
@@ -905,7 +910,7 @@ export class GameRoom {
 
   freezeHumanState(player,now=Date.now()){
     const support=this.world.geometry.worldSupportHeight(player.x,player.z,player.y,false);
-    return {...player,y:support,ads:false,crouched:false,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0,velocityX:0,velocityZ:0};
+    return {...player,y:support,ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0,velocityX:0,velocityZ:0};
   }
 
   broadcastMatch(meta,now=Date.now(),extra={}){this.broadcast({t:'match',match:publicMatchState(meta.match,now),custom:this.isCustomMatch(meta),...extra});}
@@ -1215,6 +1220,9 @@ export class GameRoom {
       admin: isRoomAdmin(meta, clientId),
       ads: false,
       crouched: !!preserved?.crouched,
+      sprinting: false,
+      sliding: false,
+      slideUntil: 0,
       moveSpeed: 0,
       flashUntil: Math.max(0, finiteNumber(preserved?.flashUntil, 0)),
       flashPower: clamp(finiteNumber(preserved?.flashPower, 0), 0, 1),
@@ -1299,7 +1307,7 @@ export class GameRoom {
           const requestedX=clamp(finiteNumber(payload.x,me.x),-ARENA_LIMIT,ARENA_LIMIT),requestedY=finiteNumber(payload.y,me.y),requestedZ=clamp(finiteNumber(payload.z,me.z),-ARENA_LIMIT,ARENA_LIMIT);
           const corrected=Math.hypot(requestedX-me.x,requestedZ-me.z)>.01||Math.abs(requestedY-me.y)>.05||!!payload.crouched||!!payload.ads;
           const support=this.world.geometry.worldSupportHeight(me.x,me.z,me.y,false),incomingJumpSeq=Math.max(0,Math.floor(finiteNumber(payload.jumpSeq,me.lastJumpSeq||0)));
-          me={...me,y:support,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,lastJumpSeq:incomingJumpSeq,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0};
+          me={...me,y:support,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,lastJumpSeq:incomingJumpSeq,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0};
           socket.serializeAttachment(me);
           const stateSeq=Math.max(0,Math.floor(finiteNumber(payload.seq,0))),stateAt=Math.min(now,sanitizeCombatTimestamp(payload.at,now));
           this.broadcast({t:'state',id:me.clientId,at:stateAt,x:me.x,y:me.y,z:me.z,yaw:me.yaw,pitch:me.pitch,ads:false,crouched:false,traversal:'',ladderId:'',ladderPhase:''},socket);
@@ -1333,7 +1341,7 @@ export class GameRoom {
         if(!entry||String(payload.ladderId||'')!==entry.ladderId){reject();return;}
         const solidActors=this.solidActors(me.clientId,now);if(this.actorBlocksAt(entry.attachX,entry.attachZ,entry.attachY,me.x,me.z,solidActors,PLAYER_HEIGHT)){reject();return;}
         const ladder={id:String(entry.ladderId),seq,phase:'climb',entry:entry.entry==='top'?'top':'bottom'};
-        me={...me,x:entry.attachX,y:entry.attachY,z:entry.attachZ,ladder,lastLadderSeq:seq,traversal:null,verticalVelocity:0,serverGrounded:false,ads:false,crouched:false,moveSpeed:0,movementClockAt:now,moveBudgetSec:LADDER_BUDGET_INITIAL_SEC};socket.serializeAttachment(me);
+        me={...me,x:entry.attachX,y:entry.attachY,z:entry.attachZ,ladder,lastLadderSeq:seq,traversal:null,verticalVelocity:0,serverGrounded:false,ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,movementClockAt:now,moveBudgetSec:LADDER_BUDGET_INITIAL_SEC};socket.serializeAttachment(me);
         const event={t:'ladder',id:me.clientId,seq,accepted:true,action:'attach',x:me.x,y:me.y,z:me.z,ladder:publicLadderState(ladder)};sendJson(socket,event);this.broadcast(event,socket);return;
       }
       if(action==='dismount'){
@@ -1745,15 +1753,6 @@ export class GameRoom {
     const ads = flashPower > 0.12 ? false : !!payload.ads;
     let crouched = !!payload.crouched;
     if (!crouched && me.crouched && this.world.worldCollision.worldHeightExpansionBlockedAt(me.x, me.z, me.y, CROUCH_HEIGHT, PLAYER_HEIGHT, PLAYER_RADIUS)) crouched = true;
-    const playerHeight = crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
-    const baseSpeed = ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
-    const currentAllowedSpeed = baseSpeed * (crouched ? CROUCH_SPEED_MULTIPLIER : 1);
-    const previousBaseSpeed = me.ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
-    const previousAllowedSpeed = previousBaseSpeed * (me.crouched ? CROUCH_SPEED_MULTIPLIER : 1);
-    // A packet that changes ADS/crouch also contains movement from the previous
-    // stance. Validate that interval against the faster of the two legitimate
-    // states so pressing ADS/crouch cannot pull the player backward.
-    const allowedSpeed = Math.max(currentAllowedSpeed, previousAllowedSpeed);
 
     let inputX = clamp(finiteNumber(payload.moveX, 0), -1, 1);
     let inputZ = clamp(finiteNumber(payload.moveZ, 0), -1, 1);
@@ -1761,6 +1760,24 @@ export class GameRoom {
     if (rawInputLength > 1) { inputX /= rawInputLength; inputZ /= rawInputLength; }
     const inputMagnitude = Math.min(1, rawInputLength);
     const nextYaw = finiteNumber(payload.yaw, me.yaw);
+
+    const requestedSprint=!!payload.sprinting&&!ads&&!crouched&&me.serverGrounded!==false&&inputMagnitude>=SPRINT_MIN_INPUT&&inputZ<=-SPRINT_MIN_FORWARD;
+    const requestedSlide=!!payload.sliding&&crouched&&me.serverGrounded!==false;
+    const canStartSlide=requestedSlide&&!me.sliding&&inputMagnitude>=SPRINT_MIN_INPUT&&inputZ<=-SPRINT_MIN_FORWARD&&(!!me.sprinting||finiteNumber(me.moveSpeed,0)>=settings.movement.runSpeed*.72);
+    let slideUntil=Math.max(0,finiteNumber(me.slideUntil,0));if(canStartSlide)slideUntil=now+SLIDE_SERVER_GRACE_MS;
+    const sliding=requestedSlide&&(!!me.sliding||canStartSlide)&&now<=slideUntil;
+    const sprinting=!sliding&&requestedSprint;
+    if(!sliding)slideUntil=0;
+
+    const playerHeight = crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
+    const baseSpeed = ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
+    const currentAllowedSpeed = sliding ? settings.movement.runSpeed*SLIDE_START_SPEED_MULTIPLIER : baseSpeed * (sprinting?SPRINT_SPEED_MULTIPLIER:1) * (crouched ? CROUCH_SPEED_MULTIPLIER : 1);
+    const previousBaseSpeed = me.ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
+    const previousAllowedSpeed = me.sliding ? settings.movement.runSpeed*SLIDE_START_SPEED_MULTIPLIER : previousBaseSpeed * (me.sprinting?SPRINT_SPEED_MULTIPLIER:1) * (me.crouched ? CROUCH_SPEED_MULTIPLIER : 1);
+    // A packet that changes stance/movement mode also contains movement from
+    // the previous state. Validate that interval against the faster legitimate
+    // state so sprint/slide transitions do not cause correction snaps.
+    const allowedSpeed = Math.max(currentAllowedSpeed, previousAllowedSpeed);
 
     const knock = advanceKnockback(finiteNumber(me.knockVelocityX, 0), finiteNumber(me.knockVelocityZ, 0), elapsed);
     const knockDx = knock.dx;
@@ -1866,6 +1883,9 @@ export class GameRoom {
         z,
         ads,
         crouched,
+        sprinting,
+        sliding,
+        slideUntil,
         moveSpeed: elapsed > 0 ? actualTravel / elapsed : 0,
         velocityX: elapsed > 0 ? (x-me.x)/elapsed : 0,
         velocityZ: elapsed > 0 ? (z-me.z)/elapsed : 0,

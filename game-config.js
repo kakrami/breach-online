@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.37.31';
-export const PROTOCOL_VERSION = 58;
+export const APP_VERSION = '1.37.32';
+export const PROTOCOL_VERSION = 59;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -83,6 +83,14 @@ export const MOVEMENT_FEEL = Object.freeze({
   airAcceleration:16,
   coyoteTimeMs:105,
   jumpBufferMs:130,
+  sprintSpeedMultiplier:1.28,
+  sprintMinForward:0.35,
+  sprintMinInput:0.55,
+  slideDurationMs:650,
+  slideStartSpeedMultiplier:1.32,
+  slideEndSpeedMultiplier:0.68,
+  slideSteer:0.18,
+  slideServerGraceMs:820,
 });
 
 export const WEAPON_SWITCH_MS = 120;
