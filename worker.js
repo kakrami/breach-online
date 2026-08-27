@@ -313,11 +313,11 @@ function sanitizeCombatTimestamp(value,now){return clamp(finiteNumber(value,now)
 
 function normalizeAngle(value){let angle=Number(value)||0;while(angle>Math.PI)angle-=Math.PI*2;while(angle<-Math.PI)angle+=Math.PI*2;return angle;}
 function safeShotAim(me,payload){
-  // State and fire packets share one ordered WebSocket. Bound the fire aim to
-  // the most recent body aim so recoil/fast input is allowed without turning
-  // the fire packet into an arbitrary server-side direction override.
-  const baseYaw=finiteNumber(me.yaw,0),basePitch=clamp(finiteNumber(me.pitch,0),-1.4,1.4),requestedYaw=finiteNumber(payload.yaw,baseYaw),requestedPitch=clamp(finiteNumber(payload.pitch,basePitch),-1.4,1.4);
-  return{yaw:baseYaw+clamp(normalizeAngle(requestedYaw-baseYaw),-.20,.20),pitch:clamp(basePitch+clamp(requestedPitch-basePitch,-.20,.20),-1.4,1.4)};
+  // The state packet immediately preceding fire carries the same recoil-adjusted
+  // combat aim that the client renders. Keep a small anti-forgery tolerance,
+  // but never clamp legitimate accumulated recoil back toward a non-recoil base.
+  const baseYaw=finiteNumber(me.yaw,0),basePitch=clamp(finiteNumber(me.pitch,0),-1.4,1.4),requestedYaw=finiteNumber(payload.yaw,baseYaw),requestedPitch=clamp(finiteNumber(payload.pitch,basePitch),-1.4,1.4),tolerance=.065;
+  return{yaw:baseYaw+clamp(normalizeAngle(requestedYaw-baseYaw),-tolerance,tolerance),pitch:clamp(basePitch+clamp(requestedPitch-basePitch,-tolerance,tolerance),-1.4,1.4)};
 }
 function shotVector(yaw,pitch){const cp=Math.cos(pitch);return{x:-Math.sin(yaw)*cp,y:Math.sin(pitch),z:-Math.cos(yaw)*cp};}
 function shotLaunchPose(me,yaw,pitch,crouched=false,weapon='pistol',segmentFirstWorldHitTFn=HighlandsServerCollision.segmentFirstWorldHitT){
