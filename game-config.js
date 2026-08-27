@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.37.52';
-export const PROTOCOL_VERSION = 65;
+export const APP_VERSION = '1.37.53';
+export const PROTOCOL_VERSION = 66;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -53,6 +53,10 @@ export function weaponHeatAfterShot(weapon,heat){
 }
 export function weaponSpreadRadians(weapon,moveSpeed,runSpeed,adsAmount=0,crouched=false,airborne=false,shotHeat=0,sliding=false){
   const accuracy=WEAPON_ACCURACY[weapon]||WEAPON_ACCURACY.pistol,ads=clamp01(adsAmount),moveRatio=Math.max(0,Math.min(1,(Number(moveSpeed)||0)/Math.max(.1,Number(runSpeed)||.1)));
+  // CoD-style iron/scope ADS is sight-authoritative for single-projectile guns:
+  // at full ADS the visible sight point is the shot direction. Recoil moves that
+  // aim ray; a hidden random cone must not move the bullet away from the post.
+  if(ads>=.985&&(weapon==='pistol'||weapon==='assault'||weapon==='ump'||weapon==='sniper'))return 0;
   const base=accuracy.hipDeg+(accuracy.adsDeg-accuracy.hipDeg)*ads,moveScale=1+(accuracy.adsMoveScale-1)*ads;
   let degrees=base+accuracy.moveDeg*moveRatio*moveScale;
   if(airborne)degrees+=accuracy.airborneDeg*(1-.18*ads);

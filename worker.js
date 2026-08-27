@@ -313,15 +313,16 @@ function sanitizeCombatTimestamp(value,now){return clamp(finiteNumber(value,now)
 
 function normalizeAngle(value){let angle=Number(value)||0;while(angle>Math.PI)angle-=Math.PI*2;while(angle<-Math.PI)angle+=Math.PI*2;return angle;}
 function safeShotAim(me,payload){
-  // The state packet immediately preceding fire carries the same recoil-adjusted
-  // combat aim that the client renders. Keep a small anti-forgery tolerance,
-  // but never clamp legitimate accumulated recoil back toward a non-recoil base.
-  const baseYaw=finiteNumber(me.yaw,0),basePitch=clamp(finiteNumber(me.pitch,0),-1.4,1.4),requestedYaw=finiteNumber(payload.yaw,baseYaw),requestedPitch=clamp(finiteNumber(payload.pitch,basePitch),-1.4,1.4),tolerance=.065;
-  return{yaw:baseYaw+clamp(normalizeAngle(requestedYaw-baseYaw),-tolerance,tolerance),pitch:clamp(basePitch+clamp(requestedPitch-basePitch,-tolerance,tolerance),-1.4,1.4)};
+  // Movement/body state and combat aim are deliberately separate. The client
+  // sends its exact camera/recoil ray with the fire request; sanitise it here
+  // without feeding recoil back into the movement state machine. This keeps
+  // bullets aligned with the visible sight while preserving stable movement.
+  const baseYaw=finiteNumber(me.yaw,0),basePitch=clamp(finiteNumber(me.pitch,0),-1.4,1.4);
+  return{yaw:normalizeAngle(finiteNumber(payload.yaw,baseYaw)),pitch:clamp(finiteNumber(payload.pitch,basePitch),-1.4,1.4)};
 }
 function shotVector(yaw,pitch){const cp=Math.cos(pitch);return{x:-Math.sin(yaw)*cp,y:Math.sin(pitch),z:-Math.cos(yaw)*cp};}
 function shotLaunchPose(me,yaw,pitch,crouched=false,weapon='pistol',segmentFirstWorldHitTFn=HighlandsServerCollision.segmentFirstWorldHitT){
-  const dir=shotVector(yaw,pitch),eyeHeight=(crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.08,eye={x:me.x,y:me.y+eyeHeight,z:me.z},ballistic={x:eye.x+dir.x*.18,y:eye.y+dir.y*.18,z:eye.z+dir.z*.18};
+  const dir=shotVector(yaw,pitch),eyeHeight=(crouched?CROUCH_HEIGHT:PLAYER_HEIGHT),eye={x:me.x,y:me.y+eyeHeight,z:me.z},ballistic={x:eye.x+dir.x*.18,y:eye.y+dir.y*.18,z:eye.z+dir.z*.18};
   // Standard firearms are camera/reticle authoritative. Their old synthetic
   // muzzle sat below and to the side of the eye, which could intersect a
   // balcony/window lip while the center-screen ray was visibly clear. That
