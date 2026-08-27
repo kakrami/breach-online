@@ -420,7 +420,7 @@ function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
     ...player,...spawn,team,spawnProtectedUntil:Math.max(0,finiteNumber(spawn?.spawnProtectedUntil,0)),pendingTeam:'',pendingLoadout:null,primaryWeapon:active.primaryWeapon,tactical:active.tactical,lethal:active.lethal,hp:100,wastedUntil:0,regenAt:0,
     weapon:active.primaryWeapon,ammo:freshAmmo(),equipment:freshEquipment(active.tactical,active.lethal),reloadAt:0,reloadWeapon:'',
     fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,sprintFireReadyAt:0,ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,
-    verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
+    verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,lastMovementClientAt:now,lastStateSeq:0,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
     flashUntil:0,flashPower:0,flashDurationMs:0,fireHeat:{},fireHeatAt:{},knockVelocityX:0,knockVelocityZ:0,velocityX:0,velocityZ:0,traversal:null,lastTraverseSeq:0,ladder:null,lastLadderSeq:0,
   };
   if(resetStats)Object.assign(next,{kills:0,deaths:0,multiKillCount:0,lastKillAt:0});
@@ -913,7 +913,7 @@ export class GameRoom {
 
   freezeHumanState(player,now=Date.now()){
     const support=this.world.geometry.worldSupportHeight(player.x,player.z,player.y,false);
-    return {...player,y:support,ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0,velocityX:0,velocityZ:0};
+    return {...player,y:support,ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,lastMovementClientAt:now,lastStateSeq:0,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0,velocityX:0,velocityZ:0};
   }
 
   broadcastMatch(meta,now=Date.now(),extra={}){this.broadcast({t:'match',match:publicMatchState(meta.match,now),custom:this.isCustomMatch(meta),...extra});}
@@ -1310,7 +1310,7 @@ export class GameRoom {
           const requestedX=clamp(finiteNumber(payload.x,me.x),-ARENA_LIMIT,ARENA_LIMIT),requestedY=finiteNumber(payload.y,me.y),requestedZ=clamp(finiteNumber(payload.z,me.z),-ARENA_LIMIT,ARENA_LIMIT);
           const corrected=Math.hypot(requestedX-me.x,requestedZ-me.z)>.01||Math.abs(requestedY-me.y)>.05||!!payload.crouched||!!payload.ads;
           const support=this.world.geometry.worldSupportHeight(me.x,me.z,me.y,false),incomingJumpSeq=Math.max(0,Math.floor(finiteNumber(payload.jumpSeq,me.lastJumpSeq||0)));
-          me={...me,y:support,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,lastJumpSeq:incomingJumpSeq,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0};
+          me={...me,y:support,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,lastMovementClientAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,lastJumpSeq:incomingJumpSeq,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0};
           socket.serializeAttachment(me);
           const stateSeq=Math.max(0,Math.floor(finiteNumber(payload.seq,0))),stateAt=Math.min(now,sanitizeCombatTimestamp(payload.at,now));
           this.broadcast({t:'state',id:me.clientId,at:stateAt,x:me.x,y:me.y,z:me.z,yaw:me.yaw,pitch:me.pitch,ads:false,crouched:false,sprinting:false,sliding:false,traversal:'',ladderId:'',ladderPhase:''},socket);
@@ -1673,19 +1673,27 @@ export class GameRoom {
   validateHumanState(me, payload, now, settings) {
     const desiredX = clamp(finiteNumber(payload.x, me.x), -ARENA_LIMIT, ARENA_LIMIT);
     const desiredZ = clamp(finiteNumber(payload.z, me.z), -ARENA_LIMIT, ARENA_LIMIT);
-    // Movement credit advances only on the server's monotonic wall clock. Client
-    // timestamps are useful for combat/history alignment, but can never mint
-    // movement time. This preserves a hard long-term speed invariant under
-    // jitter, packet bunching, stale clocks, or deliberately forged timestamps.
+    // Preserve server-time authority, but also honor the monotonic sample clock
+    // of already-sequenced movement snapshots. WebSocket can queue several
+    // legitimate 33 ms samples during a network stall and deliver them in a
+    // burst. Using arrival time alone makes that burst look like a speed hack.
+    // The client clock cannot mint extra long-term movement time: it starts at
+    // the server clock, may never move backward, and is capped at the current
+    // server time plus the same small lead allowed for combat timestamps.
     const previousMovementClock=finiteNumber(me.movementClockAt,finiteNumber(me.lastStateAt,now));
     const elapsed=clamp((now-previousMovementClock)/1000,0,MAX_STATE_ELAPSED_SEC),movementClockAt=Math.max(previousMovementClock,now);
+    const previousClientClock=finiteNumber(me.lastMovementClientAt,previousMovementClock);
+    const requestedClientClock=finiteNumber(payload.at,previousClientClock);
+    const movementClientAt=clamp(requestedClientClock,previousClientClock,now+MAX_CLIENT_COMBAT_CLOCK_LEAD_MS);
+    const clientElapsed=clamp((movementClientAt-previousClientClock)/1000,0,MAX_STATE_ELAPSED_SEC);
+    const budgetElapsed=Math.max(elapsed,clientElapsed);
     if(me.traversal){
       const desiredY=finiteNumber(payload.y,me.y),error=Math.hypot(desiredX-me.x,desiredY-me.y,desiredZ-me.z);
-      return {corrected:error>.18,verticalCorrected:false,player:{...me,lastStateAt:now,movementClockAt,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,moveSpeed:0}};
+      return {corrected:error>.18,verticalCorrected:false,player:{...me,lastStateAt:now,movementClockAt,lastMovementClientAt:movementClientAt,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,moveSpeed:0}};
     }
     if(me.ladder){
       const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);
-      if(!ladder)return {corrected:true,verticalCorrected:true,player:{...me,ladder:null,lastStateAt:now,movementClockAt}};
+      if(!ladder)return {corrected:true,verticalCorrected:true,player:{...me,ladder:null,lastStateAt:now,movementClockAt,lastMovementClientAt:movementClientAt}};
       const desiredY=finiteNumber(payload.y,me.y),cp=ladderClimbPoint(ladder,PLAYER_RADIUS);
       const ladderMove=clamp(finiteNumber(payload.ladderMove,0),-1,1),reportedDeltaY=desiredY-me.y,reportedDistance=Math.abs(reportedDeltaY);
       // Ladder movement uses the same monotonic server-time token budget as
@@ -1694,12 +1702,12 @@ export class GameRoom {
       // portion reachable at LADDER_CLIMB_SPEED. This keeps local prediction
       // aligned under latency/turns without ever trusting client timestamps to
       // mint climb time or allowing a forged y-position to increase speed.
-      let moveBudgetSec=clamp(finiteNumber(me.moveBudgetSec,LADDER_BUDGET_INITIAL_SEC)+elapsed,0,MOVE_BUDGET_MAX_SEC);
+      let moveBudgetSec=clamp(finiteNumber(me.moveBudgetSec,LADDER_BUDGET_INITIAL_SEC)+budgetElapsed,0,MOVE_BUDGET_MAX_SEC);
       if(Math.abs(ladderMove)<.05&&reportedDistance<.005)moveBudgetSec=Math.min(moveBudgetSec,LADDER_BUDGET_INITIAL_SEC);
       const maxDistance=LADDER_CLIMB_SPEED*moveBudgetSec,acceptedDistance=Math.min(maxDistance,reportedDistance),acceptedDelta=reportedDistance>1e-7?Math.sign(reportedDeltaY)*acceptedDistance:0;
       if(LADDER_CLIMB_SPEED>1e-6)moveBudgetSec=Math.max(0,moveBudgetSec-acceptedDistance/LADDER_CLIMB_SPEED);
       const nextY=clamp(me.y+acceptedDelta,ladder.bottomY,ladder.topY-.10),speedViolation=reportedDistance>maxDistance+.06,horizontalError=Math.hypot(desiredX-cp.x,desiredZ-cp.z);
-      return {corrected:speedViolation||horizontalError>.10,verticalCorrected:speedViolation,player:{...me,x:cp.x,y:nextY,z:cp.z,lastStateAt:now,lastVerticalAt:now,movementClockAt,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,moveSpeed:Math.abs(ladderMove)*LADDER_CLIMB_SPEED,verticalVelocity:0,serverGrounded:false,moveBudgetSec}};
+      return {corrected:speedViolation||horizontalError>.10,verticalCorrected:speedViolation,player:{...me,x:cp.x,y:nextY,z:cp.z,lastStateAt:now,lastVerticalAt:now,movementClockAt,lastMovementClientAt:movementClientAt,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,moveSpeed:Math.abs(ladderMove)*LADDER_CLIMB_SPEED,verticalVelocity:0,serverGrounded:false,moveBudgetSec}};
     }
     const flashPower = activeFlashPower(me, now);
     const ads = flashPower > 0.12 ? false : !!payload.ads;
@@ -1749,7 +1757,7 @@ export class GameRoom {
     // without trusting client timestamps. Unused credit is capped, so long-term
     // movement speed remains server-authoritative and idle time cannot accumulate
     // an unlimited burst.
-    let moveBudgetSec = clamp(finiteNumber(me.moveBudgetSec, MOVE_BUDGET_INITIAL_SEC) + elapsed, 0, MOVE_BUDGET_MAX_SEC);
+    let moveBudgetSec = clamp(finiteNumber(me.moveBudgetSec, MOVE_BUDGET_INITIAL_SEC) + budgetElapsed, 0, MOVE_BUDGET_MAX_SEC);
     if(inputMagnitude<.05&&reportedUserDistance<.005)moveBudgetSec=Math.min(moveBudgetSec,MOVE_BUDGET_INITIAL_SEC);
     // Validate the displacement the client actually simulated, not the final
     // input sample in this packet. A release/turn packet can legitimately have
@@ -1825,6 +1833,7 @@ export class GameRoom {
     // to reconcile. Only real position divergence is sent back.
     const corrected = verticalCorrected || horizontalError > 0.10 || (speedViolation && horizontalError > 0.10);
     const actualTravel = Math.hypot(x - me.x, z - me.z);
+    const sampleElapsed=Math.max(elapsed,clientElapsed);
 
     return {
       corrected,
@@ -1840,9 +1849,9 @@ export class GameRoom {
         sliding,
         slideUntil,
         sprintFireReadyAt,
-        moveSpeed: elapsed > 0 ? actualTravel / elapsed : 0,
-        velocityX: elapsed > 0 ? (x-me.x)/elapsed : 0,
-        velocityZ: elapsed > 0 ? (z-me.z)/elapsed : 0,
+        moveSpeed: sampleElapsed > 1e-4 ? actualTravel / sampleElapsed : 0,
+        velocityX: sampleElapsed > 1e-4 ? (x-me.x)/sampleElapsed : 0,
+        velocityZ: sampleElapsed > 1e-4 ? (z-me.z)/sampleElapsed : 0,
         moveBudgetSec,
         serverGrounded,
         lastGroundedAt,
@@ -1853,6 +1862,7 @@ export class GameRoom {
         lastJumpSeq: Math.max(previousJumpSeq, incomingJumpSeq),
         lastStateAt: now,
         movementClockAt,
+        lastMovementClientAt: movementClientAt,
         yaw: nextYaw,
         pitch: clamp(finiteNumber(payload.pitch, me.pitch), -1.4, 1.4),
       },
