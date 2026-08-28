@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.37.58';
-export const PROTOCOL_VERSION = 68;
+export const APP_VERSION = '1.37.60';
+export const PROTOCOL_VERSION = 69;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -17,10 +17,10 @@ export function normalizeMapId(value){const id=String(value||'').toLowerCase();r
 export function mapSpec(value){return MAPS[normalizeMapId(value)];}
 
 export const WEAPON_ORDER = ['pistol','akimbo1887','assault','ump','shotgun','semiShotgun','sniper','grenadeLauncher','rpg'];
-export const PRIMARY_WEAPONS = ['assault','ump','shotgun','semiShotgun','sniper','grenadeLauncher','rpg'];
-export const SECONDARY_WEAPONS = ['pistol','akimbo1887'];
+export const PRIMARY_WEAPONS = ['assault','ump','sniper','grenadeLauncher','rpg'];
+export const SECONDARY_WEAPONS = ['pistol','shotgun','semiShotgun','akimbo1887'];
 export const WEAPON_SPECS = {
-  pistol: { name:'PISTOL', short:'PST', mag:12, damage:35, playerPenetrationRetention:.42, reloadMs:900, cooldownMs:180, bulletSpeed:180, lifetimeMs:3200, adsFov:54, sprintOutMs:115, sprintAdsMs:95, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:26, falloffEnd:60, minDamageScale:.72, recoilPitch:.0209, recoilYaw:.0066, firstShotRecoilScale:.52, recoilMaxPitch:.0528, recoilRecovery:15, recoilRecoveryDelayMs:50 },
+  pistol: { name:'GLOCK', short:'GLK', mag:12, damage:35, playerPenetrationRetention:.42, reloadMs:900, cooldownMs:180, bulletSpeed:180, lifetimeMs:3200, adsFov:54, sprintOutMs:115, sprintAdsMs:95, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:26, falloffEnd:60, minDamageScale:.72, recoilPitch:.0209, recoilYaw:.0066, firstShotRecoilScale:.52, recoilMaxPitch:.0528, recoilRecovery:15, recoilRecoveryDelayMs:50 },
   akimbo1887: { name:'MODEL 1887 AKIMBO', short:'1887×2', mag:14, damage:17, playerPenetrationRetention:.20, reloadMs:2800, cooldownMs:1400, bulletSpeed:200, lifetimeMs:1600, adsFov:70, sprintOutMs:210, sprintAdsMs:0, pellets:8, headshotMultiplier:1.0, headshotMinDamage:0, falloffStart:7, falloffEnd:19, minDamageScale:.34, recoilPitch:.041, recoilYaw:.009, firstShotRecoilScale:.78, recoilMaxPitch:.064, recoilRecovery:9.5, recoilRecoveryDelayMs:90, akimbo:true },
   assault: { name:'ASSAULT RIFLE', short:'AR', mag:30, damage:52, playerPenetrationRetention:.68, reloadMs:1450, cooldownMs:100, bulletSpeed:230, lifetimeMs:3000, adsFov:46, sprintOutMs:180, sprintAdsMs:145, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:42, falloffEnd:92, minDamageScale:.76, recoilPitch:.0102, recoilYaw:.0060, firstShotRecoilScale:.25, recoilMaxPitch:.102, recoilMaxYaw:.046, recoilRecovery:10.0, recoilRecoveryDelayMs:60, automatic:true },
   ump: { name:'UMP', short:'UMP', mag:30, damage:42, playerPenetrationRetention:.55, reloadMs:1320, cooldownMs:80, bulletSpeed:210, lifetimeMs:3000, adsFov:49, sprintOutMs:145, sprintAdsMs:115, pellets:1, headshotMultiplier:1.45, headshotMinDamage:0, falloffStart:18, falloffEnd:55, minDamageScale:.56, recoilPitch:.0064, recoilYaw:.0034, firstShotRecoilScale:.22, recoilMaxPitch:.061, recoilMaxYaw:.024, recoilRecovery:15.0, recoilRecoveryDelayMs:45, automatic:true },
