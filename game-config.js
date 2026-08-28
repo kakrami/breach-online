@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.37.64';
-export const PROTOCOL_VERSION = 70;
+export const APP_VERSION = '1.37.65';
+export const PROTOCOL_VERSION = 71;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -16,14 +16,15 @@ export const MAPS = Object.freeze({
 export function normalizeMapId(value){const id=String(value||'').toLowerCase();return MAPS[id]?id:DEFAULT_MAP_ID;}
 export function mapSpec(value){return MAPS[normalizeMapId(value)];}
 
-export const WEAPON_ORDER = ['pistol','akimbo1887','assault','ump','shotgun','semiShotgun','sniper','grenadeLauncher','rpg'];
-export const PRIMARY_WEAPONS = ['assault','ump','sniper','grenadeLauncher','rpg'];
+export const WEAPON_ORDER = ['pistol','akimbo1887','assault','ump','machineGun','shotgun','semiShotgun','sniper','grenadeLauncher','rpg'];
+export const PRIMARY_WEAPONS = ['assault','ump','machineGun','sniper','grenadeLauncher','rpg'];
 export const SECONDARY_WEAPONS = ['pistol','shotgun','semiShotgun','akimbo1887'];
 export const WEAPON_SPECS = {
   pistol: { name:'GLOCK', short:'GLK', mag:12, damage:35, playerPenetrationRetention:.42, reloadMs:900, cooldownMs:180, bulletSpeed:180, lifetimeMs:3200, adsFov:54, sprintOutMs:115, sprintAdsMs:95, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:26, falloffEnd:60, minDamageScale:.72, recoilPitch:.0209, recoilYaw:.0066, firstShotRecoilScale:.52, recoilMaxPitch:.0528, recoilRecovery:15, recoilRecoveryDelayMs:50 },
   akimbo1887: { name:'MODEL 1887 AKIMBO', short:'1887×2', mag:14, damage:17, playerPenetrationRetention:.20, reloadMs:2800, cooldownMs:1400, bulletSpeed:200, lifetimeMs:1600, adsFov:70, sprintOutMs:210, sprintAdsMs:0, pellets:8, headshotMultiplier:1.0, headshotMinDamage:0, falloffStart:7, falloffEnd:19, minDamageScale:.34, recoilPitch:.041, recoilYaw:.009, firstShotRecoilScale:.78, recoilMaxPitch:.064, recoilRecovery:9.5, recoilRecoveryDelayMs:90, akimbo:true },
   assault: { name:'ASSAULT RIFLE', short:'AR', mag:30, damage:52, playerPenetrationRetention:.68, reloadMs:1450, cooldownMs:100, bulletSpeed:230, lifetimeMs:3000, adsFov:46, sprintOutMs:180, sprintAdsMs:145, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:42, falloffEnd:92, minDamageScale:.76, recoilPitch:.0102, recoilYaw:.0060, firstShotRecoilScale:.25, recoilMaxPitch:.102, recoilMaxYaw:.046, recoilRecovery:10.0, recoilRecoveryDelayMs:60, automatic:true },
   ump: { name:'UMP', short:'UMP', mag:30, damage:42, playerPenetrationRetention:.55, reloadMs:1320, cooldownMs:80, bulletSpeed:210, lifetimeMs:3000, adsFov:49, sprintOutMs:145, sprintAdsMs:115, pellets:1, headshotMultiplier:1.45, headshotMinDamage:0, falloffStart:18, falloffEnd:55, minDamageScale:.56, recoilPitch:.0064, recoilYaw:.0034, firstShotRecoilScale:.22, recoilMaxPitch:.061, recoilMaxYaw:.024, recoilRecovery:15.0, recoilRecoveryDelayMs:45, automatic:true },
+  machineGun: { name:'MACHINE GUN', short:'LMG', mag:75, damage:45, playerPenetrationRetention:.78, reloadMs:3400, cooldownMs:86, bulletSpeed:235, lifetimeMs:3200, adsFov:48, sprintOutMs:310, sprintAdsMs:255, pellets:1, headshotMultiplier:1.45, headshotMinDamage:0, falloffStart:38, falloffEnd:95, minDamageScale:.70, recoilPitch:.0084, recoilYaw:.0058, firstShotRecoilScale:.28, recoilMaxPitch:.085, recoilMaxYaw:.040, recoilRecovery:9.0, recoilRecoveryDelayMs:65, automatic:true },
   shotgun: { name:'PUMP SHOTGUN', short:'SG', mag:6, damage:16, playerPenetrationRetention:.22, centerPelletDamageScale:2.0, reloadMs:620, cooldownMs:800, bulletSpeed:200, lifetimeMs:1700, adsFov:52, sprintOutMs:220, sprintAdsMs:175, pellets:8, headshotMultiplier:1.10, headshotMinDamage:0, falloffStart:10, falloffEnd:26, minDamageScale:.38, recoilPitch:.0385, recoilYaw:.00924, firstShotRecoilScale:.78, recoilMaxPitch:.0572, recoilRecovery:9.5, recoilRecoveryDelayMs:80, shellReload:true },
   semiShotgun: { name:'SEMI-AUTO SHOTGUN', short:'SAS', mag:8, damage:12, playerPenetrationRetention:.18, centerPelletDamageScale:1.0, reloadMs:1550, cooldownMs:330, bulletSpeed:200, lifetimeMs:1750, adsFov:51, sprintOutMs:205, sprintAdsMs:165, pellets:8, headshotMultiplier:1.10, headshotMinDamage:0, falloffStart:9, falloffEnd:24, minDamageScale:.36, recoilPitch:.0297, recoilYaw:.01144, firstShotRecoilScale:.56, recoilMaxPitch:.0704, recoilRecovery:9, recoilRecoveryDelayMs:70 },
   sniper: { name:'SNIPER', short:'SNP', mag:5, damage:110, playerPenetrationRetention:.92, lowerBodyDamageScale:.82, armDamageScale:.82, reloadMs:1650, cooldownMs:1050, bulletSpeed:480, lifetimeMs:2400, adsFov:18, sprintOutMs:285, sprintAdsMs:235, pellets:1, headshotMultiplier:1.50, headshotMinDamage:0, falloffStart:115, falloffEnd:190, minDamageScale:.92, recoilPitch:.0638, recoilYaw:.01056, firstShotRecoilScale:.82, recoilMaxPitch:.0836, recoilRecovery:8.2, recoilRecoveryDelayMs:90 },
@@ -38,6 +39,7 @@ export const WEAPON_ACCURACY = {
   akimbo1887: { hipDeg:5.35, adsDeg:5.35, moveDeg:1.05, adsMoveScale:1, airborneDeg:2.15, crouchScale:0.90, slideDeg:1.15, fireDeg:0.08, fireMaxDeg:0.30, heatRecoveryMs:260 },
   assault: { hipDeg:1.85, adsDeg:0.06, moveDeg:0.90, adsMoveScale:0.30, airborneDeg:1.85, crouchScale:0.78, slideDeg:1.10, fireDeg:0.20, fireMaxDeg:1.00, heatRecoveryMs:215 },
   ump: { hipDeg:1.45, adsDeg:0.095, moveDeg:0.68, adsMoveScale:0.28, airborneDeg:1.65, crouchScale:0.80, slideDeg:.82, fireDeg:0.24, fireMaxDeg:1.15, heatRecoveryMs:195 },
+  machineGun: { hipDeg:2.25, adsDeg:0.075, moveDeg:1.05, adsMoveScale:0.36, airborneDeg:2.20, crouchScale:0.76, slideDeg:1.30, fireDeg:0.23, fireMaxDeg:1.15, heatRecoveryMs:250 },
   shotgun: { hipDeg:4.60, adsDeg:2.70, moveDeg:1.00, adsMoveScale:0.52, airborneDeg:1.60, crouchScale:0.88, slideDeg:.78, fireDeg:0.04, fireMaxDeg:0.15, heatRecoveryMs:230 },
   semiShotgun: { hipDeg:5.00, adsDeg:3.00, moveDeg:1.08, adsMoveScale:0.54, airborneDeg:1.70, crouchScale:0.90, slideDeg:.86, fireDeg:0.18, fireMaxDeg:0.72, heatRecoveryMs:280 },
   sniper: { hipDeg:6.50, adsDeg:0.02, moveDeg:1.70, adsMoveScale:0.25, airborneDeg:3.40, crouchScale:0.75, slideDeg:2.10, fireDeg:0.04, fireMaxDeg:0.12, heatRecoveryMs:320 },
@@ -59,7 +61,7 @@ export function weaponSpreadRadians(weapon,moveSpeed,runSpeed,adsAmount=0,crouch
   // CoD-style iron/scope ADS is sight-authoritative for single-projectile guns:
   // at full ADS the visible sight point is the shot direction. Recoil moves that
   // aim ray; a hidden random cone must not move the bullet away from the post.
-  if(ads>=.985&&(weapon==='pistol'||weapon==='assault'||weapon==='ump'||weapon==='sniper'))return 0;
+  if(ads>=.985&&(weapon==='pistol'||weapon==='assault'||weapon==='ump'||weapon==='machineGun'||weapon==='sniper'))return 0;
   const base=accuracy.hipDeg+(accuracy.adsDeg-accuracy.hipDeg)*ads,moveScale=1+(accuracy.adsMoveScale-1)*ads;
   let degrees=base+accuracy.moveDeg*moveRatio*moveScale;
   if(airborne)degrees+=accuracy.airborneDeg*(1-.18*ads);

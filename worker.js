@@ -429,7 +429,7 @@ function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
   return next;
 }
 
-const BOT_PRIMARY_WEAPONS=['assault','ump','shotgun','semiShotgun','sniper'];
+const BOT_PRIMARY_WEAPONS=['assault','ump','machineGun','sniper'];
 function makeBot(world,team, teamIndex, mode='tdm', spawnIndex=teamIndex, spawnOverride=null) {
   team = safeTeam(team);
   const spawn = spawnOverride || spawnForMode(world,mode, team, spawnIndex),primaryWeapon=BOT_PRIMARY_WEAPONS[Math.abs(spawnIndex)%BOT_PRIMARY_WEAPONS.length]||'assault';
@@ -2136,6 +2136,7 @@ export class GameRoom {
       let preferredRange=profile.preferredRange,engageRange=profile.range;
       if(botWeapon==='shotgun'||botWeapon==='semiShotgun'){preferredRange=Math.min(preferredRange,botWeapon==='shotgun'?5.2:6.2);engageRange=Math.min(botWeapon==='shotgun'?18:21,engageRange);}
       else if(botWeapon==='sniper'){preferredRange=Math.max(14,preferredRange*1.8);engageRange=Math.max(36,engageRange*1.18);}
+      else if(botWeapon==='machineGun'){preferredRange=Math.max(10,preferredRange*1.28);engageRange=Math.max(30,engageRange*1.08);}
       if(d>preferredRange){
         const speed=d>16?settings.movement.runSpeed*profile.moveRun:settings.movement.walkSpeed*profile.moveWalk,step=Math.min(d-preferredRange,speed*dt);
         if(!tryMove(ux,uz,step)&&!tryTraverse(ux,uz))tryMove(-uz,ux,step*.82)||tryMove(uz,-ux,step*.82);
@@ -2146,7 +2147,7 @@ export class GameRoom {
       }
       bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y);
 
-      const weaponSettings=settings.weapons[botWeapon],fireScale=botWeapon==='sniper'?1.12:(botWeapon==='shotgun'||botWeapon==='semiShotgun')?.96:1,botFireDelay=Math.max(weaponSettings.cooldownMs*profile.fireScale*fireScale,70);
+      const weaponSettings=settings.weapons[botWeapon],fireScale=botWeapon==='sniper'?1.12:botWeapon==='machineGun'?1.04:(botWeapon==='shotgun'||botWeapon==='semiShotgun')?.96:1,botFireDelay=Math.max(weaponSettings.cooldownMs*profile.fireScale*fireScale,70);
       if(d<=engageRange&&now>=finiteNumber(bot.nextShotAt,0)){
         if((bot.ammo[botWeapon]||0)<=0){if(!bot.reloadAt){bot.reloadAt=now+weaponSettings.reloadMs;bot.reloadWeapon=botWeapon;}continue;}
         bot.spawnProtectedUntil=0;bot.nextShotAt=now+botFireDelay+profile.reactionBase+Math.floor(Math.random()*profile.reactionJitter);bot.ammo[botWeapon]-=1;if(bot.ammo[botWeapon]===0){bot.reloadAt=now+weaponSettings.reloadMs;bot.reloadWeapon=botWeapon;}
