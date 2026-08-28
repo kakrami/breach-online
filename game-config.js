@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.37.66';
-export const PROTOCOL_VERSION = 71;
+export const APP_VERSION = '1.37.67';
+export const PROTOCOL_VERSION = 72;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -160,6 +160,8 @@ export function normalizeWorldSettings(value) {
   };
 }
 
+export const EQUIPMENT_THROW_COMMIT_MS = 135;
+export const EQUIPMENT_WEAPON_RECOVER_MS = 285;
 export const TACTICAL_THROW_SPEED = 23.5;
 export const TACTICAL_THROW_LOFT = 6.4;
 export const TACTICAL_GRAVITY = 18;
