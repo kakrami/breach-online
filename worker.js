@@ -261,7 +261,7 @@ function safeTactical(value){return normalizeTactical(value);}
 function safeLethal(value){return normalizeLethal(value);}
 function normalizeLoadout(value,fallback={primaryWeapon:'assault',secondaryWeapon:'pistol',tactical:'flash',lethal:'sticky'}){const v=value&&typeof value==='object'?value:{};return{primaryWeapon:safePrimaryWeapon(v.primaryWeapon??fallback.primaryWeapon),secondaryWeapon:safeSecondaryWeapon(v.secondaryWeapon??fallback.secondaryWeapon),tactical:safeTactical(v.tactical??fallback.tactical),lethal:safeLethal(v.lethal??fallback.lethal)};}
 function freshAmmo(){return Object.fromEntries(WEAPON_ORDER.map(name=>[name,WEAPON_SPECS[name].mag]));}
-function normalizeFireReady(value){const v=value&&typeof value==='object'?value:{},out=Object.fromEntries(WEAPON_ORDER.map(name=>[name,Math.max(0,finiteNumber(v[name],0))]));out.akimbo1911Left=Math.max(0,finiteNumber(v.akimbo1911Left,0));out.akimbo1911Right=Math.max(0,finiteNumber(v.akimbo1911Right,0));return out;}
+function normalizeFireReady(value){const v=value&&typeof value==='object'?value:{},out=Object.fromEntries(WEAPON_ORDER.map(name=>[name,Math.max(0,finiteNumber(v[name],0))]));out.akimbo1887Left=Math.max(0,finiteNumber(v.akimbo1887Left,0));out.akimbo1887Right=Math.max(0,finiteNumber(v.akimbo1887Right,0));return out;}
 function normalizeAmmo(value){
   const v=value&&typeof value==="object"?value:{};
   return Object.fromEntries(WEAPON_ORDER.map(name=>{const mag=WEAPON_SPECS[name].mag;return[name,clamp(Math.floor(finiteNumber(v[name],mag)),0,mag)]}));
@@ -1395,25 +1395,25 @@ export class GameRoom {
       if(!matchAllowsCombat(meta.match)){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'match_inactive'});return;}
       const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
       if(requestedWeapon!==me.weapon){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'weapon_mismatch'});return;}
-      const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon],unlimited=!!me.godMode,hand=weapon==='akimbo1911'?(payload.hand==='left'?'left':'right'):'';
+      const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon],unlimited=!!me.godMode,hand=weapon==='akimbo1887'?(payload.hand==='left'?'left':'right'):'';
       if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'dead'});return;}
       if(me.traversal){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'traversing'});return;}
       const interruptShotgunReload=!unlimited&&!!me.reloadAt&&weapon==='shotgun'&&me.ammo.shotgun>0;
       if(!unlimited&&me.reloadAt&&!interruptShotgunReload){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'reloading'});return;}
       if(interruptShotgunReload){me.reloadAt=0;me.reloadWeapon='';this.broadcast({t:'reload',id:me.clientId,weapon:'shotgun',reloadAt:0},socket);}
-      const switchReadyAt=finiteNumber(me.weaponReadyAt,0),fireKey=weapon==='akimbo1911'?(hand==='left'?'akimbo1911Left':'akimbo1911Right'):weapon,shotReadyAt=finiteNumber(me.fireReadyAt[fireKey],0),sprintReadyAt=finiteNumber(me.sprintFireReadyAt,0),readyAt=Math.max(switchReadyAt,shotReadyAt,sprintReadyAt);
+      const switchReadyAt=finiteNumber(me.weaponReadyAt,0),fireKey=weapon==='akimbo1887'?(hand==='left'?'akimbo1887Left':'akimbo1887Right'):weapon,shotReadyAt=finiteNumber(me.fireReadyAt[fireKey],0),sprintReadyAt=finiteNumber(me.sprintFireReadyAt,0),readyAt=Math.max(switchReadyAt,shotReadyAt,sprintReadyAt);
       if(now<readyAt){const retryAfterMs=Math.max(1,Math.ceil(readyAt-now)),reason=sprintReadyAt>=switchReadyAt&&sprintReadyAt>=shotReadyAt?'sprint_out':switchReadyAt>=shotReadyAt?'weapon_switch':'cooldown';sendLoadout(socket,me,{action:'fire',accepted:false,reason,retryAfterMs});return;}
       if(!unlimited&&me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
 
       const requestedShotAt=sanitizeCombatTimestamp(payload.shotAt,now),stateAt=finiteNumber(me.lastCombatStateAt,requestedShotAt),shotAt=clamp(requestedShotAt,stateAt-12,Math.min(now,stateAt+40)),shooterPose=this.combatPoseAt(me,shotAt),reticle=safeShotAim(me,payload),flashPower=activeFlashPower(me,now),targetRewindMs=(weapon==='grenadeLauncher'||weapon==='rpg')?0:clamp(finiteNumber(payload.viewDelayMs,0),0,MAX_TARGET_REWIND_MS);let shotYaw=reticle.yaw,shotPitch=reticle.pitch;
       if(flashPower>.02){const flashSpread=.035+flashPower*.22;shotYaw+=(Math.random()-.5)*2*flashSpread;shotPitch=clamp(shotPitch+(Math.random()-.5)*1.5*flashSpread,-1.4,1.4);me.ads=false;}
-      if(weapon==='akimbo1911')me.ads=false;
+      if(weapon==='akimbo1887')me.ads=false;
       const preShotHeat=decayedFireHeat(me,weapon,now),adsAmount=me.ads?clamp(finiteNumber(payload.adsAmount,1),0,1):0,airborne=me.serverGrounded===false;
       me.spawnProtectedUntil=0;
       me.fireReadyAt[fireKey]=now+spec.cooldownMs;if(!unlimited)me.ammo[weapon]-=1;storeFireHeat(me,weapon,now,preShotHeat);
       const autoReloadStarted=!unlimited&&me.ammo[weapon]===0;if(autoReloadStarted){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;}
       socket.serializeAttachment(me);
-      const spreadRadius=weaponSpreadRadians(weapon,me.moveSpeed,settings.movement.runSpeed,adsAmount,!!me.crouched,airborne,preShotHeat,!!me.sliding),pellets=Math.max(1,Math.floor(WEAPON_SPECS[weapon]?.pellets||1)),shotgunPattern=weapon==='shotgun'||weapon==='semiShotgun',patternRotation=Math.random()*Math.PI*2;
+      const spreadRadius=weaponSpreadRadians(weapon,me.moveSpeed,settings.movement.runSpeed,adsAmount,!!me.crouched,airborne,preShotHeat,!!me.sliding),pellets=Math.max(1,Math.floor(WEAPON_SPECS[weapon]?.pellets||1)),shotgunPattern=weapon==='shotgun'||weapon==='semiShotgun'||weapon==='akimbo1887',patternRotation=Math.random()*Math.PI*2;
       const launcherPitchOffset=(Number(WEAPON_SPECS[weapon]?.launchPitchDeg)||0)*Math.PI/180,basePitch=clamp(shotPitch+launcherPitchOffset,-1.4,1.4);
       for(let i=0;i<pellets;i++){
         const a=shotgunPattern?shotgunPelletAngles(shotYaw,basePitch,spreadRadius,i,pellets,patternRotation):spreadShotAngles(shotYaw,basePitch,spreadRadius),launch=shotLaunchPose(shooterPose,a.yaw,a.pitch,!!shooterPose.crouched,weapon,this.world.serverCollision.segmentFirstWorldHitT),centerScale=i===0?Math.max(1,finiteNumber(WEAPON_SPECS[weapon]?.centerPelletDamageScale,1)):1;
