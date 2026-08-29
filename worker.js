@@ -1771,10 +1771,11 @@ export class GameRoom {
     let sprintFireReadyAt=Math.max(0,finiteNumber(me.sprintFireReadyAt,0));if(me.sprinting&&!sprinting&&!sliding){const sprintOutMs=Math.max(0,finiteNumber(WEAPON_SPECS[safeWeapon(me.weapon)]?.sprintOutMs,0));sprintFireReadyAt=Math.max(sprintFireReadyAt,now+sprintOutMs);}
 
     const playerHeight = crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
-    const baseSpeed = settings.movement.runSpeed + (settings.movement.walkSpeed-settings.movement.runSpeed)*adsAmount;
+    const movementWeaponSpec=WEAPON_SPECS[safeWeapon(me.weapon)]||WEAPON_SPECS.pistol,adsMoveSpeedScale=clamp(finiteNumber(movementWeaponSpec.adsMoveSpeedScale,1),.5,1),adsWalkSpeed=settings.movement.walkSpeed*adsMoveSpeedScale,adsMoveAmount=adsAmount*adsAmount*(3-2*adsAmount);
+    const baseSpeed = settings.movement.runSpeed + (adsWalkSpeed-settings.movement.runSpeed)*adsMoveAmount;
     const currentAllowedSpeed = sliding ? settings.movement.runSpeed*SLIDE_START_SPEED_MULTIPLIER : baseSpeed * (sprinting?SPRINT_SPEED_MULTIPLIER:1) * (crouched ? CROUCH_SPEED_MULTIPLIER : 1);
-    const previousAdsAmount = me.ads ? clamp(finiteNumber(me.adsAmount,1),0,1) : 0;
-    const previousBaseSpeed = settings.movement.runSpeed + (settings.movement.walkSpeed-settings.movement.runSpeed)*previousAdsAmount;
+    const previousAdsAmount = me.ads ? clamp(finiteNumber(me.adsAmount,1),0,1) : 0,previousAdsMoveAmount=previousAdsAmount*previousAdsAmount*(3-2*previousAdsAmount);
+    const previousBaseSpeed = settings.movement.runSpeed + (adsWalkSpeed-settings.movement.runSpeed)*previousAdsMoveAmount;
     const previousAllowedSpeed = me.sliding ? settings.movement.runSpeed*SLIDE_START_SPEED_MULTIPLIER : previousBaseSpeed * (me.sprinting?SPRINT_SPEED_MULTIPLIER:1) * (me.crouched ? CROUCH_SPEED_MULTIPLIER : 1);
     // A packet that changes stance/movement mode also contains movement from
     // the previous state. Validate that interval against the faster legitimate
