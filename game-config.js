@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.40.2';
+export const APP_VERSION = '1.41.0';
 export const PROTOCOL_VERSION = 75;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
@@ -23,8 +23,8 @@ export const SECONDARY_WEAPONS = ['pistol','shotgun','semiShotgun','akimbo1887']
 export const ATTACHMENT_SLOTS = Object.freeze(['optic','muzzle','barrel','magazine','underbarrel','stock']);
 export const ATTACHMENTS = Object.freeze({
   redDot:Object.freeze({id:'redDot',slot:'optic',name:'RED DOT',short:'RDS',description:'Clean reflex sight · slight zoom · +6% ADS time.',compatible:Object.freeze(['assault','ump','machineGun','semiShotgun']),mods:Object.freeze({adsInMs:1.06}),adsFov:44}),
-  holoSight:Object.freeze({id:'holoSight',slot:'optic',name:'HOLOGRAPHIC SIGHT',short:'HOLO',description:'Large sight window · slight zoom · +10% ADS time.',compatible:Object.freeze(['assault','ump','machineGun','semiShotgun']),mods:Object.freeze({adsInMs:1.10}),adsFov:43}),
-  combatOptic:Object.freeze({id:'combatOptic',slot:'optic',name:'2× COMBAT OPTIC',short:'2X',description:'2× mid-range optic · +16% ADS time · -4% ADS movement.',compatible:Object.freeze(['assault','machineGun','semiShotgun']),mods:Object.freeze({adsInMs:1.16}),adsMoveAdd:-.04,adsFov:34}),
+  holoSight:Object.freeze({id:'holoSight',slot:'optic',name:'HOLOGRAPHIC SIGHT',short:'HOLO',description:'Large eye box · moderate zoom · +10% ADS time.',compatible:Object.freeze(['assault','ump','machineGun','semiShotgun']),mods:Object.freeze({adsInMs:1.10}),adsFov:40}),
+  combatOptic:Object.freeze({id:'combatOptic',slot:'optic',name:'3× COMBAT OPTIC',short:'3X',description:'3× mid-range optic · +16% ADS time · -4% ADS movement.',compatible:Object.freeze(['assault','machineGun','semiShotgun']),mods:Object.freeze({adsInMs:1.16}),adsMoveAdd:-.04,adsFov:27}),
   variableScope:Object.freeze({id:'variableScope',slot:'optic',name:'VARIABLE SCOPE',short:'VAR',description:'3× / 6× sniper optic · wider view · +10% ADS time.',compatible:Object.freeze(['sniper']),mods:Object.freeze({adsInMs:1.10}),adsFov:24,highAdsFov:12.5}),
   suppressor:Object.freeze({id:'suppressor',slot:'muzzle',name:'SUPPRESSOR',short:'SUP',description:'Quieter / off radar · -10% velocity & range.',compatible:Object.freeze(['pistol','assault','ump','machineGun','sniper']),mods:Object.freeze({bulletSpeed:.90,falloffStart:.90,falloffEnd:.90}),soundScale:.88}),
   compensator:Object.freeze({id:'compensator',slot:'muzzle',name:'COMPENSATOR',short:'COMP',description:'-18% recoil · +8% ADS time.',compatible:Object.freeze(['pistol','assault','ump','machineGun']),mods:Object.freeze({recoilPitch:.82,recoilYaw:.82,recoilMaxPitch:.88,recoilMaxYaw:.88,adsInMs:1.08})}),
