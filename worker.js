@@ -5,7 +5,7 @@ import * as YardGeometry from './world-geometry-yard.js';
 import * as RigGeometry from './world-geometry-rig.js';
 import {
   APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS, DEFAULT_MAP_ID, normalizeMapId, mapSpec,
-  WEAPON_ORDER, PRIMARY_WEAPONS, SECONDARY_WEAPONS, WEAPON_SPECS, normalizeWeaponAttachments, resolveWeaponSpec, weaponSpreadRadians, weaponHeatAfterDelay, weaponHeatAfterShot, weaponDamageAtDistance, weaponZoneDamageScale, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, EQUIPMENT_SPECS, TACTICAL_EQUIPMENT, LETHAL_EQUIPMENT, normalizeTactical, normalizeLethal, equipmentForLoadout, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings, MOVEMENT_FEEL, WEAPON_SWITCH_MS, EQUIPMENT_WEAPON_RECOVER_MS,
+  WEAPON_ORDER, PRIMARY_WEAPONS, SECONDARY_WEAPONS, WEAPON_SPECS, normalizeWeaponAttachments, resolveWeaponSpec, weaponSpreadRadians, weaponHeatAfterDelay, weaponHeatAfterShot, weaponDamageAtDistance, weaponZoneDamageScale, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, EQUIPMENT_SPECS, TACTICAL_EQUIPMENT, LETHAL_EQUIPMENT, normalizeTactical, normalizeLethal, equipmentForLoadout, LOADOUT_CLASS_COUNT, LOADOUT_CLASS_IDS, normalizeLoadoutClassId, normalizeLoadoutClassName, normalizeLoadoutDefinition, defaultLoadoutClasses, normalizeLoadoutClasses, loadoutClassById, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings, MOVEMENT_FEEL, WEAPON_SWITCH_MS, EQUIPMENT_WEAPON_RECOVER_MS,
   DEFAULT_MATCH_RULES, GAME_MODES, normalizeGameMode, gameModeSpec, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, FRAG_RADIUS, FRAG_MAX_DAMAGE, SMOKE_RADIUS, SMOKE_DURATION_MS, GROUND_FOLLOW_DROP
 } from './game-config.js';
 import { normalizeMatchRules, defaultMatchState, normalizeMatchState, publicMatchState, matchRulesAreDefault } from './match-model.js';
@@ -259,7 +259,7 @@ function playerCanEquip(player, weapon) {
 function safeEquipmentKind(value){return Object.prototype.hasOwnProperty.call(EQUIPMENT_CAPS,value)?value:'flash';}
 function safeTactical(value){return normalizeTactical(value);}
 function safeLethal(value){return normalizeLethal(value);}
-function normalizeLoadout(value,fallback={primaryWeapon:'assault',secondaryWeapon:'pistol',primaryAttachments:{},secondaryAttachments:{},tactical:'flash',lethal:'sticky'}){const v=value&&typeof value==='object'?value:{},primaryWeapon=safePrimaryWeapon(v.primaryWeapon??fallback.primaryWeapon),secondaryWeapon=safeSecondaryWeapon(v.secondaryWeapon??fallback.secondaryWeapon);return{primaryWeapon,secondaryWeapon,primaryAttachments:normalizeWeaponAttachments(primaryWeapon,v.primaryAttachments??fallback.primaryAttachments),secondaryAttachments:normalizeWeaponAttachments(secondaryWeapon,v.secondaryAttachments??fallback.secondaryAttachments),tactical:safeTactical(v.tactical??fallback.tactical),lethal:safeLethal(v.lethal??fallback.lethal)};}
+function normalizeLoadout(value,fallback={primaryWeapon:'assault',secondaryWeapon:'pistol',primaryAttachments:{},secondaryAttachments:{},tactical:'flash',lethal:'sticky'}){return normalizeLoadoutDefinition(value,fallback);}
 function attachmentsForPlayerWeapon(player,weapon){const safe=safeWeapon(weapon);return safe===safePrimaryWeapon(player?.primaryWeapon)?normalizeWeaponAttachments(safe,player?.primaryAttachments):safe===safeSecondaryWeapon(player?.secondaryWeapon)?normalizeWeaponAttachments(safe,player?.secondaryAttachments):normalizeWeaponAttachments(safe,{});}
 function effectiveWeaponRules(settings,player,weapon){const safe=safeWeapon(weapon),base=WEAPON_SPECS[safe],resolved=resolveWeaponSpec(safe,attachmentsForPlayerWeapon(player,safe)),rules=settings?.weapons?.[safe]||DEFAULT_WORLD_SETTINGS.weapons[safe];return{...rules,spec:resolved,speed:finiteNumber(rules.speed,base.bulletSpeed)*(resolved.bulletSpeed/base.bulletSpeed),reloadMs:finiteNumber(rules.reloadMs,base.reloadMs)*(resolved.reloadMs/base.reloadMs),cooldownMs:finiteNumber(rules.cooldownMs,base.cooldownMs)*(resolved.cooldownMs/base.cooldownMs)};}
 function freshAmmo(player=null){return Object.fromEntries(WEAPON_ORDER.map(name=>[name,resolveWeaponSpec(name,player?attachmentsForPlayerWeapon(player,name):{}).mag]));}
@@ -367,6 +367,8 @@ function publicPlayer(attachment) {
     secondaryAttachments: normalizeWeaponAttachments(safeSecondaryWeapon(attachment.secondaryWeapon),attachment.secondaryAttachments),
     tactical: safeTactical(attachment.tactical),
     lethal: safeLethal(attachment.lethal),
+    activeClassId: normalizeLoadoutClassId(attachment.activeClassId),
+    pendingClassId: attachment.pendingClassId ? normalizeLoadoutClassId(attachment.pendingClassId) : '',
     pendingLoadout: attachment.pendingLoadout ? normalizeLoadout(attachment.pendingLoadout,{primaryWeapon:attachment.primaryWeapon,secondaryWeapon:attachment.secondaryWeapon,primaryAttachments:attachment.primaryAttachments,secondaryAttachments:attachment.secondaryAttachments,tactical:attachment.tactical,lethal:attachment.lethal}) : null,
     pendingTeam: attachment.pendingTeam ? safeTeam(attachment.pendingTeam) : '',
     ammo: attachment.ammo,
@@ -413,14 +415,14 @@ function publicBot(bot) {
   };
 }
 
-function sendLoadout(socket, me, extra = {}) { sendJson(socket,{t:'loadout',weapon:safeWeapon(me.weapon),primaryWeapon:safePrimaryWeapon(me.primaryWeapon),secondaryWeapon:safeSecondaryWeapon(me.secondaryWeapon),primaryAttachments:normalizeWeaponAttachments(safePrimaryWeapon(me.primaryWeapon),me.primaryAttachments),secondaryAttachments:normalizeWeaponAttachments(safeSecondaryWeapon(me.secondaryWeapon),me.secondaryAttachments),tactical:safeTactical(me.tactical),lethal:safeLethal(me.lethal),pendingLoadout:me.pendingLoadout?normalizeLoadout(me.pendingLoadout,{primaryWeapon:me.primaryWeapon,secondaryWeapon:me.secondaryWeapon,primaryAttachments:me.primaryAttachments,secondaryAttachments:me.secondaryAttachments,tactical:me.tactical,lethal:me.lethal}):null,ammo:me.ammo,equipment:me.equipment,reloadAt:me.reloadAt||0,reloadWeapon:me.reloadWeapon||'',...extra}); }
+function sendLoadout(socket, me, extra = {}) { const base=normalizeLoadout(me),includeClasses=extra.action==='loadout'||extra.includeClasses===true,payload={t:'loadout',weapon:safeWeapon(me.weapon),primaryWeapon:safePrimaryWeapon(me.primaryWeapon),secondaryWeapon:safeSecondaryWeapon(me.secondaryWeapon),primaryAttachments:normalizeWeaponAttachments(safePrimaryWeapon(me.primaryWeapon),me.primaryAttachments),secondaryAttachments:normalizeWeaponAttachments(safeSecondaryWeapon(me.secondaryWeapon),me.secondaryAttachments),tactical:safeTactical(me.tactical),lethal:safeLethal(me.lethal),pendingLoadout:me.pendingLoadout?normalizeLoadout(me.pendingLoadout,base):null,ammo:me.ammo,equipment:me.equipment,reloadAt:me.reloadAt||0,reloadWeapon:me.reloadWeapon||'',...extra};if(includeClasses)Object.assign(payload,{loadoutClasses:normalizeLoadoutClasses(me.loadoutClasses,base),activeClassId:normalizeLoadoutClassId(me.activeClassId),pendingClassId:me.pendingClassId?normalizeLoadoutClassId(me.pendingClassId):''});sendJson(socket,payload); }
 
 function spawnForTeam(world,team,index){return world.spawns.spawnForMode('tdm',safeTeam(team),index,world.geometry.terrainHeight);}
 function spawnForMode(world,mode,team,index){return world.spawns.spawnForMode(normalizeGameMode(mode),safeTeam(team),index,world.geometry.terrainHeight);}
 function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
-  const active=normalizeLoadout(player?.pendingLoadout||player,{primaryWeapon:player?.primaryWeapon,secondaryWeapon:player?.secondaryWeapon,tactical:player?.tactical,lethal:player?.lethal});
+  const classes=normalizeLoadoutClasses(player?.loadoutClasses,player),nextClassId=player?.pendingClassId?normalizeLoadoutClassId(player.pendingClassId):normalizeLoadoutClassId(player?.activeClassId),classLoadout=loadoutClassById(classes,nextClassId,player),active=normalizeLoadout(player?.pendingLoadout||classLoadout,player);
   const next={
-    ...player,...spawn,team,yaw:finiteNumber(spawn?.yaw,finiteNumber(player?.yaw,0)),pitch:0,spawnProtectedUntil:Math.max(0,finiteNumber(spawn?.spawnProtectedUntil,0)),pendingTeam:'',pendingLoadout:null,primaryWeapon:active.primaryWeapon,secondaryWeapon:active.secondaryWeapon,primaryAttachments:active.primaryAttachments,secondaryAttachments:active.secondaryAttachments,tactical:active.tactical,lethal:active.lethal,hp:100,wastedUntil:0,regenAt:0,
+    ...player,...spawn,team,yaw:finiteNumber(spawn?.yaw,finiteNumber(player?.yaw,0)),pitch:0,spawnProtectedUntil:Math.max(0,finiteNumber(spawn?.spawnProtectedUntil,0)),pendingTeam:'',loadoutClasses:classes,activeClassId:nextClassId,pendingClassId:'',pendingLoadout:null,primaryWeapon:active.primaryWeapon,secondaryWeapon:active.secondaryWeapon,primaryAttachments:active.primaryAttachments,secondaryAttachments:active.secondaryAttachments,tactical:active.tactical,lethal:active.lethal,hp:100,wastedUntil:0,regenAt:0,
     weapon:active.primaryWeapon,ammo:freshAmmo(active),equipment:freshEquipment(active.tactical,active.lethal),reloadAt:0,reloadWeapon:'',
     fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,combatAction:'ready',combatActionKind:'',combatReadyAt:0,sprintFireReadyAt:0,ads:false,adsAmount:0,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,
     verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,lastMovementClientAt:now,lastStateSeq:0,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
@@ -1052,6 +1054,7 @@ export class GameRoom {
     const primaryAttachments=normalizeWeaponAttachments(primaryWeapon,body?.primaryAttachments),secondaryAttachments=normalizeWeaponAttachments(secondaryWeapon,body?.secondaryAttachments);
     const tactical = safeTactical(body?.tactical);
     const lethal = safeLethal(body?.lethal);
+    const baseLoadout=normalizeLoadout({primaryWeapon,secondaryWeapon,primaryAttachments,secondaryAttachments,tactical,lethal}),loadoutClasses=normalizeLoadoutClasses(body?.loadoutClasses,baseLoadout),activeClassId=normalizeLoadoutClassId(body?.activeClassId),activeClass=normalizeLoadout(loadoutClassById(loadoutClasses,activeClassId,baseLoadout),baseLoadout);
     if (!clientId) return { status: 400, data: { error: "Missing client ID." } };
     if (clientAuth.length < 32) return { status: 401, data: { error: "Missing client credential." } };
     if (!this.allowJoinTicketRequest(clientId, now)) return { status: 429, data: { error: "Too many join attempts. Try again shortly." } };
@@ -1060,7 +1063,7 @@ export class GameRoom {
     if (expected && expected !== clientAuthHash) return { status: 403, data: { error: "Client credential rejected." } };
     const tickets = await this.loadJoinTickets(now);
     const ticket = makeJoinTicket();
-    tickets[ticket] = { clientId, clientAuthHash, name, team, primaryWeapon, secondaryWeapon, primaryAttachments, secondaryAttachments, tactical, lethal, issuedAt: now, expiresAt: now + JOIN_TICKET_TTL_MS };
+    tickets[ticket] = { clientId, clientAuthHash, name, team, ...activeClass, loadoutClasses, activeClassId, issuedAt: now, expiresAt: now + JOIN_TICKET_TTL_MS };
     await this.ctx.storage.put("joinTickets", tickets);
     return { status: 201, data: { ticket, expiresInMs: JOIN_TICKET_TTL_MS } };
   }
@@ -1162,6 +1165,7 @@ export class GameRoom {
     const requestedPrimaryAttachments=normalizeWeaponAttachments(requestedPrimary,join.primaryAttachments),requestedSecondaryAttachments=normalizeWeaponAttachments(requestedSecondary,join.secondaryAttachments);
     const requestedTactical = safeTactical(join.tactical);
     const requestedLethal = safeLethal(join.lethal);
+    const requestedBase=normalizeLoadout({primaryWeapon:requestedPrimary,secondaryWeapon:requestedSecondary,primaryAttachments:requestedPrimaryAttachments,secondaryAttachments:requestedSecondaryAttachments,tactical:requestedTactical,lethal:requestedLethal}),requestedClasses=normalizeLoadoutClasses(join.loadoutClasses,requestedBase),requestedClassId=normalizeLoadoutClassId(join.activeClassId);
     const authHashes = meta.clientAuthHashes;
     const expectedAuthHash = authHashes[clientId] || '';
     if (expectedAuthHash && expectedAuthHash !== clientAuthHash) return json(request, this.env, { error: "Client credential rejected." }, 403);
@@ -1215,6 +1219,9 @@ export class GameRoom {
       velocityX:0,velocityZ:0,
       fireReadyAt: normalizeFireReady(spawn.fireReadyAt),
       regenAt: finiteNumber(spawn.regenAt, 0),
+      loadoutClasses: normalizeLoadoutClasses(preserved?.loadoutClasses||requestedClasses,preserved||requestedBase),
+      activeClassId: normalizeLoadoutClassId(preserved?.activeClassId||requestedClassId),
+      pendingClassId: preserved?.pendingClassId ? normalizeLoadoutClassId(preserved.pendingClassId) : '',
       primaryWeapon: safePrimaryWeapon(preserved?.primaryWeapon || requestedPrimary),
       secondaryWeapon: safeSecondaryWeapon(preserved?.secondaryWeapon || requestedSecondary),
       primaryAttachments: normalizeWeaponAttachments(safePrimaryWeapon(preserved?.primaryWeapon || requestedPrimary),preserved?.primaryAttachments||requestedPrimaryAttachments),
@@ -1268,7 +1275,7 @@ export class GameRoom {
     const currentPlayers = liveMembers.map(({ attachment: a }) => publicPlayer(a));
     sendJson(server,{
       t: "welcome",
-      self: publicPlayer(attachment),
+      self: {...publicPlayer(attachment),loadoutClasses:normalizeLoadoutClasses(attachment.loadoutClasses,attachment),activeClassId:normalizeLoadoutClassId(attachment.activeClassId),pendingClassId:attachment.pendingClassId?normalizeLoadoutClassId(attachment.pendingClassId):''},
       players: currentPlayers,
       bots: this.bots.map(publicBot),
       code: meta.code,
@@ -1496,15 +1503,13 @@ export class GameRoom {
     }
 
     if(payload.t==='loadout'){
-      const rev=Math.max(0,Math.floor(finiteNumber(payload.rev,0))),next=normalizeLoadout(payload,{primaryWeapon:me.primaryWeapon,secondaryWeapon:me.secondaryWeapon,primaryAttachments:me.primaryAttachments,secondaryAttachments:me.secondaryAttachments,tactical:me.tactical,lethal:me.lethal});
+      const rev=Math.max(0,Math.floor(finiteNumber(payload.rev,0))),base=normalizeLoadout(me),classes=normalizeLoadoutClasses(payload.loadoutClasses??me.loadoutClasses,base),classId=normalizeLoadoutClassId(payload.classId??me.activeClassId),classLoadout=loadoutClassById(classes,classId,base),next=normalizeLoadout(payload,classLoadout);
+      const classIndex=classes.findIndex(item=>item.id===classId);if(classIndex>=0)classes[classIndex]={...classes[classIndex],...next,id:classId,name:normalizeLoadoutClassName(classes[classIndex].name,classIndex)};me.loadoutClasses=classes;
       if(matchAllowsLobbyEdits(meta.match)||me.godMode){
-        me.primaryWeapon=next.primaryWeapon;me.secondaryWeapon=next.secondaryWeapon;me.primaryAttachments=next.primaryAttachments;me.secondaryAttachments=next.secondaryAttachments;me.tactical=next.tactical;me.lethal=next.lethal;me.pendingLoadout=null;me.weapon=next.primaryWeapon;me.ammo=freshAmmo(me);me.equipment=freshEquipment(next.tactical,next.lethal);me.reloadAt=0;me.reloadWeapon='';me.weaponReadyAt=0;me.combatAction='ready';me.combatActionKind='';me.combatReadyAt=0;
+        me.activeClassId=classId;me.pendingClassId='';me.primaryWeapon=next.primaryWeapon;me.secondaryWeapon=next.secondaryWeapon;me.primaryAttachments=next.primaryAttachments;me.secondaryAttachments=next.secondaryAttachments;me.tactical=next.tactical;me.lethal=next.lethal;me.pendingLoadout=null;me.weapon=next.primaryWeapon;me.ammo=freshAmmo(me);me.equipment=freshEquipment(next.tactical,next.lethal);me.reloadAt=0;me.reloadWeapon='';me.weaponReadyAt=0;me.combatAction='ready';me.combatActionKind='';me.combatReadyAt=0;
         if(me.godMode)refreshUnlimitedResources(me);socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:false,rev});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me),rev});return;
       }
-      // Standard mid-match class changes preserve the current life exactly.
-      // God Mode returned above because it intentionally supports live loadout edits.
-      // Otherwise the queued class is consumed atomically on the next spawn.
-      me.pendingLoadout=next;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:true,pendingLoadout:next,rev});return;
+      me.pendingClassId=classId;me.pendingLoadout=next;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:true,pendingLoadout:next,rev});return;
     }
 
     if(payload.t==='startMatch'){
@@ -1516,7 +1521,7 @@ export class GameRoom {
       const blueBots=clamp(Math.floor(finiteNumber(setup.bots.blueBots,0)),0,MAX_BOTS),redBots=clamp(Math.floor(finiteNumber(setup.bots.redBots,0)),0,MAX_BOTS);
       if(blueBots+redBots>MAX_BOTS){sendJson(socket,{t:'notice',tone:'error',text:`Maximum ${MAX_BOTS} bots per match.`});return;}
       meta.mapId=normalizeMapId(setup.mapId);this.world=worldBundle(meta.mapId);meta.settings=normalizeWorldSettings(setup.settings);meta.blueBots=blueBots;meta.redBots=redBots;meta.botDifficulty=safeBotDifficulty(setup.bots.difficulty);meta.match=defaultMatchState(now,rules);
-      if(setup.loadout&&typeof setup.loadout==='object'){me.pendingLoadout=normalizeLoadout(setup.loadout,{primaryWeapon:me.primaryWeapon,secondaryWeapon:me.secondaryWeapon,primaryAttachments:me.primaryAttachments,secondaryAttachments:me.secondaryAttachments,tactical:me.tactical,lethal:me.lethal});socket.serializeAttachment(me);}
+      if(setup.loadout&&typeof setup.loadout==='object'){const base=normalizeLoadout(me),classes=normalizeLoadoutClasses(setup.loadoutClasses??me.loadoutClasses,base),classId=normalizeLoadoutClassId(setup.classId??me.activeClassId),next=normalizeLoadout(setup.loadout,loadoutClassById(classes,classId,base)),idx=classes.findIndex(item=>item.id===classId);if(idx>=0)classes[idx]={...classes[idx],...next};me.loadoutClasses=classes;me.pendingClassId=classId;me.pendingLoadout=next;socket.serializeAttachment(me);}
       this.prepareRound(meta,now);await this.putMeta(meta);await this.ctx.storage.put('bots',this.bots);await this.updateDirectory(this.liveSockets().length,meta);return;
     }
 

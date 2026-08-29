@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.38.3';
-export const PROTOCOL_VERSION = 73;
+export const APP_VERSION = '1.39.0';
+export const PROTOCOL_VERSION = 74;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -163,6 +163,26 @@ export function equipmentForLoadout(tactical='flash',lethal='sticky'){
   const out=Object.fromEntries(Object.keys(EQUIPMENT_CAPS).map(name=>[name,0]));
   const t=normalizeTactical(tactical),l=normalizeLethal(lethal);out[t]=EQUIPMENT_CAPS[t];out[l]=EQUIPMENT_CAPS[l];return out;
 }
+
+
+export const LOADOUT_CLASS_COUNT = 5;
+export const LOADOUT_CLASS_IDS = Object.freeze(Array.from({length:LOADOUT_CLASS_COUNT},(_,i)=>`class${i+1}`));
+const LOADOUT_CLASS_PRESETS = Object.freeze([
+  Object.freeze({name:'CLASS 1',primaryWeapon:'assault',secondaryWeapon:'pistol',tactical:'flash',lethal:'sticky'}),
+  Object.freeze({name:'CLASS 2',primaryWeapon:'ump',secondaryWeapon:'pistol',tactical:'flash',lethal:'frag'}),
+  Object.freeze({name:'CLASS 3',primaryWeapon:'machineGun',secondaryWeapon:'pistol',tactical:'smoke',lethal:'sticky'}),
+  Object.freeze({name:'CLASS 4',primaryWeapon:'assault',secondaryWeapon:'shotgun',tactical:'flash',lethal:'frag'}),
+  Object.freeze({name:'CLASS 5',primaryWeapon:'sniper',secondaryWeapon:'pistol',tactical:'smoke',lethal:'sticky'}),
+]);
+export function normalizeLoadoutClassId(value){const id=String(value||'');return LOADOUT_CLASS_IDS.includes(id)?id:LOADOUT_CLASS_IDS[0];}
+export function normalizeLoadoutClassName(value,index=0){const clean=String(value||'').replace(/[\r\n\t]+/g,' ').replace(/\s+/g,' ').trim().slice(0,18);return clean||`CLASS ${Math.max(1,Math.min(LOADOUT_CLASS_COUNT,Number(index)+1))}`;}
+export function normalizeLoadoutDefinition(value={},fallback={primaryWeapon:'assault',secondaryWeapon:'pistol',primaryAttachments:{},secondaryAttachments:{},tactical:'flash',lethal:'sticky'}){
+  const v=value&&typeof value==='object'?value:{},f=fallback&&typeof fallback==='object'?fallback:{},primaryWeapon=PRIMARY_WEAPONS.includes(v.primaryWeapon)?v.primaryWeapon:(PRIMARY_WEAPONS.includes(f.primaryWeapon)?f.primaryWeapon:'assault'),secondaryWeapon=SECONDARY_WEAPONS.includes(v.secondaryWeapon)?v.secondaryWeapon:(SECONDARY_WEAPONS.includes(f.secondaryWeapon)?f.secondaryWeapon:'pistol');
+  return {primaryWeapon,secondaryWeapon,primaryAttachments:normalizeWeaponAttachments(primaryWeapon,v.primaryAttachments??f.primaryAttachments),secondaryAttachments:normalizeWeaponAttachments(secondaryWeapon,v.secondaryAttachments??f.secondaryAttachments),tactical:normalizeTactical(v.tactical??f.tactical),lethal:normalizeLethal(v.lethal??f.lethal)};
+}
+export function defaultLoadoutClasses(baseLoadout=null){const out=[];for(let i=0;i<LOADOUT_CLASS_COUNT;i++){const preset=LOADOUT_CLASS_PRESETS[i]||LOADOUT_CLASS_PRESETS[0],seed=i===0&&baseLoadout?normalizeLoadoutDefinition(baseLoadout,preset):normalizeLoadoutDefinition(preset,preset);out.push({id:LOADOUT_CLASS_IDS[i],name:normalizeLoadoutClassName(preset.name,i),...seed});}return out;}
+export function normalizeLoadoutClasses(value,baseLoadout=null){const fallback=defaultLoadoutClasses(baseLoadout),raw=Array.isArray(value)?value:[];return LOADOUT_CLASS_IDS.map((id,i)=>{const source=raw.find(item=>String(item?.id||'')===id)||raw[i]||fallback[i],loadout=normalizeLoadoutDefinition(source,fallback[i]);return{id,name:normalizeLoadoutClassName(source?.name,i),...loadout};});}
+export function loadoutClassById(classes,id,baseLoadout=null){const normalized=normalizeLoadoutClasses(classes,baseLoadout),safeId=normalizeLoadoutClassId(id);return normalized.find(item=>item.id===safeId)||normalized[0];}
 
 export const GAME_MODE_ORDER = ['tdm','ffa','sandbox'];
 export const DEFAULT_GAME_MODE = 'tdm';
