@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.39.0';
+export const APP_VERSION = '1.39.2';
 export const PROTOCOL_VERSION = 74;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
@@ -22,7 +22,7 @@ export const SECONDARY_WEAPONS = ['pistol','shotgun','semiShotgun','akimbo1887']
 
 export const ATTACHMENT_SLOTS = Object.freeze(['optic','muzzle','magazine','underbarrel','stock']);
 export const ATTACHMENTS = Object.freeze({
-  redDot:Object.freeze({id:'redDot',slot:'optic',name:'RED DOT',short:'RDS',description:'1× sight picture · +6% ADS time.',compatible:Object.freeze(['assault','ump','machineGun','semiShotgun']),mods:Object.freeze({adsInMs:1.06}),adsFov:50}),
+  redDot:Object.freeze({id:'redDot',slot:'optic',name:'RED DOT',short:'RDS',description:'Cleaner sight picture · slight zoom · +6% ADS time.',compatible:Object.freeze(['assault','ump','machineGun','semiShotgun']),mods:Object.freeze({adsInMs:1.06}),adsFov:44}),
   suppressor:Object.freeze({id:'suppressor',slot:'muzzle',name:'SUPPRESSOR',short:'SUP',description:'Quieter / off radar · -10% velocity & range.',compatible:Object.freeze(['pistol','assault','ump','machineGun','sniper']),mods:Object.freeze({bulletSpeed:.90,falloffStart:.90,falloffEnd:.90}),soundScale:.88}),
   compensator:Object.freeze({id:'compensator',slot:'muzzle',name:'COMPENSATOR',short:'COMP',description:'-18% recoil · +8% ADS time.',compatible:Object.freeze(['pistol','assault','ump','machineGun']),mods:Object.freeze({recoilPitch:.82,recoilYaw:.82,recoilMaxPitch:.88,recoilMaxYaw:.88,adsInMs:1.08})}),
   extendedMag:Object.freeze({id:'extendedMag',slot:'magazine',name:'EXTENDED MAG',short:'EXT',description:'More ammo · +12% reload time.',compatible:Object.freeze(['pistol','assault','ump','machineGun','semiShotgun','sniper']),mods:Object.freeze({reloadMs:1.12}),magAdd:Object.freeze({pistol:6,assault:15,ump:15,machineGun:25,semiShotgun:4,sniper:2})}),
