@@ -802,10 +802,10 @@ export class GameRoom {
   }
 
   allowSocketMessage(socket, type, now = Date.now()) {
-    const config = type === '__all__' ? { rate: 100, burst: 160 }
-      : type === 'state' ? { rate: 55, burst: 80 }
-      : type === 'simTick' ? { rate: 40, burst: 60 }
-      : type === 'fire' ? { rate: 24, burst: 30 }
+    const config = type === '__all__' ? { rate: 100, burst: 260 }
+      : type === 'state' ? { rate: 55, burst: 220 }
+      : type === 'simTick' ? { rate: 40, burst: 180 }
+      : type === 'fire' ? { rate: 24, burst: 72 }
       : ['equipmentAction','throw','reload','weapon','loadout','team','god','startMatch','returnLobby','adminPlayer','adminSettings','adminBots'].includes(type) ? { rate: 14, burst: 22 }
       : type === 'ping' ? { rate: 8, burst: 12 }
       : type === 'chat' ? { rate: 1.5, burst: 4 }
@@ -826,6 +826,11 @@ export class GameRoom {
       return true;
     }
     state.buckets.set(type, bucket);
+    // Sequenced movement/heartbeat messages can legitimately arrive in a burst
+    // after a mobile/WebSocket stall. The global bucket still protects the
+    // socket from sustained spam, but a drained per-type bucket must not close
+    // an otherwise healthy match connection just because buffered samples flush.
+    if(type==='state'||type==='simTick')return false;
     if (now - state.violationWindowAt > 10_000) {
       state.violationWindowAt = now;
       state.violations = 0;
@@ -1322,17 +1327,18 @@ export class GameRoom {
           socket.serializeAttachment(me);
           const stateSeq=Math.max(0,Math.floor(finiteNumber(payload.seq,0))),stateAt=Math.min(now,sanitizeCombatTimestamp(payload.at,now));
           this.broadcast({t:'state',id:me.clientId,at:stateAt,x:me.x,y:me.y,z:me.z,yaw:me.yaw,pitch:me.pitch,ads:false,adsAmount:0,crouched:false,sprinting:false,sliding:false,traversal:'',ladderId:'',ladderPhase:''},socket);
-          if(corrected)sendJson(socket,{t:'correction',seq:stateSeq,x:me.x,y:me.y,z:me.z,vertical:false,verticalVelocity:0,grounded:true,crouched:false});
+          if(corrected)sendJson(socket,{t:'correction',seq:stateSeq,x:me.x,y:me.y,z:me.z,vertical:false,verticalVelocity:0,grounded:true,crouched:false,reason:'movement_locked'});
         } else {
+          const previousStateAt=finiteNumber(me.lastStateAt,now),serverStateGapMs=clamp(now-previousStateAt,0,10000);
           const next = this.validateHumanState(me, payload, now, settings),combatAt=Math.min(now,sanitizeCombatTimestamp(payload.at,now)),stateSeq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));
-          me = {...next.player,lastCombatStateAt:combatAt};
+          me = {...next.player,lastCombatStateAt:combatAt,diagLastStateGapMs:serverStateGapMs,diagMaxStateGapMs:Math.max(finiteNumber(me.diagMaxStateGapMs,0),serverStateGapMs)};
           socket.serializeAttachment(me);
           this.recordCombatPose(me,combatAt);
           const state = { t: "state", id: me.clientId, at:combatAt, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched, sprinting:!!me.sprinting, sliding:!!me.sliding, traversal:me.traversal?.mode||'', ladderId:me.ladder?.id||'', ladderPhase:me.ladder?.phase||'' };
           this.broadcast(state, socket);
           if (next.corrected) sendJson(socket,{
             t:"correction",seq:stateSeq,x:me.x,y:me.y,z:me.z,vertical:next.verticalCorrected,
-            verticalVelocity:finiteNumber(me.verticalVelocity,0),grounded:me.serverGrounded!==false,crouched:!!me.crouched,
+            verticalVelocity:finiteNumber(me.verticalVelocity,0),grounded:me.serverGrounded!==false,crouched:!!me.crouched,reason:next.reason||'position',horizontalError:round3(next.horizontalError||0),verticalError:round3(next.verticalError||0),speedViolation:!!next.speedViolation,
           });
         }
       }
@@ -1343,44 +1349,44 @@ export class GameRoom {
 
     if (payload.t === "ladder") {
       const action=String(payload.action||''),seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0))),previousSeq=Math.max(0,Math.floor(finiteNumber(me.lastLadderSeq,0)));
-      const reject=()=>sendJson(socket,{t:'ladder',id:me.clientId,seq,accepted:false,action,x:me.x,y:me.y,z:me.z,ladder:publicLadderState(me.ladder)});
-      if(!matchAllowsMovement(meta.match)||me.hp<=0||now<me.wastedUntil||me.traversal){reject();return;}
+      const reject=(reason='invalid')=>sendJson(socket,{t:'ladder',id:me.clientId,seq,accepted:false,action,reason,x:me.x,y:me.y,z:me.z,ladder:publicLadderState(me.ladder)});
+      if(!matchAllowsMovement(meta.match)||me.hp<=0||now<me.wastedUntil||me.traversal){reject('unavailable');return;}
       if(action==='attach'){
-        if(seq<=previousSeq||me.ladder){reject();return;}
-        let dirX=clamp(finiteNumber(payload.dirX,0),-1,1),dirZ=clamp(finiteNumber(payload.dirZ,0),-1,1),len=Math.hypot(dirX,dirZ);if(len<.35){reject();return;}dirX/=len;dirZ/=len;
+        if(seq<=previousSeq||me.ladder){reject('sequence');return;}
+        let dirX=clamp(finiteNumber(payload.dirX,0),-1,1),dirZ=clamp(finiteNumber(payload.dirZ,0),-1,1),len=Math.hypot(dirX,dirZ);if(len<.35){reject('input');return;}dirX/=len;dirZ/=len;
         const faceX=-Math.sin(me.yaw),faceZ=-Math.cos(me.yaw),entry=findLadderEntry({ladders:this.world.geometry.LADDERS,x:me.x,y:me.y,z:me.z,dirX,dirZ,faceX,faceZ,radius:PLAYER_RADIUS,grounded:me.serverGrounded!==false});
-        if(!entry||String(payload.ladderId||'')!==entry.ladderId){reject();return;}
-        const solidActors=this.solidActors(me.clientId,now);if(this.actorBlocksAt(entry.attachX,entry.attachZ,entry.attachY,me.x,me.z,solidActors,PLAYER_HEIGHT)){reject();return;}
+        if(!entry||String(payload.ladderId||'')!==entry.ladderId){reject('entry');return;}
+        const solidActors=this.solidActors(me.clientId,now);if(this.actorBlocksAt(entry.attachX,entry.attachZ,entry.attachY,me.x,me.z,solidActors,PLAYER_HEIGHT)){reject('actor_blocked');return;}
         const ladder={id:String(entry.ladderId),seq,phase:'climb',entry:entry.entry==='top'?'top':'bottom'};
         me={...me,x:entry.attachX,y:entry.attachY,z:entry.attachZ,ladder,lastLadderSeq:seq,traversal:null,verticalVelocity:0,serverGrounded:false,ads:false,adsAmount:0,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,movementClockAt:now,moveBudgetSec:LADDER_BUDGET_INITIAL_SEC,combatAction:'ready',combatActionKind:'',combatReadyAt:0};socket.serializeAttachment(me);
         const event={t:'ladder',id:me.clientId,seq,accepted:true,action:'attach',x:me.x,y:me.y,z:me.z,ladder:publicLadderState(ladder)};sendJson(socket,event);this.broadcast(event,socket);return;
       }
       if(action==='dismount'){
-        if(!me.ladder||seq<=previousSeq){reject();return;}const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);if(!ladder){me={...me,ladder:null};socket.serializeAttachment(me);reject();return;}
-        const end=payload.end==='top'?'top':'bottom',nearEnd=end==='top'?me.y>=ladder.topY-.30:me.y<=ladder.bottomY+.20;if(!nearEnd){reject();return;}
+        if(!me.ladder||seq<=previousSeq){reject('sequence');return;}const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);if(!ladder){me={...me,ladder:null};socket.serializeAttachment(me);reject('missing');return;}
+        const end=payload.end==='top'?'top':'bottom',nearEnd=end==='top'?me.y>=ladder.topY-.30:me.y<=ladder.bottomY+.20;if(!nearEnd){reject('range');return;}
         const target=end==='top'?ladderTopExitPoint(ladder,PLAYER_RADIUS):ladderBottomExitPoint(ladder,PLAYER_RADIUS),solidActors=this.solidActors(me.clientId,now);
-        if(this.world.worldCollision.worldBlockedAt(target.x,target.z,target.y,PLAYER_HEIGHT,PLAYER_RADIUS)||this.actorBlocksAt(target.x,target.z,target.y,me.x,me.z,solidActors,PLAYER_HEIGHT)){reject();return;}
+        if(this.world.worldCollision.worldBlockedAt(target.x,target.z,target.y,PLAYER_HEIGHT,PLAYER_RADIUS)||this.actorBlocksAt(target.x,target.z,target.y,me.x,me.z,solidActors,PLAYER_HEIGHT)){reject('blocked');return;}
         me={...me,x:target.x,y:target.y,z:target.z,ladder:null,lastLadderSeq:seq,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,moveSpeed:0,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC};socket.serializeAttachment(me);
         const event={t:'ladder',id:me.clientId,seq,accepted:true,action:'dismount',end,x:me.x,y:me.y,z:me.z,ladder:null};sendJson(socket,event);this.broadcast(event,socket);return;
       }
       if(action==='detach'){
-        if(!me.ladder||seq<=previousSeq){reject();return;}const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);if(!ladder){reject();return;}const cp=ladderClimbPoint(ladder,PLAYER_RADIUS),x=cp.x+Number(ladder.nx)*.24,z=cp.z+Number(ladder.nz)*.24;
-        if(this.world.worldCollision.worldBlockedAt(x,z,me.y,PLAYER_HEIGHT,PLAYER_RADIUS)){reject();return;}
+        if(!me.ladder||seq<=previousSeq){reject('sequence');return;}const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);if(!ladder){reject('missing');return;}const cp=ladderClimbPoint(ladder,PLAYER_RADIUS),x=cp.x+Number(ladder.nx)*.24,z=cp.z+Number(ladder.nz)*.24;
+        if(this.world.worldCollision.worldBlockedAt(x,z,me.y,PLAYER_HEIGHT,PLAYER_RADIUS)){reject('blocked');return;}
         me={...me,x,z,ladder:null,lastLadderSeq:seq,verticalVelocity:2.15,serverGrounded:false,lastVerticalAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC};socket.serializeAttachment(me);
         const event={t:'ladder',id:me.clientId,seq,accepted:true,action:'detach',x:me.x,y:me.y,z:me.z,verticalVelocity:me.verticalVelocity,ladder:null};sendJson(socket,event);this.broadcast(event,socket);return;
       }
-      reject();return;
+      reject('action');return;
     }
 
     if (payload.t === "traverse") {
       const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0))),previousSeq=Math.max(0,Math.floor(finiteNumber(me.lastTraverseSeq,0)));
-      if(seq<=previousSeq||me.traversal||me.ladder||!matchAllowsMovement(meta.match)||me.hp<=0||now<me.wastedUntil){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
+      if(seq<=previousSeq||me.traversal||me.ladder||!matchAllowsMovement(meta.match)||me.hp<=0||now<me.wastedUntil){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,reason:'unavailable',x:me.x,y:me.y,z:me.z});return;}
       let dirX=clamp(finiteNumber(payload.dirX,0),-1,1),dirZ=clamp(finiteNumber(payload.dirZ,0),-1,1),dirLen=Math.hypot(dirX,dirZ);
-      if(dirLen<.35){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}dirX/=dirLen;dirZ/=dirLen;
+      if(dirLen<.35){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,reason:'input',x:me.x,y:me.y,z:me.z});return;}dirX/=dirLen;dirZ/=dirLen;
       const playerHeight=me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT,candidate=this.world.worldCollision.findTraversalCandidate({x:me.x,y:me.y,z:me.z,dirX,dirZ,height:playerHeight,radius:PLAYER_RADIUS,airborne:me.serverGrounded===false});
       const solidActors=this.solidActors(me.clientId,now);
-      if(!candidate||this.actorBlocksAt(candidate.endX,candidate.endZ,candidate.endY,me.x,me.z,solidActors,playerHeight)){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
-      const requestedAt=sanitizeCombatTimestamp(payload.at,now),stateAt=finiteNumber(me.lastCombatStateAt,requestedAt),traversalAt=clamp(requestedAt,stateAt-12,Math.min(now,stateAt+40)),plan=createTraversalPlan(candidate,me.x,me.y,me.z,traversalAt,seq);if(!plan){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
+      if(!candidate||this.actorBlocksAt(candidate.endX,candidate.endZ,candidate.endY,me.x,me.z,solidActors,playerHeight)){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,reason:!candidate?'no_candidate':'actor_blocked',x:me.x,y:me.y,z:me.z});return;}
+      const requestedAt=sanitizeCombatTimestamp(payload.at,now),stateAt=finiteNumber(me.lastCombatStateAt,requestedAt),traversalAt=clamp(requestedAt,stateAt-12,Math.min(now,stateAt+40)),plan=createTraversalPlan(candidate,me.x,me.y,me.z,traversalAt,seq);if(!plan){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,reason:'plan',x:me.x,y:me.y,z:me.z});return;}
       me={...me,traversal:plan,lastTraverseSeq:seq,verticalVelocity:0,serverGrounded:false,ads:false,adsAmount:0,moveSpeed:0,combatAction:'ready',combatActionKind:'',combatReadyAt:0};socket.serializeAttachment(me);
       const event={t:'traverse',id:me.clientId,accepted:true,...plan};sendJson(socket,event);this.broadcast(event,socket);return;
     }
@@ -1399,7 +1405,8 @@ export class GameRoom {
       const validKind=kind===safeTactical(me.tactical)||kind===safeLethal(me.lethal);
       if(action==='begin'){
         if(!matchAllowsCombat(meta.match)||!validKind||me.hp<=0||now<me.wastedUntil||me.traversal||me.ladder||now<finiteNumber(me.equipmentReadyAt,0)||(!unlimited&&me.equipment[kind]<=0)||me.combatAction!=='ready'){
-          sendJson(socket,{t:'equipmentAction',action:'begin',kind,accepted:false});return;
+          const reason=!matchAllowsCombat(meta.match)?'match_inactive':!validKind?'loadout':me.hp<=0||now<me.wastedUntil?'dead':me.traversal||me.ladder?'traversing':now<finiteNumber(me.equipmentReadyAt,0)?'cooldown':(!unlimited&&me.equipment[kind]<=0)?'empty':'busy';
+          sendJson(socket,{t:'equipmentAction',action:'begin',kind,accepted:false,reason});return;
         }
         if(me.reloadAt){me.reloadAt=0;me.reloadWeapon='';this.broadcast({t:'reload',id:me.clientId,weapon:me.weapon,reloadAt:0},socket);}
         me={...me,combatAction:'equipmentAim',combatActionKind:kind,combatReadyAt:0,ads:false,adsAmount:0,sprinting:false};socket.serializeAttachment(me);
@@ -1409,7 +1416,7 @@ export class GameRoom {
         if(me.combatAction==='equipmentAim'&&(!kind||kind===me.combatActionKind)){me={...me,combatAction:'ready',combatActionKind:'',combatReadyAt:0};socket.serializeAttachment(me);}
         sendJson(socket,{t:'equipmentAction',action:'cancel',kind,accepted:true});return;
       }
-      sendJson(socket,{t:'equipmentAction',action,kind,accepted:false});return;
+      sendJson(socket,{t:'equipmentAction',action,kind,accepted:false,reason:'action'});return;
     }
 
     if (payload.t === "fire") {
@@ -1656,7 +1663,9 @@ export class GameRoom {
     }
 
     if (payload.t === "ping") {
-      sendJson(socket,{t:"pong",at:now,clientAt:finiteNumber(payload.clientAt,0)});
+      const diag=payload.diag===1?{stateAgeMs:Math.max(0,now-finiteNumber(me.lastStateAt,now)),lastStateGapMs:Math.max(0,finiteNumber(me.diagLastStateGapMs,0)),maxStateGapMs:Math.max(0,finiteNumber(me.diagMaxStateGapMs,0)),moveBudgetMs:Math.round(Math.max(0,finiteNumber(me.moveBudgetSec,0))*1000)}:undefined;
+      sendJson(socket,{t:"pong",at:now,clientAt:finiteNumber(payload.clientAt,0),net:diag});
+      if(diag){me={...me,diagMaxStateGapMs:finiteNumber(me.diagLastStateGapMs,0)};socket.serializeAttachment(me);}
       await this.stepSimulation(now, meta);
     }
   }
@@ -1719,11 +1728,11 @@ export class GameRoom {
     const budgetElapsed=Math.max(elapsed,clientElapsed);
     if(me.traversal){
       const desiredY=finiteNumber(payload.y,me.y),error=Math.hypot(desiredX-me.x,desiredY-me.y,desiredZ-me.z);
-      return {corrected:error>.18,verticalCorrected:false,player:{...me,lastStateAt:now,movementClockAt,lastMovementClientAt:movementClientAt,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,adsAmount:0,moveSpeed:0}};
+      return {corrected:error>.18,verticalCorrected:false,reason:error>.18?'traversal_divergence':'',horizontalError:error,verticalError:0,speedViolation:false,player:{...me,lastStateAt:now,movementClockAt,lastMovementClientAt:movementClientAt,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,adsAmount:0,moveSpeed:0}};
     }
     if(me.ladder){
       const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);
-      if(!ladder)return {corrected:true,verticalCorrected:true,player:{...me,ladder:null,lastStateAt:now,movementClockAt,lastMovementClientAt:movementClientAt}};
+      if(!ladder)return {corrected:true,verticalCorrected:true,reason:'ladder_missing',horizontalError:0,verticalError:0,speedViolation:false,player:{...me,ladder:null,lastStateAt:now,movementClockAt,lastMovementClientAt:movementClientAt}};
       const desiredY=finiteNumber(payload.y,me.y),cp=ladderClimbPoint(ladder,PLAYER_RADIUS);
       const ladderMove=clamp(finiteNumber(payload.ladderMove,0),-1,1),reportedDeltaY=desiredY-me.y,reportedDistance=Math.abs(reportedDeltaY);
       // Ladder movement uses the same monotonic server-time token budget as
@@ -1737,7 +1746,7 @@ export class GameRoom {
       const maxDistance=LADDER_CLIMB_SPEED*moveBudgetSec,acceptedDistance=Math.min(maxDistance,reportedDistance),acceptedDelta=reportedDistance>1e-7?Math.sign(reportedDeltaY)*acceptedDistance:0;
       if(LADDER_CLIMB_SPEED>1e-6)moveBudgetSec=Math.max(0,moveBudgetSec-acceptedDistance/LADDER_CLIMB_SPEED);
       const nextY=clamp(me.y+acceptedDelta,ladder.bottomY,ladder.topY-.10),speedViolation=reportedDistance>maxDistance+.06,horizontalError=Math.hypot(desiredX-cp.x,desiredZ-cp.z);
-      return {corrected:speedViolation||horizontalError>.10,verticalCorrected:speedViolation,player:{...me,x:cp.x,y:nextY,z:cp.z,lastStateAt:now,lastVerticalAt:now,movementClockAt,lastMovementClientAt:movementClientAt,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,adsAmount:0,crouched:false,moveSpeed:Math.abs(ladderMove)*LADDER_CLIMB_SPEED,verticalVelocity:0,serverGrounded:false,moveBudgetSec}};
+      return {corrected:speedViolation||horizontalError>.10,verticalCorrected:speedViolation,reason:speedViolation?'ladder_speed':horizontalError>.10?'ladder_horizontal':'',horizontalError,verticalError:Math.abs(nextY-desiredY),speedViolation,player:{...me,x:cp.x,y:nextY,z:cp.z,lastStateAt:now,lastVerticalAt:now,movementClockAt,lastMovementClientAt:movementClientAt,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,adsAmount:0,crouched:false,moveSpeed:Math.abs(ladderMove)*LADDER_CLIMB_SPEED,verticalVelocity:0,serverGrounded:false,moveBudgetSec}};
     }
     const flashPower = activeFlashPower(me, now);
     const ads = flashPower > 0.12 || me.combatAction!=='ready' ? false : !!payload.ads;
@@ -1870,6 +1879,10 @@ export class GameRoom {
     return {
       corrected,
       verticalCorrected,
+      reason:verticalCorrected?(ceilingHit?'ceiling':'vertical'):horizontalError>.10?(speedViolation?'speed_horizontal':'horizontal'):'',
+      horizontalError,
+      verticalError,
+      speedViolation,
       player: {
         ...me,
         x,
