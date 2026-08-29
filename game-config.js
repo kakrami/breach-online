@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.39.3';
-export const PROTOCOL_VERSION = 74;
+export const APP_VERSION = '1.40.0';
+export const PROTOCOL_VERSION = 75;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -20,16 +20,26 @@ export const WEAPON_ORDER = ['pistol','akimbo1887','assault','ump','machineGun',
 export const PRIMARY_WEAPONS = ['assault','ump','machineGun','sniper','grenadeLauncher','rpg'];
 export const SECONDARY_WEAPONS = ['pistol','shotgun','semiShotgun','akimbo1887'];
 
-export const ATTACHMENT_SLOTS = Object.freeze(['optic','muzzle','magazine','underbarrel','stock']);
+export const ATTACHMENT_SLOTS = Object.freeze(['optic','muzzle','barrel','magazine','underbarrel','stock']);
 export const ATTACHMENTS = Object.freeze({
-  redDot:Object.freeze({id:'redDot',slot:'optic',name:'RED DOT',short:'RDS',description:'Cleaner sight picture · slight zoom · +6% ADS time.',compatible:Object.freeze(['assault','ump','machineGun','semiShotgun']),mods:Object.freeze({adsInMs:1.06}),adsFov:44}),
+  redDot:Object.freeze({id:'redDot',slot:'optic',name:'RED DOT',short:'RDS',description:'Clean reflex sight · slight zoom · +6% ADS time.',compatible:Object.freeze(['assault','ump','machineGun','semiShotgun']),mods:Object.freeze({adsInMs:1.06}),adsFov:44}),
+  holoSight:Object.freeze({id:'holoSight',slot:'optic',name:'HOLOGRAPHIC SIGHT',short:'HOLO',description:'Large sight window · slight zoom · +10% ADS time.',compatible:Object.freeze(['assault','ump','machineGun','semiShotgun']),mods:Object.freeze({adsInMs:1.10}),adsFov:43}),
+  combatOptic:Object.freeze({id:'combatOptic',slot:'optic',name:'2× COMBAT OPTIC',short:'2X',description:'2× mid-range optic · +16% ADS time · -4% ADS movement.',compatible:Object.freeze(['assault','machineGun','semiShotgun']),mods:Object.freeze({adsInMs:1.16}),adsMoveAdd:-.04,adsFov:34}),
+  variableScope:Object.freeze({id:'variableScope',slot:'optic',name:'VARIABLE SCOPE',short:'VAR',description:'3× / 6× sniper optic · wider view · +10% ADS time.',compatible:Object.freeze(['sniper']),mods:Object.freeze({adsInMs:1.10}),adsFov:24,highAdsFov:12.5}),
   suppressor:Object.freeze({id:'suppressor',slot:'muzzle',name:'SUPPRESSOR',short:'SUP',description:'Quieter / off radar · -10% velocity & range.',compatible:Object.freeze(['pistol','assault','ump','machineGun','sniper']),mods:Object.freeze({bulletSpeed:.90,falloffStart:.90,falloffEnd:.90}),soundScale:.88}),
   compensator:Object.freeze({id:'compensator',slot:'muzzle',name:'COMPENSATOR',short:'COMP',description:'-18% recoil · +8% ADS time.',compatible:Object.freeze(['pistol','assault','ump','machineGun']),mods:Object.freeze({recoilPitch:.82,recoilYaw:.82,recoilMaxPitch:.88,recoilMaxYaw:.88,adsInMs:1.08})}),
+  shotgunChoke:Object.freeze({id:'shotgunChoke',slot:'muzzle',name:'SHOTGUN CHOKE',short:'CHOKE',description:'-28% pellet spread · +10% ADS time.',compatible:Object.freeze(['shotgun','semiShotgun']),mods:Object.freeze({adsInMs:1.10}),accuracyMods:Object.freeze({hipDeg:.72,adsDeg:.72,moveDeg:.85,airborneDeg:.90,slideDeg:.90})}),
+  heavyBarrel:Object.freeze({id:'heavyBarrel',slot:'barrel',name:'HEAVY BARREL',short:'HEAVY',description:'+12% velocity · +15% range · slower handling.',compatible:Object.freeze(['assault','ump','machineGun','sniper']),mods:Object.freeze({bulletSpeed:1.12,falloffStart:1.15,falloffEnd:1.15,adsInMs:1.12,sprintOutMs:1.08}),adsMoveAdd:-.04}),
+  shortBarrel:Object.freeze({id:'shortBarrel',slot:'barrel',name:'SHORT BARREL',short:'SHORT',description:'Faster ADS / sprint-out · -14% range · more horizontal recoil.',compatible:Object.freeze(['assault','ump']),mods:Object.freeze({bulletSpeed:.90,falloffStart:.86,falloffEnd:.86,adsInMs:.90,sprintOutMs:.86,recoilYaw:1.08,recoilMaxYaw:1.06}),adsMoveAdd:.05}),
+  shotgunLongBarrel:Object.freeze({id:'shotgunLongBarrel',slot:'barrel',name:'LONG BARREL',short:'LONG',description:'+22% pellet range · tighter spread · slower handling.',compatible:Object.freeze(['shotgun','semiShotgun']),mods:Object.freeze({bulletSpeed:1.08,falloffStart:1.22,falloffEnd:1.22,adsInMs:1.12,sprintOutMs:1.10}),accuracyMods:Object.freeze({hipDeg:.90,adsDeg:.88,moveDeg:.94})}),
   extendedMag:Object.freeze({id:'extendedMag',slot:'magazine',name:'EXTENDED MAG',short:'EXT',description:'More ammo · +12% reload time.',compatible:Object.freeze(['pistol','assault','ump','machineGun','semiShotgun','sniper']),mods:Object.freeze({reloadMs:1.12}),magAdd:Object.freeze({pistol:6,assault:15,ump:15,machineGun:25,semiShotgun:4,sniper:2})}),
   fastMag:Object.freeze({id:'fastMag',slot:'magazine',name:'FAST MAG',short:'FAST',description:'-22% reload time · +6% ADS time.',compatible:Object.freeze(['pistol','assault','ump','semiShotgun','sniper']),mods:Object.freeze({reloadMs:.78,adsInMs:1.06})}),
   verticalGrip:Object.freeze({id:'verticalGrip',slot:'underbarrel',name:'VERTICAL GRIP',short:'GRIP',description:'-16% recoil · +8% ADS time.',compatible:Object.freeze(['assault','ump','machineGun']),mods:Object.freeze({recoilPitch:.84,recoilYaw:.84,recoilMaxPitch:.90,recoilMaxYaw:.90,adsInMs:1.08})}),
-  lightweightStock:Object.freeze({id:'lightweightStock',slot:'stock',name:'LIGHTWEIGHT STOCK',short:'STOCK',description:'+8% ADS movement · +12% horizontal recoil.',compatible:Object.freeze(['assault','ump','machineGun']),mods:Object.freeze({recoilYaw:1.12,recoilMaxYaw:1.10}),adsMoveAdd:.08}),
-  shotgunChoke:Object.freeze({id:'shotgunChoke',slot:'muzzle',name:'SHOTGUN CHOKE',short:'CHOKE',description:'-28% pellet spread · +10% ADS time.',compatible:Object.freeze(['shotgun','semiShotgun']),mods:Object.freeze({adsInMs:1.10}),accuracyMods:Object.freeze({hipDeg:.72,adsDeg:.72,moveDeg:.85,airborneDeg:.90,slideDeg:.90})}),
+  angledGrip:Object.freeze({id:'angledGrip',slot:'underbarrel',name:'ANGLED GRIP',short:'ANG',description:'-12% ADS time · faster sprint-out · +8% recoil.',compatible:Object.freeze(['assault','ump','machineGun']),mods:Object.freeze({adsInMs:.88,sprintOutMs:.92,recoilPitch:1.08,recoilYaw:1.08,recoilMaxPitch:1.04,recoilMaxYaw:1.06})}),
+  bipod:Object.freeze({id:'bipod',slot:'underbarrel',name:'BIPOD',short:'BIPOD',description:'-38% recoil while crouched, grounded, and nearly still.',compatible:Object.freeze(['machineGun']),mods:Object.freeze({}),conditionalRecoilScale:.62}),
+  lightweightStock:Object.freeze({id:'lightweightStock',slot:'stock',name:'LIGHTWEIGHT STOCK',short:'LIGHT',description:'+8% ADS movement · +12% horizontal recoil.',compatible:Object.freeze(['assault','ump','machineGun']),mods:Object.freeze({recoilYaw:1.12,recoilMaxYaw:1.10}),adsMoveAdd:.08}),
+  fullStock:Object.freeze({id:'fullStock',slot:'stock',name:'FULL STOCK',short:'FULL',description:'Better recoil control · -8% ADS movement · +8% ADS time.',compatible:Object.freeze(['assault','ump','machineGun']),mods:Object.freeze({recoilPitch:.88,recoilYaw:.84,recoilMaxPitch:.90,recoilMaxYaw:.86,adsInMs:1.08}),adsMoveAdd:-.08}),
+  compactStock:Object.freeze({id:'compactStock',slot:'stock',name:'COMPACT STOCK',short:'COMPCT',description:'Faster ADS / movement · substantially more recoil.',compatible:Object.freeze(['assault','ump']),mods:Object.freeze({adsInMs:.92,sprintOutMs:.90,recoilPitch:1.12,recoilYaw:1.24,recoilMaxPitch:1.10,recoilMaxYaw:1.20}),adsMoveAdd:.10}),
 });
 export function attachmentSpec(id){return ATTACHMENTS[String(id||'')]||null;}
 export function attachmentOptionsForWeapon(weapon,slot=''){
