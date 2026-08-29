@@ -419,7 +419,7 @@ function spawnForMode(world,mode,team,index){return world.spawns.spawnForMode(no
 function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
   const active=normalizeLoadout(player?.pendingLoadout||player,{primaryWeapon:player?.primaryWeapon,secondaryWeapon:player?.secondaryWeapon,tactical:player?.tactical,lethal:player?.lethal});
   const next={
-    ...player,...spawn,team,spawnProtectedUntil:Math.max(0,finiteNumber(spawn?.spawnProtectedUntil,0)),pendingTeam:'',pendingLoadout:null,primaryWeapon:active.primaryWeapon,secondaryWeapon:active.secondaryWeapon,tactical:active.tactical,lethal:active.lethal,hp:100,wastedUntil:0,regenAt:0,
+    ...player,...spawn,team,yaw:finiteNumber(spawn?.yaw,finiteNumber(player?.yaw,0)),pitch:0,spawnProtectedUntil:Math.max(0,finiteNumber(spawn?.spawnProtectedUntil,0)),pendingTeam:'',pendingLoadout:null,primaryWeapon:active.primaryWeapon,secondaryWeapon:active.secondaryWeapon,tactical:active.tactical,lethal:active.lethal,hp:100,wastedUntil:0,regenAt:0,
     weapon:active.primaryWeapon,ammo:freshAmmo(),equipment:freshEquipment(active.tactical,active.lethal),reloadAt:0,reloadWeapon:'',
     fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,combatAction:'ready',combatActionKind:'',combatReadyAt:0,sprintFireReadyAt:0,ads:false,adsAmount:0,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,
     verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,lastMovementClientAt:now,lastStateSeq:0,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
@@ -891,7 +891,7 @@ export class GameRoom {
 
   noteSpawn(spawn,team,id,now=Date.now()){
     if(!spawn)return;this.pruneSpawnHistory(now);
-    this.recentSpawns.push({x:finiteNumber(spawn.x,0),z:finiteNumber(spawn.z,0),team:safeTeam(team),id:String(id||''),at:now});
+    this.recentSpawns.push({x:finiteNumber(spawn.x,0),z:finiteNumber(spawn.z,0),team:safeTeam(team),id:String(id||''),cluster:String(spawn.cluster||''),at:now});
   }
 
   noteGunfire(shot,now=Date.now()){
@@ -915,12 +915,12 @@ export class GameRoom {
       lineOfSight:(spawn,actor)=>this.actorLineOfSight(spawn,actor,now),
     });
     const protectionMs=result.emergency?Math.max(0,finiteNumber(this.world.spawns.SPAWN_POLICY?.emergencyProtectionMs,0)):0;
-    const spawn={x:result.x,y:result.y,z:result.z,spawnProtectedUntil:protectionMs?now+protectionMs:0};this.noteSpawn(spawn,team,excludeId,now);return spawn;
+    const spawn={x:result.x,y:result.y,z:result.z,yaw:finiteNumber(result.yaw,0),cluster:String(result.cluster||''),spawnProtectedUntil:protectionMs?now+protectionMs:0};this.noteSpawn(spawn,team,excludeId,now);return spawn;
   }
 
   freezeHumanState(player,now=Date.now()){
     const support=this.world.geometry.worldSupportHeight(player.x,player.z,player.y,false);
-    return {...player,y:support,ads:false,adsAmount:0,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,lastMovementClientAt:now,lastStateSeq:0,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0,velocityX:0,velocityZ:0};
+    return {...player,y:support,ads:false,adsAmount:0,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,lastMovementClientAt:now,lastStateSeq:0,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0,velocityX:0,velocityZ:0,reloadAt:0,reloadWeapon:'',weaponReadyAt:0,equipmentReadyAt:0,combatAction:'ready',combatActionKind:'',combatReadyAt:0,sprintFireReadyAt:0,fireReadyAt:normalizeFireReady()};
   }
 
   broadcastMatch(meta,now=Date.now(),extra={}){this.broadcast({t:'match',match:publicMatchState(meta.match,now),custom:this.isCustomMatch(meta),...extra});}
@@ -2522,7 +2522,10 @@ export class GameRoom {
     if (wasted) {
       this.noteDeath(target,now);
       target.traversal = null;
+      target.ladder = null;
       target.spawnProtectedUntil=0;
+      target.ads=false;target.adsAmount=0;target.crouched=false;target.sprinting=false;target.sliding=false;target.slideUntil=0;target.moveSpeed=0;
+      target.reloadAt=0;target.reloadWeapon='';target.weaponReadyAt=0;target.equipmentReadyAt=0;target.combatAction='ready';target.combatActionKind='';target.combatReadyAt=0;target.sprintFireReadyAt=0;
       target.wastedUntil = now + settings.combat.respawnMs;
       target.deaths = Math.max(0, Math.floor(finiteNumber(target.deaths, 0))) + 1;
       target.multiKillCount = 0;
@@ -2554,7 +2557,9 @@ export class GameRoom {
     if (wasted) {
       this.noteDeath(bot,now);
       bot.traversal = null;
+      bot.ladder = null;
       bot.spawnProtectedUntil=0;
+      bot.reloadAt=0;bot.reloadWeapon='';bot.moveSpeed=0;bot.velocityX=0;bot.velocityZ=0;
       bot.wastedUntil = now + settings.combat.respawnMs;
       bot.deaths = Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))) + 1;
       bot.multiKillCount = 0;
