@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.37.71';
-export const PROTOCOL_VERSION = 72;
+export const APP_VERSION = '1.38.0';
+export const PROTOCOL_VERSION = 73;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -19,6 +19,43 @@ export function mapSpec(value){return MAPS[normalizeMapId(value)];}
 export const WEAPON_ORDER = ['pistol','akimbo1887','assault','ump','machineGun','shotgun','semiShotgun','sniper','grenadeLauncher','rpg'];
 export const PRIMARY_WEAPONS = ['assault','ump','machineGun','sniper','grenadeLauncher','rpg'];
 export const SECONDARY_WEAPONS = ['pistol','shotgun','semiShotgun','akimbo1887'];
+
+export const ATTACHMENT_SLOTS = Object.freeze(['optic','muzzle','magazine','underbarrel','stock']);
+export const ATTACHMENTS = Object.freeze({
+  redDot:Object.freeze({id:'redDot',slot:'optic',name:'RED DOT',short:'RDS',description:'1× sight picture · +6% ADS time.',compatible:Object.freeze(['assault','ump','machineGun','semiShotgun']),mods:Object.freeze({adsInMs:1.06}),adsFov:50}),
+  suppressor:Object.freeze({id:'suppressor',slot:'muzzle',name:'SUPPRESSOR',short:'SUP',description:'Quieter / off radar · -10% velocity & range.',compatible:Object.freeze(['pistol','assault','ump','machineGun','sniper']),mods:Object.freeze({bulletSpeed:.90,falloffStart:.90,falloffEnd:.90}),soundScale:.52}),
+  compensator:Object.freeze({id:'compensator',slot:'muzzle',name:'COMPENSATOR',short:'COMP',description:'-18% recoil · +8% ADS time.',compatible:Object.freeze(['pistol','assault','ump','machineGun']),mods:Object.freeze({recoilPitch:.82,recoilYaw:.82,recoilMaxPitch:.88,recoilMaxYaw:.88,adsInMs:1.08})}),
+  extendedMag:Object.freeze({id:'extendedMag',slot:'magazine',name:'EXTENDED MAG',short:'EXT',description:'More ammo · +12% reload time.',compatible:Object.freeze(['pistol','assault','ump','machineGun','semiShotgun','sniper']),mods:Object.freeze({reloadMs:1.12}),magAdd:Object.freeze({pistol:6,assault:15,ump:15,machineGun:25,semiShotgun:4,sniper:2})}),
+  fastMag:Object.freeze({id:'fastMag',slot:'magazine',name:'FAST MAG',short:'FAST',description:'-22% reload time · +6% ADS time.',compatible:Object.freeze(['pistol','assault','ump','semiShotgun','sniper']),mods:Object.freeze({reloadMs:.78,adsInMs:1.06})}),
+  verticalGrip:Object.freeze({id:'verticalGrip',slot:'underbarrel',name:'VERTICAL GRIP',short:'GRIP',description:'-16% recoil · +8% ADS time.',compatible:Object.freeze(['assault','ump','machineGun']),mods:Object.freeze({recoilPitch:.84,recoilYaw:.84,recoilMaxPitch:.90,recoilMaxYaw:.90,adsInMs:1.08})}),
+  lightweightStock:Object.freeze({id:'lightweightStock',slot:'stock',name:'LIGHTWEIGHT STOCK',short:'STOCK',description:'+8% ADS movement · +12% horizontal recoil.',compatible:Object.freeze(['assault','ump','machineGun']),mods:Object.freeze({recoilYaw:1.12,recoilMaxYaw:1.10}),adsMoveAdd:.08}),
+  shotgunChoke:Object.freeze({id:'shotgunChoke',slot:'muzzle',name:'SHOTGUN CHOKE',short:'CHOKE',description:'-28% pellet spread · +10% ADS time.',compatible:Object.freeze(['shotgun','semiShotgun']),mods:Object.freeze({adsInMs:1.10}),accuracyMods:Object.freeze({hipDeg:.72,adsDeg:.72,moveDeg:.85,airborneDeg:.90,slideDeg:.90})}),
+});
+export function attachmentSpec(id){return ATTACHMENTS[String(id||'')]||null;}
+export function attachmentOptionsForWeapon(weapon,slot=''){
+  const safe=Object.prototype.hasOwnProperty.call(WEAPON_SPECS,weapon)?weapon:'pistol',wanted=String(slot||'');
+  return Object.values(ATTACHMENTS).filter(item=>(!wanted||item.slot===wanted)&&item.compatible.includes(safe));
+}
+export function normalizeWeaponAttachments(weapon,value={}){
+  const safe=Object.prototype.hasOwnProperty.call(WEAPON_SPECS,weapon)?weapon:'pistol',raw=value&&typeof value==='object'?value:{},out={};
+  for(const slot of ATTACHMENT_SLOTS){const id=String(raw[slot]||''),spec=ATTACHMENTS[id];out[slot]=spec&&spec.slot===slot&&spec.compatible.includes(safe)?id:'';}
+  return out;
+}
+export function attachmentIdsForWeapon(weapon,value={}){const normalized=normalizeWeaponAttachments(weapon,value);return ATTACHMENT_SLOTS.map(slot=>normalized[slot]).filter(Boolean);}
+export function weaponHasAttachment(weapon,value,id){return attachmentIdsForWeapon(weapon,value).includes(String(id||''));}
+function applyNumericMods(target,mods){for(const [key,mult] of Object.entries(mods||{})){if(Number.isFinite(Number(target[key]))&&Number.isFinite(Number(mult)))target[key]=Number(target[key])*Number(mult);}}
+export function resolveWeaponSpec(weapon,attachments={}){
+  const safe=Object.prototype.hasOwnProperty.call(WEAPON_SPECS,weapon)?weapon:'pistol',out={...WEAPON_SPECS[safe]},normalized=normalizeWeaponAttachments(safe,attachments);
+  for(const id of attachmentIdsForWeapon(safe,normalized)){const item=ATTACHMENTS[id];applyNumericMods(out,item.mods);if(item.adsFov!=null)out.adsFov=Number(item.adsFov);if(item.adsMoveAdd)out.adsMoveSpeedScale=Math.max(.5,Math.min(1,Number(out.adsMoveSpeedScale||1)+Number(item.adsMoveAdd)));if(item.magAdd?.[safe])out.mag=Math.max(1,Math.round(Number(out.mag||1)+Number(item.magAdd[safe])));}
+  for(const key of ['mag','reloadMs','cooldownMs','adsInMs','adsOutMs','sprintOutMs','sprintAdsMs'])if(Number.isFinite(Number(out[key])))out[key]=Math.max(key==='mag'?1:0,Math.round(Number(out[key])));
+  return out;
+}
+export function resolveWeaponAccuracy(weapon,attachments={}){
+  const safe=Object.prototype.hasOwnProperty.call(WEAPON_ACCURACY,weapon)?weapon:'pistol',out={...WEAPON_ACCURACY[safe]};
+  for(const id of attachmentIdsForWeapon(safe,attachments))applyNumericMods(out,ATTACHMENTS[id].accuracyMods);
+  return out;
+}
+export function attachmentSoundScale(weapon,attachments={}){let scale=1;for(const id of attachmentIdsForWeapon(weapon,attachments)){const value=Number(ATTACHMENTS[id]?.soundScale);if(Number.isFinite(value))scale*=value;}return Math.max(.2,Math.min(1,scale));}
 export const WEAPON_SPECS = {
   // Handling fields are part of the weapon role, not cosmetic animation values.
   // adsInMs/adsOutMs drive the actual ADS transition and adsMoveSpeedScale is
@@ -59,8 +96,8 @@ export function weaponHeatAfterShot(weapon,heat){
   const accuracy=WEAPON_ACCURACY[weapon]||WEAPON_ACCURACY.pistol,maxHeat=Math.max(1,(Number(accuracy.fireMaxDeg)||0)/Math.max(.001,Number(accuracy.fireDeg)||.001));
   return Math.min(maxHeat,Math.max(0,Number(heat)||0)+1);
 }
-export function weaponSpreadRadians(weapon,moveSpeed,runSpeed,adsAmount=0,crouched=false,airborne=false,shotHeat=0,sliding=false){
-  const accuracy=WEAPON_ACCURACY[weapon]||WEAPON_ACCURACY.pistol,ads=clamp01(adsAmount),moveRatio=Math.max(0,Math.min(1,(Number(moveSpeed)||0)/Math.max(.1,Number(runSpeed)||.1)));
+export function weaponSpreadRadians(weapon,moveSpeed,runSpeed,adsAmount=0,crouched=false,airborne=false,shotHeat=0,sliding=false,attachments={}){
+  const accuracy=resolveWeaponAccuracy(weapon,attachments),ads=clamp01(adsAmount),moveRatio=Math.max(0,Math.min(1,(Number(moveSpeed)||0)/Math.max(.1,Number(runSpeed)||.1)));
   // CoD-style iron/scope ADS is sight-authoritative for single-projectile guns:
   // at full ADS the visible sight point is the shot direction. Recoil moves that
   // aim ray; a hidden random cone must not move the bullet away from the post.
@@ -75,8 +112,8 @@ export function weaponSpreadRadians(weapon,moveSpeed,runSpeed,adsAmount=0,crouch
   return Math.max(0,degrees)*Math.PI/180;
 }
 
-export function weaponDamageAtDistance(weapon,baseDamage,distance,headshot=false){
-  const spec=WEAPON_SPECS[weapon]||WEAPON_SPECS.pistol,base=Math.max(0,Number(baseDamage)||0),d=Math.max(0,Number(distance)||0);
+export function weaponDamageAtDistance(weapon,baseDamage,distance,headshot=false,attachments={}){
+  const spec=resolveWeaponSpec(weapon,attachments),base=Math.max(0,Number(baseDamage)||0),d=Math.max(0,Number(distance)||0);
   const start=Math.max(0,Number(spec.falloffStart)||0),end=Math.max(start+.001,Number(spec.falloffEnd)||start+.001),minScale=Math.max(0,Math.min(1,Number(spec.minDamageScale)||1));
   const t=Math.max(0,Math.min(1,(d-start)/(end-start))),scaled=base*(1-(1-minScale)*t);
   if(!headshot)return scaled;
