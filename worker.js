@@ -416,6 +416,10 @@ function publicBot(bot) {
 }
 
 function sendLoadout(socket, me, extra = {}) { const base=normalizeLoadout(me),includeClasses=extra.action==='loadout'||extra.includeClasses===true,payload={t:'loadout',weapon:safeWeapon(me.weapon),primaryWeapon:safePrimaryWeapon(me.primaryWeapon),secondaryWeapon:safeSecondaryWeapon(me.secondaryWeapon),primaryAttachments:normalizeWeaponAttachments(safePrimaryWeapon(me.primaryWeapon),me.primaryAttachments),secondaryAttachments:normalizeWeaponAttachments(safeSecondaryWeapon(me.secondaryWeapon),me.secondaryAttachments),tactical:safeTactical(me.tactical),lethal:safeLethal(me.lethal),pendingLoadout:me.pendingLoadout?normalizeLoadout(me.pendingLoadout,base):null,ammo:me.ammo,equipment:me.equipment,reloadAt:me.reloadAt||0,reloadWeapon:me.reloadWeapon||'',...extra};if(includeClasses)Object.assign(payload,{loadoutClasses:normalizeLoadoutClasses(me.loadoutClasses,base),activeClassId:normalizeLoadoutClassId(me.activeClassId),pendingClassId:me.pendingClassId?normalizeLoadoutClassId(me.pendingClassId):''});sendJson(socket,payload); }
+// Fire acknowledgements are deliberately lean. Automatic fire must not send the
+// complete loadout/attachment payload every round: those packets arrive at network-
+// jittered times and previously made the client re-sync weapon/UI state while aiming.
+function sendFireAck(socket, me, extra = {}) { const weapon=safeWeapon(me.weapon);sendJson(socket,{t:'fireAck',weapon,ammoCount:Math.max(0,Math.floor(finiteNumber(me.ammo?.[weapon],0))),reloadAt:me.reloadAt||0,reloadWeapon:me.reloadWeapon||'',...extra}); }
 
 function spawnForTeam(world,team,index){return world.spawns.spawnForMode('tdm',safeTeam(team),index,world.geometry.terrainHeight);}
 function spawnForMode(world,mode,team,index){return world.spawns.spawnForMode(normalizeGameMode(mode),safeTeam(team),index,world.geometry.terrainHeight);}
@@ -1433,19 +1437,19 @@ export class GameRoom {
     }
 
     if (payload.t === "fire") {
-      if(!matchAllowsCombat(meta.match)){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'match_inactive'});return;}
+      if(!matchAllowsCombat(meta.match)){sendFireAck(socket,me,{action:'fire',accepted:false,reason:'match_inactive'});return;}
       const requestedWeapon=safeWeapon(payload.weapon||me.weapon);
-      if(requestedWeapon!==me.weapon){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'weapon_mismatch'});return;}
+      if(requestedWeapon!==me.weapon){sendFireAck(socket,me,{action:'fire',accepted:false,reason:'weapon_mismatch'});return;}
       const weapon=safeWeapon(me.weapon),attachments=attachmentsForPlayerWeapon(me,weapon),spec=effectiveWeaponRules(settings,me,weapon),resolvedSpec=spec.spec,unlimited=!!me.godMode,hand=weapon==='akimbo1887'?(payload.hand==='left'?'left':'right'):'';
-      if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'dead'});return;}
-      if(me.traversal){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'traversing'});return;}
-      if(me.combatAction!=='ready'||now<finiteNumber(me.combatReadyAt,0)){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'equipment',retryAfterMs:Math.max(0,Math.ceil(finiteNumber(me.combatReadyAt,0)-now))});return;}
+      if(me.hp<=0||now<me.wastedUntil){sendFireAck(socket,me,{action:'fire',accepted:false,reason:'dead'});return;}
+      if(me.traversal){sendFireAck(socket,me,{action:'fire',accepted:false,reason:'traversing'});return;}
+      if(me.combatAction!=='ready'||now<finiteNumber(me.combatReadyAt,0)){sendFireAck(socket,me,{action:'fire',accepted:false,reason:'equipment',retryAfterMs:Math.max(0,Math.ceil(finiteNumber(me.combatReadyAt,0)-now))});return;}
       const interruptShotgunReload=!unlimited&&!!me.reloadAt&&weapon==='shotgun'&&me.ammo.shotgun>0;
-      if(!unlimited&&me.reloadAt&&!interruptShotgunReload){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'reloading'});return;}
+      if(!unlimited&&me.reloadAt&&!interruptShotgunReload){sendFireAck(socket,me,{action:'fire',accepted:false,reason:'reloading'});return;}
       if(interruptShotgunReload){me.reloadAt=0;me.reloadWeapon='';this.broadcast({t:'reload',id:me.clientId,weapon:'shotgun',reloadAt:0},socket);}
       const switchReadyAt=finiteNumber(me.weaponReadyAt,0),fireKey=weapon==='akimbo1887'?(hand==='left'?'akimbo1887Left':'akimbo1887Right'):weapon,shotReadyAt=finiteNumber(me.fireReadyAt[fireKey],0),sprintReadyAt=finiteNumber(me.sprintFireReadyAt,0),readyAt=Math.max(switchReadyAt,shotReadyAt,sprintReadyAt);
-      if(now<readyAt){const retryAfterMs=Math.max(1,Math.ceil(readyAt-now)),reason=sprintReadyAt>=switchReadyAt&&sprintReadyAt>=shotReadyAt?'sprint_out':switchReadyAt>=shotReadyAt?'weapon_switch':'cooldown';sendLoadout(socket,me,{action:'fire',accepted:false,reason,retryAfterMs});return;}
-      if(!unlimited&&me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
+      if(now<readyAt){const retryAfterMs=Math.max(1,Math.ceil(readyAt-now)),reason=sprintReadyAt>=switchReadyAt&&sprintReadyAt>=shotReadyAt?'sprint_out':switchReadyAt>=shotReadyAt?'weapon_switch':'cooldown';sendFireAck(socket,me,{action:'fire',accepted:false,reason,retryAfterMs});return;}
+      if(!unlimited&&me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;socket.serializeAttachment(me);sendFireAck(socket,me,{action:'fire',accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
 
       const requestedShotAt=sanitizeCombatTimestamp(payload.shotAt,now),stateAt=finiteNumber(me.lastCombatStateAt,requestedShotAt),shotAt=clamp(requestedShotAt,stateAt-12,Math.min(now,stateAt+40)),shooterPose=this.combatPoseAt(me,shotAt),reticle=safeShotAim(me,payload),flashPower=activeFlashPower(me,now),targetRewindMs=(weapon==='grenadeLauncher'||weapon==='rpg')?0:clamp(finiteNumber(payload.viewDelayMs,0),0,MAX_TARGET_REWIND_MS);let shotYaw=reticle.yaw,shotPitch=reticle.pitch;
       if(flashPower>.02){const flashSpread=.035+flashPower*.22;shotYaw+=(Math.random()-.5)*2*flashSpread;shotPitch=clamp(shotPitch+(Math.random()-.5)*1.5*flashSpread,-1.4,1.4);me.ads=false;}
@@ -1461,7 +1465,7 @@ export class GameRoom {
         const a=shotgunPattern?shotgunPelletAngles(shotYaw,basePitch,spreadRadius,i,pellets,patternRotation):spreadShotAngles(shotYaw,basePitch,spreadRadius),launch=shotLaunchPose(shooterPose,a.yaw,a.pitch,!!shooterPose.crouched,weapon,this.world.serverCollision.segmentFirstWorldHitT),centerScale=i===0?Math.max(1,finiteNumber(resolvedSpec.centerPelletDamageScale,1)):1;
         this.spawnBullet({ownerId:me.clientId,hand,ownerTeam:safeTeam(me.team),damage:spec.damage*centerScale,weapon,attachments,lifetimeMs:resolvedSpec.lifetimeMs,x:launch.x,y:launch.y,z:launch.z,vx:launch.dx*spec.speed,vy:launch.dy*spec.speed,vz:launch.dz*spec.speed,now,shotAt,targetRewindMs,consumeAmmo:i===0&&!unlimited,primaryShot:i===0});
       }
-      sendLoadout(socket,me,{action:'fire',accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
+      sendFireAck(socket,me,{action:'fire',accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
     }
 
     if(payload.t==='throw'){
