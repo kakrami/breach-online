@@ -261,7 +261,7 @@ function safeTactical(value){return normalizeTactical(value);}
 function safeLethal(value){return normalizeLethal(value);}
 function normalizeLoadout(value,fallback={primaryWeapon:'assault',secondaryWeapon:'pistol',primaryAttachments:{},secondaryAttachments:{},tactical:'flash',lethal:'sticky'}){return normalizeLoadoutDefinition(value,fallback);}
 function attachmentsForPlayerWeapon(player,weapon){const safe=safeWeapon(weapon);return safe===safePrimaryWeapon(player?.primaryWeapon)?normalizeWeaponAttachments(safe,player?.primaryAttachments):safe===safeSecondaryWeapon(player?.secondaryWeapon)?normalizeWeaponAttachments(safe,player?.secondaryAttachments):normalizeWeaponAttachments(safe,{});}
-function effectiveWeaponRules(settings,player,weapon){const safe=safeWeapon(weapon),base=WEAPON_SPECS[safe],resolved=resolveWeaponSpec(safe,attachmentsForPlayerWeapon(player,safe)),rules=settings?.weapons?.[safe]||DEFAULT_WORLD_SETTINGS.weapons[safe];return{...rules,spec:resolved,speed:finiteNumber(rules.speed,base.bulletSpeed)*(resolved.bulletSpeed/base.bulletSpeed),reloadMs:finiteNumber(rules.reloadMs,base.reloadMs)*(resolved.reloadMs/base.reloadMs),cooldownMs:finiteNumber(rules.cooldownMs,base.cooldownMs)*(resolved.cooldownMs/base.cooldownMs)};}
+function effectiveWeaponRules(settings,player,weapon){const safe=safeWeapon(weapon),base=WEAPON_SPECS[safe],resolved=resolveWeaponSpec(safe,attachmentsForPlayerWeapon(player,safe)),rules=settings?.weapons?.[safe]||DEFAULT_WORLD_SETTINGS.weapons[safe];return{...rules,spec:resolved,damage:finiteNumber(rules.damage,base.damage)*(resolved.damage/base.damage),speed:finiteNumber(rules.speed,base.bulletSpeed)*(resolved.bulletSpeed/base.bulletSpeed),reloadMs:finiteNumber(rules.reloadMs,base.reloadMs)*(resolved.reloadMs/base.reloadMs),cooldownMs:finiteNumber(rules.cooldownMs,base.cooldownMs)*(resolved.cooldownMs/base.cooldownMs)};}
 function freshAmmo(player=null){return Object.fromEntries(WEAPON_ORDER.map(name=>[name,resolveWeaponSpec(name,player?attachmentsForPlayerWeapon(player,name):{}).mag]));}
 function normalizeFireReady(value){const v=value&&typeof value==='object'?value:{},out=Object.fromEntries(WEAPON_ORDER.map(name=>[name,Math.max(0,finiteNumber(v[name],0))]));out.akimbo1887Left=Math.max(0,finiteNumber(v.akimbo1887Left,0));out.akimbo1887Right=Math.max(0,finiteNumber(v.akimbo1887Right,0));return out;}
 function normalizeAmmo(value,player=null){const v=value&&typeof value==="object"?value:{};return Object.fromEntries(WEAPON_ORDER.map(name=>{const mag=resolveWeaponSpec(name,player?attachmentsForPlayerWeapon(player,name):{}).mag;return[name,clamp(Math.floor(finiteNumber(v[name],mag)),0,mag)]}));}
@@ -1506,8 +1506,12 @@ export class GameRoom {
       const rev=Math.max(0,Math.floor(finiteNumber(payload.rev,0))),base=normalizeLoadout(me),classes=normalizeLoadoutClasses(payload.loadoutClasses??me.loadoutClasses,base),classId=normalizeLoadoutClassId(payload.classId??me.activeClassId),classLoadout=loadoutClassById(classes,classId,base),next=normalizeLoadout(payload,classLoadout);
       const classIndex=classes.findIndex(item=>item.id===classId);if(classIndex>=0)classes[classIndex]={...classes[classIndex],...next,id:classId,name:normalizeLoadoutClassName(classes[classIndex].name,classIndex)};me.loadoutClasses=classes;
       if(matchAllowsLobbyEdits(meta.match)||me.godMode){
-        me.activeClassId=classId;me.pendingClassId='';me.primaryWeapon=next.primaryWeapon;me.secondaryWeapon=next.secondaryWeapon;me.primaryAttachments=next.primaryAttachments;me.secondaryAttachments=next.secondaryAttachments;me.tactical=next.tactical;me.lethal=next.lethal;me.pendingLoadout=null;me.weapon=next.primaryWeapon;me.ammo=freshAmmo(me);me.equipment=freshEquipment(next.tactical,next.lethal);me.reloadAt=0;me.reloadWeapon='';me.weaponReadyAt=0;me.combatAction='ready';me.combatActionKind='';me.combatReadyAt=0;
-        if(me.godMode)refreshUnlimitedResources(me);socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:false,rev});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me),rev});return;
+        const activate=payload.activate!==false;
+        if(activate){
+          me.activeClassId=classId;me.pendingClassId='';me.primaryWeapon=next.primaryWeapon;me.secondaryWeapon=next.secondaryWeapon;me.primaryAttachments=next.primaryAttachments;me.secondaryAttachments=next.secondaryAttachments;me.tactical=next.tactical;me.lethal=next.lethal;me.pendingLoadout=null;me.weapon=next.primaryWeapon;me.ammo=freshAmmo(me);me.equipment=freshEquipment(next.tactical,next.lethal);me.reloadAt=0;me.reloadWeapon='';me.weaponReadyAt=0;me.combatAction='ready';me.combatActionKind='';me.combatReadyAt=0;
+          if(me.godMode)refreshUnlimitedResources(me);
+        }
+        socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:false,rev});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me),rev});return;
       }
       me.pendingClassId=classId;me.pendingLoadout=next;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:true,pendingLoadout:next,rev});return;
     }
@@ -1969,7 +1973,7 @@ export class GameRoom {
       rpgBaseSpeed:safe==='rpg'?Math.max(1,Math.hypot(vx,vy,vz)):0,rpgBaseYaw:safe==='rpg'?Math.atan2(-vx,-vz):0,rpgBasePitch:safe==='rpg'?Math.asin(clamp(vy/Math.max(1,Math.hypot(vx,vy,vz)),-1,1)):0,rpgWanderPhase:safe==='rpg'?Math.random()*Math.PI*2:0,
     };
     this.bullets.set(id, bullet);
-    if(primaryShot)this.noteGunfire({x,y,z,team:bullet.ownerTeam,id:ownerId,weapon:safe},now);
+    if(primaryShot&&!bullet.suppressed)this.noteGunfire({x,y,z,team:bullet.ownerTeam,id:ownerId,weapon:safe},now);
     this.broadcast({ t: "shot", id, ownerId, ownerTeam: bullet.ownerTeam, damage, weapon: safe, hand:bullet.hand, suppressed:bullet.suppressed, lifetimeMs: bullet.lifetimeMs, gravity:bullet.gravity, x, y, z, vx, vy, vz, consumeAmmo, primaryShot:!!primaryShot, at: bornAt });
   }
 
