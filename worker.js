@@ -1506,12 +1506,8 @@ export class GameRoom {
       const rev=Math.max(0,Math.floor(finiteNumber(payload.rev,0))),base=normalizeLoadout(me),classes=normalizeLoadoutClasses(payload.loadoutClasses??me.loadoutClasses,base),classId=normalizeLoadoutClassId(payload.classId??me.activeClassId),classLoadout=loadoutClassById(classes,classId,base),next=normalizeLoadout(payload,classLoadout);
       const classIndex=classes.findIndex(item=>item.id===classId);if(classIndex>=0)classes[classIndex]={...classes[classIndex],...next,id:classId,name:normalizeLoadoutClassName(classes[classIndex].name,classIndex)};me.loadoutClasses=classes;
       if(matchAllowsLobbyEdits(meta.match)||me.godMode){
-        const activate=payload.activate!==false;
-        if(activate){
-          me.activeClassId=classId;me.pendingClassId='';me.primaryWeapon=next.primaryWeapon;me.secondaryWeapon=next.secondaryWeapon;me.primaryAttachments=next.primaryAttachments;me.secondaryAttachments=next.secondaryAttachments;me.tactical=next.tactical;me.lethal=next.lethal;me.pendingLoadout=null;me.weapon=next.primaryWeapon;me.ammo=freshAmmo(me);me.equipment=freshEquipment(next.tactical,next.lethal);me.reloadAt=0;me.reloadWeapon='';me.weaponReadyAt=0;me.combatAction='ready';me.combatActionKind='';me.combatReadyAt=0;
-          if(me.godMode)refreshUnlimitedResources(me);
-        }
-        socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:false,rev});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me),rev});return;
+        me.activeClassId=classId;me.pendingClassId='';me.primaryWeapon=next.primaryWeapon;me.secondaryWeapon=next.secondaryWeapon;me.primaryAttachments=next.primaryAttachments;me.secondaryAttachments=next.secondaryAttachments;me.tactical=next.tactical;me.lethal=next.lethal;me.pendingLoadout=null;me.weapon=next.primaryWeapon;me.ammo=freshAmmo(me);me.equipment=freshEquipment(next.tactical,next.lethal);me.reloadAt=0;me.reloadWeapon='';me.weaponReadyAt=0;me.combatAction='ready';me.combatActionKind='';me.combatReadyAt=0;
+        if(me.godMode)refreshUnlimitedResources(me);socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:false,rev});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me),rev});return;
       }
       me.pendingClassId=classId;me.pendingLoadout=next;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:true,pendingLoadout:next,rev});return;
     }
