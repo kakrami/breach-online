@@ -1,4 +1,4 @@
-import { ARENA_LIMIT, PLAYER_HEIGHT, PLAYER_RADIUS, WORLD_PLAYER_COLLIDERS, BUILDING_WINDOW_PORTALS, worldSupportHeight } from './world-geometry-yard.js?v=1.44.11';
+import { ARENA_LIMIT, PLAYER_HEIGHT, PLAYER_RADIUS, WORLD_PLAYER_COLLIDERS, BUILDING_WINDOW_PORTALS, worldSupportHeight } from './world-geometry-yard.js?v=1.44.16';
 
 const CELL_SIZE = 8;
 const CELL_HEIGHT = 3;
@@ -106,9 +106,9 @@ function colliderBlocksAt(collider,b,x,z,y,height,effectiveRadius){
 // below. Allow motion that strictly reduces every existing overlap. Without
 // this, slow walk-offs could freeze horizontally against the ledge until the
 // player fell all the way to the ground.
-export function worldMoveBlockedAt(x,z,y,fromX,fromZ,height=PLAYER_HEIGHT,radius=PLAYER_RADIUS){
-  const px=Number(x),pz=Number(z),py=Number(y),fx=Number(fromX),fz=Number(fromZ),h=Math.max(0,Number(height)||PLAYER_HEIGHT),r=Math.max(0,Number(radius)||PLAYER_RADIUS);
-  if(!Number.isFinite(px)||!Number.isFinite(pz)||!Number.isFinite(py)||!Number.isFinite(fx)||!Number.isFinite(fz))return true;
+export function worldMoveBlockedAt(x,z,y,fromX,fromZ,height=PLAYER_HEIGHT,radius=PLAYER_RADIUS,fromY=y){
+  const px=Number(x),pz=Number(z),py=Number(y),fx=Number(fromX),fz=Number(fromZ),fpy=Number(fromY),h=Math.max(0,Number(height)||PLAYER_HEIGHT),r=Math.max(0,Number(radius)||PLAYER_RADIUS);
+  if(!Number.isFinite(px)||!Number.isFinite(pz)||!Number.isFinite(py)||!Number.isFinite(fx)||!Number.isFinite(fz)||!Number.isFinite(fpy))return true;
   const effectiveRadius=Math.max(0,r-HORIZONTAL_SKIN);
   if(Math.abs(px)+effectiveRadius>ARENA_LIMIT||Math.abs(pz)+effectiveRadius>ARENA_LIMIT)return true;
   stamp=(stamp+1)>>>0;if(!stamp){for(const entry of entries)entry.visit=0;stamp=1;}
@@ -118,7 +118,7 @@ export function worldMoveBlockedAt(x,z,y,fromX,fromZ,height=PLAYER_HEIGHT,radius
     for(const entry of list){
       if(entry.visit===stamp)continue;entry.visit=stamp;const c=entry.collider;
       const b=entry.bounds;if(!colliderBlocksAt(c,b,px,pz,py,h,effectiveRadius))continue;
-      const wasBlocked=colliderBlocksAt(c,b,fx,fz,py,h,effectiveRadius);
+      const wasBlocked=colliderBlocksAt(c,b,fx,fz,fpy,h,effectiveRadius);
       if(!wasBlocked)return true;
       const before=horizontalSignedDistance(c,b,fx,fz),after=horizontalSignedDistance(c,b,px,pz);
       if(!(after>before+.0005))return true;

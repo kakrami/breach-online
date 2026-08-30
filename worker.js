@@ -1383,8 +1383,8 @@ export class GameRoom {
         const event={t:'ladder',id:me.clientId,seq,accepted:true,action:'dismount',end,x:me.x,y:me.y,z:me.z,ladder:null};sendJson(socket,event);this.broadcast(event,socket);return;
       }
       if(action==='detach'){
-        if(!me.ladder||seq<=previousSeq){reject('sequence');return;}const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);if(!ladder){reject('missing');return;}const cp=ladderClimbPoint(ladder,PLAYER_RADIUS),x=cp.x+Number(ladder.nx)*.24,z=cp.z+Number(ladder.nz)*.24;
-        if(this.world.worldCollision.worldBlockedAt(x,z,me.y,PLAYER_HEIGHT,PLAYER_RADIUS)){reject('blocked');return;}
+        if(!me.ladder||seq<=previousSeq){reject('sequence');return;}const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);if(!ladder){reject('missing');return;}const cp=ladderClimbPoint(ladder,PLAYER_RADIUS),x=cp.x+Number(ladder.nx)*.24,z=cp.z+Number(ladder.nz)*.24,solidActors=this.solidActors(me.clientId,now);
+        if(this.world.worldCollision.worldBlockedAt(x,z,me.y,PLAYER_HEIGHT,PLAYER_RADIUS)||this.actorBlocksAt(x,z,me.y,me.x,me.z,solidActors,PLAYER_HEIGHT)){reject('blocked');return;}
         me={...me,x,z,ladder:null,lastLadderSeq:seq,verticalVelocity:2.15,serverGrounded:false,lastVerticalAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC};socket.serializeAttachment(me);
         const event={t:'ladder',id:me.clientId,seq,accepted:true,action:'detach',x:me.x,y:me.y,z:me.z,verticalVelocity:me.verticalVelocity,ladder:null};sendJson(socket,event);this.broadcast(event,socket);return;
       }
@@ -1840,7 +1840,7 @@ export class GameRoom {
       x:me.x,y:me.y,z:me.z,dx,dz,grounded:serverGrounded,arenaLimit:ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,
       supportHeight:(x,z,y)=>this.world.geometry.worldSupportHeight(x,z,y,crouched),
       stepUpHeight:(x,z,y,maxStep)=>this.world.geometry.worldStepUpHeight(x,z,y,maxStep,PLAYER_RADIUS),maxStepHeight:MAX_STEP_HEIGHT,
-      blockedAt:(x,z,y,fromX,fromZ)=>this.world.worldCollision.worldMoveBlockedAt(x,z,y,fromX,fromZ,playerHeight,PLAYER_RADIUS)||this.actorBlocksAt(x,z,y,fromX,fromZ,solidActors,playerHeight),
+      blockedAt:(x,z,y,fromX,fromZ,fromY)=>this.world.worldCollision.worldMoveBlockedAt(x,z,y,fromX,fromZ,playerHeight,PLAYER_RADIUS,fromY)||this.actorBlocksAt(x,z,y,fromX,fromZ,solidActors,playerHeight),
     });
     let x=horizontal.x,z=horizontal.z,walkY=horizontal.y,followsSupport=horizontal.grounded;
 
@@ -2138,8 +2138,13 @@ export class GameRoom {
           x:bot.x,y:bot.y,z:bot.z,dx:ax*step,dz:az*step,grounded:true,arenaLimit:ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,
           supportHeight:(x,z,y)=>this.world.geometry.worldSupportHeight(x,z,y,false,.34),
           stepUpHeight:(x,z,y,maxStep)=>this.world.geometry.worldStepUpHeight(x,z,y,maxStep,.34),maxStepHeight:MAX_STEP_HEIGHT,
-          blockedAt:(x,z,y,fx,fz)=>this.world.worldCollision.worldMoveBlockedAt(x,z,y,fx,fz,PLAYER_HEIGHT,.34)||this.actorBlocksAt(x,z,y,fx,fz,solidActors,PLAYER_HEIGHT),
+          blockedAt:(x,z,y,fx,fz,fromY)=>this.world.worldCollision.worldMoveBlockedAt(x,z,y,fx,fz,PLAYER_HEIGHT,.34,fromY)||this.actorBlocksAt(x,z,y,fx,fz,solidActors,PLAYER_HEIGHT),
         });
+        // Bots do not run an airborne locomotion controller. If a grounded sweep
+        // would leave support, reject that step and let traversal/alternate-path
+        // logic handle the ledge instead of snapping the bot vertically to the
+        // terrain on the next line/frame.
+        if(!out.grounded){bot.velocityX=0;bot.velocityZ=0;bot.moveSpeed=0;return false;}
         const moved=Math.hypot(out.x-fromX,out.z-fromZ)>.005;bot.x=out.x;bot.y=out.y;bot.z=out.z;
         if(dt>1e-6){bot.velocityX=(out.x-fromX)/dt;bot.velocityZ=(out.z-fromZ)/dt;bot.moveSpeed=Math.hypot(bot.velocityX,bot.velocityZ);}else{bot.velocityX=0;bot.velocityZ=0;bot.moveSpeed=0;}
         return moved;
@@ -2175,7 +2180,7 @@ export class GameRoom {
           bot.patrolUntil=now+BOT_PATROL_MIN_MS+Math.random()*(BOT_PATROL_MAX_MS-BOT_PATROL_MIN_MS);
         }
         const goalX=memoryActive?finiteNumber(bot.lastKnownX,bot.x):finiteNumber(bot.patrolX,bot.x),goalZ=memoryActive?finiteNumber(bot.lastKnownZ,bot.z):finiteNumber(bot.patrolZ,bot.z),dx=goalX-bot.x,dz=goalZ-bot.z,d=Math.hypot(dx,dz);
-        if(d>.65){const ux=dx/d,uz=dz/d,speed=(memoryActive?settings.movement.runSpeed*.66:settings.movement.walkSpeed*.62)*profile.moveWalk,step=Math.min(d,speed*dt);bot.yaw=Math.atan2(-dx,-dz);if(!tryMove(ux,uz,step)&&!tryTraverse(ux,uz))tryMove(-uz,ux,step*.72)||tryMove(uz,-ux,step*.72);bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y);}
+        if(d>.65){const ux=dx/d,uz=dz/d,speed=(memoryActive?settings.movement.runSpeed*.66:settings.movement.walkSpeed*.62)*profile.moveWalk,step=Math.min(d,speed*dt);bot.yaw=Math.atan2(-dx,-dz);if(!tryMove(ux,uz,step)&&!tryTraverse(ux,uz))tryMove(-uz,ux,step*.72)||tryMove(uz,-ux,step*.72);}
         else if(memoryActive){bot.lastSeenAt=0;bot.lastSeenTargetId='';}
         continue;
       }
@@ -2194,7 +2199,6 @@ export class GameRoom {
         const sx=-uz*(bot.strafeDir||1),sz=ux*(bot.strafeDir||1),step=settings.movement.walkSpeed*profile.strafe*dt;
         if(!tryMove(sx,sz,step)){bot.strafeDir=-(bot.strafeDir||1);tryMove(-sx,-sz,step);}
       }
-      bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y);
 
       const weaponSettings=settings.weapons[botWeapon],fireScale=botWeapon==='sniper'?1.12:botWeapon==='machineGun'?1.04:(botWeapon==='shotgun'||botWeapon==='semiShotgun')?.96:1,botFireDelay=Math.max(weaponSettings.cooldownMs*profile.fireScale*fireScale,70);
       if(d<=engageRange&&now>=finiteNumber(bot.nextShotAt,0)){

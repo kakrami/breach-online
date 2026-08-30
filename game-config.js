@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.44.11';
-export const PROTOCOL_VERSION = 76;
+export const APP_VERSION = '1.44.16';
+export const PROTOCOL_VERSION = 78;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -159,7 +159,7 @@ export const MOVEMENT_FEEL = Object.freeze({
   slideServerGraceMs:900,
 });
 
-export const WEAPON_SWITCH_MS = 120;
+export const WEAPON_SWITCH_MS = 280;
 
 export const CROUCH_HEIGHT = 1.08;
 export const CROUCH_SPEED_MULTIPLIER = 0.62;
