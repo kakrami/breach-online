@@ -30,6 +30,18 @@ function approachThreat(actor,x,z){
   return clamp((vx*dx+vz*dz)/(speed*distance),-1,1);
 }
 
+function actorPlanarVelocity(actor){
+  let vx=finite(actor?.velocityX,NaN),vz=finite(actor?.velocityZ,NaN);
+  if(!Number.isFinite(vx)||!Number.isFinite(vz)||Math.hypot(vx,vz)<.15){const speed=Math.max(0,finite(actor?.moveSpeed,0)),yaw=finite(actor?.yaw,0);vx=-Math.sin(yaw)*speed;vz=-Math.cos(yaw)*speed;}
+  return{vx:Number.isFinite(vx)?vx:0,vz:Number.isFinite(vz)?vz:0};
+}
+
+function allyAnchorScore(allies,x,z,policy){
+  if(!allies?.length)return 0;
+  let sx=0,sz=0;for(const ally of allies){sx+=finite(ally?.x);sz+=finite(ally?.z);}const cx=sx/allies.length,cz=sz/allies.length,d=Math.hypot(x-cx,z-cz),ideal=Math.max(1,finite(policy.allyAnchorIdeal,18)),range=Math.max(2,finite(policy.allyAnchorRange,14)),weight=finite(policy.allyAnchorWeight,8_000),delta=Math.abs(d-ideal);
+  return Math.max(0,1-delta/range)*weight;
+}
+
 function radialEventPenalty(entries,x,z,now,windowMs,radius,weight,factorFn=null){
   let penalty=0;
   for(const item of entries||[]){
@@ -99,15 +111,15 @@ export function scoreSpawnCandidate(policy,{
   const normalizedMode=modeId(mode),normalizedTeam=safeTeam(team),ffa=normalizedMode==='ffa',live=(actors||[]).filter(actor=>actorId(actor)!==excludeId&&alive(actor,now));
   const enemies=[],allies=[];for(const actor of live)(isEnemy(normalizedMode,normalizedTeam,actor)?enemies:allies).push(actor);
   const enemyCap=finite(policy.enemyDistanceCap,ffa?120:220),anyCap=finite(policy.anyDistanceCap,60),nearDistance=finite(policy.nearEnemyDistance,policy.minEnemyDistance*1.4);
-  let minEnemy=enemies.length?Infinity:enemyCap,minAny=live.length?Infinity:anyCap,minAlly=allies.length?Infinity:anyCap,visibleEnemies=0,facingEnemies=0,approachingEnemies=0,nearEnemies=0;
+  let minEnemy=enemies.length?Infinity:enemyCap,minProjectedEnemy=enemies.length?Infinity:enemyCap,minAny=live.length?Infinity:anyCap,minAlly=allies.length?Infinity:anyCap,visibleEnemies=0,facingEnemies=0,approachingEnemies=0,nearEnemies=0;
   let enemyPressure=0,allyPressure=0;
-  const zoneRadius=Math.max(1,finite(policy.zoneRadius,policy.lineOfSightDistance));
+  const zoneRadius=Math.max(1,finite(policy.zoneRadius,policy.lineOfSightDistance)),predictionSec=Math.max(0,finite(policy.enemyPredictionSec,.75));
   for(const actor of live){
     const d=distance2d({x,z},actor);minAny=Math.min(minAny,d);
     if(!isEnemy(normalizedMode,normalizedTeam,actor)){
       minAlly=Math.min(minAlly,d);if(d<zoneRadius)allyPressure+=1-d/zoneRadius;continue;
     }
-    minEnemy=Math.min(minEnemy,d);if(d<nearDistance)nearEnemies++;if(d<zoneRadius)enemyPressure+=1-d/zoneRadius;
+    minEnemy=Math.min(minEnemy,d);const velocity=actorPlanarVelocity(actor),projectedD=Math.hypot(x-(finite(actor.x)+velocity.vx*predictionSec),z-(finite(actor.z)+velocity.vz*predictionSec));minProjectedEnemy=Math.min(minProjectedEnemy,projectedD);if(d<nearDistance)nearEnemies++;if(d<zoneRadius)enemyPressure+=1-d/zoneRadius;
     if(d<=finite(policy.lineOfSightDistance,60)&&lineOfSight?.({x,y,z},actor))visibleEnemies++;
     if(d<=finite(policy.facingThreatDistance,70)&&facingThreat(actor,x,z)>=finite(policy.facingThreatCos,.55))facingEnemies++;
     if(d<=finite(policy.approachThreatDistance,policy.facingThreatDistance)&&approachThreat(actor,x,z)>=finite(policy.approachThreatCos,.35))approachingEnemies++;
@@ -123,8 +135,8 @@ export function scoreSpawnCandidate(policy,{
   const personalSpawnPenalty=excludeId?radialEventPenalty(recentSpawns,x,z,now,finite(policy.personalSpawnWindowMs,11_000),finite(policy.personalSpawnRadius,finite(policy.recentSpawnRadius,16)*1.10),finite(policy.personalSpawnWeight,46_000),item=>actorId(item)===String(excludeId)?1:0):0;
   const gunfirePenalty=radialEventPenalty(recentGunfire,x,z,now,finite(policy.gunfireWindowMs,3000),finite(policy.gunfireRadius,policy.lineOfSightDistance*.65),finite(policy.gunfireWeight,25_000),item=>ffa?1:(safeTeam(item?.team)===normalizedTeam?0.28:1));
   const explosionPenalty=radialEventPenalty(recentExplosions,x,z,now,finite(policy.explosionWindowMs,4200),finite(policy.explosionRadius,policy.lineOfSightDistance*.45),finite(policy.explosionWeight,34_000));
-  const occupied=minAny<finite(policy.minActorSeparation,2.2);
-  const hardDanger=occupied||minEnemy<finite(policy.minEnemyDistance,20)||visibleEnemies>0||projectile.critical>0||throwable.critical>0;
+  const occupied=minAny<finite(policy.minActorSeparation,2.2),predictedDangerDistance=finite(policy.predictedEnemyDistance,finite(policy.minEnemyDistance,20)*.82),predictedEnemyPenalty=minProjectedEnemy<predictedDangerDistance?(1-minProjectedEnemy/Math.max(1,predictedDangerDistance))*finite(policy.predictedEnemyWeight,24_000):0;
+  const hardDanger=occupied||minEnemy<finite(policy.minEnemyDistance,20)||minProjectedEnemy<finite(policy.minProjectedEnemyDistance,finite(policy.minEnemyDistance,20)*.68)||visibleEnemies>0||projectile.critical>0||throwable.critical>0;
   const safe=!hardDanger;
   let score=safe?1_000_000:0;
   const enemyDistanceWeight=finite(policy.enemyDistanceWeight,150)*(ffa?1.30:1),exposureScale=ffa?1.16:1;
@@ -132,10 +144,10 @@ export function scoreSpawnCandidate(policy,{
   score-=visibleEnemies*finite(policy.visibleEnemyPenalty,45_000)*exposureScale+facingEnemies*finite(policy.facingEnemyPenalty,12_000)*exposureScale+approachingEnemies*finite(policy.approachingEnemyPenalty,18_000)*(ffa?1.10:1)+nearEnemies*finite(policy.nearEnemyPenalty,6_000)*(ffa?1.12:1);
   if(occupied)score-=finite(policy.occupiedSpawnPenalty,750_000);
   score+=(allyPressure-enemyPressure)*finite(policy.zoneControlWeight,10_000);
-  if(!ffa)score+=allySupportScore(minAlly,policy);
+  const anchorScore=ffa?0:allyAnchorScore(allies,x,z,policy);if(!ffa)score+=allySupportScore(minAlly,policy)+anchorScore;
   const clusterScore=ffa?0:clusterMomentumScore(policy,recentSpawns,normalizedTeam,candidateCluster,now);score+=clusterScore;
-  score-=deathPenalty+spawnPenalty+personalDeathPenalty+personalSpawnPenalty+gunfirePenalty+explosionPenalty+projectile.penalty+throwable.penalty;
-  return{score,safe,hardDanger,occupied,minEnemy,minAny,minAlly,visibleEnemies,facingEnemies,approachingEnemies,nearEnemies,enemyPressure,allyPressure,deathPenalty,spawnPenalty,personalDeathPenalty,personalSpawnPenalty,gunfirePenalty,explosionPenalty,clusterScore,projectileThreats:projectile.critical,throwableThreats:throwable.critical};
+  score-=deathPenalty+spawnPenalty+personalDeathPenalty+personalSpawnPenalty+gunfirePenalty+explosionPenalty+predictedEnemyPenalty+projectile.penalty+throwable.penalty;
+  return{score,safe,hardDanger,occupied,minEnemy,minProjectedEnemy,minAny,minAlly,visibleEnemies,facingEnemies,approachingEnemies,nearEnemies,enemyPressure,allyPressure,predictedEnemyPenalty,anchorScore,deathPenalty,spawnPenalty,personalDeathPenalty,personalSpawnPenalty,gunfirePenalty,explosionPenalty,clusterScore,projectileThreats:projectile.critical,throwableThreats:throwable.critical};
 }
 
 export function chooseSafeSpawnFromPoints(policy,teamPoints,ffaPoints,{
