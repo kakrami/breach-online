@@ -555,7 +555,7 @@ export default {
       const clientId = safeClientId(body.client);
       const clientAuth = safeClientAuth(body.auth);
       const protocol = Math.floor(finiteNumber(body.protocol, 0));
-      if (protocol !== PROTOCOL_VERSION) return json(request, env, { error: `Client protocol ${protocol || "missing"} is incompatible. Update the game client.`, protocol: PROTOCOL_VERSION }, 409);
+      if (protocol !== PROTOCOL_VERSION) return json(request, env, { error: `CLIENT UPDATE REQUIRED`, protocol: PROTOCOL_VERSION }, 409);
       if (!clientId) return json(request, env, { error: "Missing client ID." }, 400);
       if (clientAuth.length < 32) return json(request, env, { error: "Missing client credential." }, 400);
 
@@ -567,10 +567,10 @@ export default {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ key: await sha256Hex(networkId) }),
         });
-        if (limiter.status === 429) return json(request, env, { error: "Too many matches created from this connection. Try again shortly." }, 429);
-        if (!limiter.ok) return json(request, env, { error: "Match creation protection is temporarily unavailable." }, 503);
+        if (limiter.status === 429) return json(request, env, { error: "MATCH CREATE RATE LIMITED" }, 429);
+        if (!limiter.ok) return json(request, env, { error: "MATCH CREATE UNAVAILABLE" }, 503);
       } catch {
-        return json(request, env, { error: "Match creation protection is temporarily unavailable." }, 503);
+        return json(request, env, { error: "MATCH CREATE UNAVAILABLE" }, 503);
       }
 
       const ownerAuthHash = await sha256Hex(clientAuth);
@@ -586,7 +586,7 @@ export default {
           return json(request, env, { code }, 201);
         }
       }
-      return json(request, env, { error: "Could not create a world. Try again." }, 503);
+      return json(request, env, { error: "MATCH CREATE FAILED" }, 503);
     }
 
     const ticketMatch = url.pathname.match(new RegExp(`^/rooms/([A-HJ-NP-Z2-9]{${ROOM_CODE_LENGTH}})/ticket$`, "i"));
@@ -1521,10 +1521,10 @@ export class GameRoom {
     }
 
     if(payload.t==='startMatch'){
-      if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Only a lobby admin can start the match.'});return;}
-      if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Match has already started.'});return;}
+      if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'ADMIN REQUIRED'});return;}
+      if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'MATCH ALREADY STARTED'});return;}
       const setup=payload.setup&&typeof payload.setup==='object'?payload.setup:null;
-      if(!setup||!setup.rules||!setup.bots||!setup.minimap||!setup.settings){sendJson(socket,{t:'notice',tone:'error',text:'Complete match setup is required.'});return;}
+      if(!setup||!setup.rules||!setup.bots||!setup.minimap||!setup.settings){sendJson(socket,{t:'notice',tone:'error',text:'MATCH SETUP INCOMPLETE'});return;}
       const mode=normalizeGameMode(setup.mode),rules=normalizeMatchRules({mode,scoreLimit:setup.rules.scoreLimit,timeLimitMs:setup.rules.timeLimitMs,minimapRevealAll:!!setup.minimap.revealAll,minimapDirectional:!!setup.minimap.directional});
       const blueBots=clamp(Math.floor(finiteNumber(setup.bots.blueBots,0)),0,MAX_BOTS),redBots=clamp(Math.floor(finiteNumber(setup.bots.redBots,0)),0,MAX_BOTS);
       if(blueBots+redBots>MAX_BOTS){sendJson(socket,{t:'notice',tone:'error',text:`Maximum ${MAX_BOTS} bots per match.`});return;}
@@ -1537,14 +1537,14 @@ export class GameRoom {
       // Returning the room to its lobby is a match-wide action. Only an admin
       // may end everybody's current match; guests leave their own session from
       // the client instead of being able to interrupt the room for all players.
-      if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Only a lobby admin can end the current match.'});return;}
-      if(matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',text:'Already in the lobby.'});return;}
+      if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'ADMIN REQUIRED'});return;}
+      if(matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',text:'ALREADY IN LOBBY'});return;}
       this.returnMatchToLobby(meta,now);await this.putMeta(meta);await this.ctx.storage.put('bots',this.bots);return;
     }
 
     if (payload.t === "god") {
       if (!isRoomAdmin(meta, me.clientId)) {
-        sendJson(socket,{t:"notice",tone:"error",text:"Admin access required for God Mode."});
+        sendJson(socket,{t:"notice",tone:"error",text:"ADMIN REQUIRED"});
         sendJson(socket,{t:"god",id:me.clientId,enabled:!!me.godMode});
         return;
       }
@@ -1560,7 +1560,7 @@ export class GameRoom {
 
     if(payload.t==='team'){
       const mode=matchMode(meta.match),spec=gameModeSpec(mode),nextTeam=safeTeam(payload.team),currentTeam=safeTeam(me.team);
-      if(!spec.teamBased){me.pendingTeam='';socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:false,reason:'free_for_all',pendingTeam:''});sendJson(socket,{t:'notice',text:'Free For All has no teams.'});return;}
+      if(!spec.teamBased){me.pendingTeam='';socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:false,reason:'free_for_all',pendingTeam:''});sendJson(socket,{t:'notice',text:'TEAMS DISABLED IN FFA'});return;}
       if(matchAllowsLobbyEdits(meta.match)){
         if(nextTeam!==currentTeam){const sameTeam=this.liveSockets(socket).filter(s=>safeTeam((s.deserializeAttachment()||{}).team)===nextTeam).length;const moved=spawnedPlayerState(me,spawnForTeam(this.world,nextTeam,sameTeam),nextTeam,now,{resetStats:false});moved.kills=me.kills;moved.deaths=me.deaths;me=moved;socket.serializeAttachment(me);}
         me.pendingTeam='';socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:true,pendingTeam:''});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me)});await this.updateDirectory(this.liveSockets().length,meta);return;
@@ -1579,7 +1579,7 @@ export class GameRoom {
 
     if (payload.t === "adminPlayer") {
       if (!isRoomAdmin(meta, me.clientId)) {
-        sendJson(socket,{t:"notice",tone:"error",text:"Admin access required."});
+        sendJson(socket,{t:"notice",tone:"error",text:"ADMIN REQUIRED"});
         return;
       }
       const targetId = safeClientId(payload.targetId);
@@ -1588,7 +1588,7 @@ export class GameRoom {
         return p.clientId === targetId && !p.replaced;
       });
       if (!targetSocket) {
-        sendJson(socket,{t:"notice",tone:"error",text:"Player is no longer connected."});
+        sendJson(socket,{t:"notice",tone:"error",text:"PLAYER DISCONNECTED"});
         return;
       }
       let target = targetSocket.deserializeAttachment() || {};
@@ -1608,11 +1608,11 @@ export class GameRoom {
       if (action === "admin") {
         const enabled = !!payload.enabled;
         if (targetId === me.clientId) {
-          sendJson(socket,{t:"notice",tone:"error",text:"You cannot change your own admin role."});
+          sendJson(socket,{t:"notice",tone:"error",text:"CANNOT CHANGE OWN ROLE"});
           return;
         }
         if (targetId === meta.ownerClientId && !enabled) {
-          sendJson(socket,{t:"notice",tone:"error",text:"The match owner cannot be demoted."});
+          sendJson(socket,{t:"notice",tone:"error",text:"HOST ROLE LOCKED"});
           return;
         }
         const admins = new Set(meta.adminClientIds);
@@ -1633,9 +1633,9 @@ export class GameRoom {
     }
 
     if (payload.t === "adminSettings") {
-      if (matchAllowsLobbyEdits(meta.match)) {sendJson(socket,{t:'notice',tone:'error',text:'Use lobby setup and Start Match for pre-match tuning.'});return;}
+      if (matchAllowsLobbyEdits(meta.match)) {sendJson(socket,{t:'notice',tone:'error',text:'APPLIES ON START'});return;}
       if (!isRoomAdmin(meta, me.clientId)) {
-        sendJson(socket,{t:"notice",tone:"error",text:"Admin access required."});
+        sendJson(socket,{t:"notice",tone:"error",text:"ADMIN REQUIRED"});
         return;
       }
       const section = payload.section === 'advanced' ? 'advanced' : 'gameplay';
@@ -1653,9 +1653,9 @@ export class GameRoom {
     }
 
     if (payload.t === "adminBots") {
-      if (matchAllowsLobbyEdits(meta.match)) {sendJson(socket,{t:'notice',tone:'error',text:'Use lobby setup and Start Match for pre-match bots.'});return;}
+      if (matchAllowsLobbyEdits(meta.match)) {sendJson(socket,{t:'notice',tone:'error',text:'APPLIES ON START'});return;}
       if (!isRoomAdmin(meta, me.clientId)) {
-        sendJson(socket,{t:"notice",tone:"error",text:"Admin access required."});
+        sendJson(socket,{t:"notice",tone:"error",text:"ADMIN REQUIRED"});
         return;
       }
       const blueBots = clamp(Math.floor(finiteNumber(payload.blueBots, meta.blueBots || 0)), 0, MAX_BOTS);
