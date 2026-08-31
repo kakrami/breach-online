@@ -2510,7 +2510,7 @@ export class GameRoom {
           const zoneScale=weaponZoneDamageScale(bullet.weapon,hitZone),baseDamage=Math.max(0,finiteNumber(bullet.damage,0))*energy*zoneScale,headshot=hitZone === 'head',hitDamage=weaponDamageAtDistance(bullet.weapon,baseDamage,bullet.traveledDistance,headshot,bullet.attachments);
           const knockback={x:bullet.vx/horizontal*2.4*energy,z:bullet.vz/horizontal*2.4*energy,y:(headshot?1.45:1.1)*Math.max(.35,energy)};
           const damageApplied=nearest.kind==='human'?this.damageHuman(nearest.socket,target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy}):this.damageBot(target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy});
-          this.broadcast({t:'bulletImpact',id:bullet.id,ownerId:bullet.ownerId,targetId,weapon:bullet.weapon,kind:damageApplied?'player':'blocked',headshot,x:bullet.x,y:bullet.y,z:bullet.z});
+          if(damageApplied)this.broadcast({t:'bulletImpact',id:bullet.id,ownerId:bullet.ownerId,targetId,weapon:bullet.weapon,kind:'player',headshot,x:bullet.x,y:bullet.y,z:bullet.z});
 
           // Every firearm uses the same player-penetration model. Energy loss is
           // determined by the weapon, never by the victim's remaining HP. World
@@ -2567,10 +2567,7 @@ export class GameRoom {
 
   damageHuman(socket, target, attackerId, damage, weapon, knockback, now, bulletId = "", settings = DEFAULT_WORLD_SETTINGS, hitMeta = {}) {
     if(attackerId!==target.clientId&&now<finiteNumber(target.spawnProtectedUntil,0))return false;
-    if (target.godMode) {
-      this.broadcast({ t: "blocked", attacker: attackerId, target: target.clientId, weapon, bulletId, godMode: true });
-      return false;
-    }
+    if (target.godMode) return false;
     target.hp = Math.max(0, target.hp - damage);
     target.knockVelocityX = clamp(finiteNumber(target.knockVelocityX, 0) + finiteNumber(knockback.x, 0), -12, 12);
     target.knockVelocityZ = clamp(finiteNumber(target.knockVelocityZ, 0) + finiteNumber(knockback.z, 0), -12, 12);
