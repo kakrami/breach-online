@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.44.59';
+export const APP_VERSION = '1.44.61';
 export const PROTOCOL_VERSION = 84;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
@@ -27,8 +27,8 @@ export const ATTACHMENTS = Object.freeze({
   combatOptic:Object.freeze({id:'combatOptic',slot:'optic',name:'3× COMBAT OPTIC',short:'3X',compatible:Object.freeze(['assault','machineGun','semiShotgun']),mods:Object.freeze({adsInMs:1.16}),adsMoveAdd:-.04,adsFov:27,zoomLabel:'3X'}),
   precisionScope6x:Object.freeze({id:'precisionScope6x',slot:'optic',name:'PRECISION 6X',short:'6X',compatible:Object.freeze(['sniper']),mods:Object.freeze({adsInMs:1.04}),adsFov:12.5,zoomLabel:'6X'}),
   longRangeScope8x:Object.freeze({id:'longRangeScope8x',slot:'optic',name:'LONG-RANGE 8X',short:'8X',compatible:Object.freeze(['sniper']),mods:Object.freeze({adsInMs:1.10}),adsFov:9.5,zoomLabel:'8X'}),
-  thermalScope4x:Object.freeze({id:'thermalScope4x',slot:'optic',name:'THERMAL 4X',short:'T4X',compatible:Object.freeze(['sniper']),mods:Object.freeze({adsInMs:1.06}),adsFov:18,zoomLabel:'4X',thermalMode:'orange'}),
-  thermalScope6x:Object.freeze({id:'thermalScope6x',slot:'optic',name:'THERMAL 6X',short:'T6X',compatible:Object.freeze(['sniper']),mods:Object.freeze({adsInMs:1.10}),adsFov:12.5,zoomLabel:'6X',thermalMode:'white'}),
+  thermalScope4x:Object.freeze({id:'thermalScope4x',slot:'optic',name:'THERMAL 4X',short:'T4X',compatible:Object.freeze(['assault','ump','machineGun','shotgun','sniper','rpg']),mods:Object.freeze({adsInMs:1.06}),adsFov:18,zoomLabel:'4X',thermalMode:'orange'}),
+  thermalScope6x:Object.freeze({id:'thermalScope6x',slot:'optic',name:'THERMAL 6X',short:'T6X',compatible:Object.freeze(['assault','ump','machineGun','shotgun','sniper','rpg']),mods:Object.freeze({adsInMs:1.10}),adsFov:12.5,zoomLabel:'6X',thermalMode:'white'}),
   suppressor:Object.freeze({id:'suppressor',slot:'muzzle',name:'SUPPRESSOR',short:'SUP',compatible:Object.freeze(['pistol','akimbo1887','assault','ump','machineGun','shotgun','sniper']),mods:Object.freeze({bulletSpeed:.93,falloffStart:.90,falloffEnd:.90,adsInMs:1.04}),soundScale:.84}),
   compensator:Object.freeze({id:'compensator',slot:'muzzle',name:'COMPENSATOR',short:'COMP',compatible:Object.freeze(['pistol','assault','ump','machineGun']),mods:Object.freeze({recoilPitch:.82,recoilYaw:.82,recoilMaxPitch:.82,recoilMaxYaw:.82,adsInMs:1.08})}),
   shotgunChoke:Object.freeze({id:'shotgunChoke',slot:'muzzle',name:'SHOTGUN CHOKE',short:'CHOKE',compatible:Object.freeze(['shotgun','semiShotgun']),mods:Object.freeze({adsInMs:1.10}),accuracyMods:Object.freeze({hipDeg:.72,adsDeg:.72,moveDeg:.85,airborneDeg:.90,slideDeg:.90})}),
