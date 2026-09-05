@@ -4,7 +4,7 @@ import * as DepotGeometry from './world-geometry-depot.js';
 import * as YardGeometry from './world-geometry-yard.js';
 import * as RigGeometry from './world-geometry-rig.js';
 import {
-  APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS, DEFAULT_MAP_ID, normalizeMapId, mapSpec,
+  APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS, KILLSTREAK_ORDER, KILLSTREAK_SPECS, normalizeKillstreak, DEFAULT_MAP_ID, normalizeMapId, mapSpec,
   WEAPON_ORDER, PRIMARY_WEAPONS, SECONDARY_WEAPONS, WEAPON_SPECS, normalizeWeaponAttachments, resolveWeaponSpec, weaponSpreadRadians, weaponHeatAfterDelay, weaponHeatAfterShot, weaponDamageAtDistance, weaponZoneDamageScale, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, EQUIPMENT_SPECS, TACTICAL_EQUIPMENT, LETHAL_EQUIPMENT, normalizeTactical, normalizeLethal, equipmentForLoadout, LOADOUT_CLASS_COUNT, LOADOUT_CLASS_IDS, normalizeLoadoutClassId, normalizeLoadoutClassName, normalizeLoadoutDefinition, defaultLoadoutClasses, normalizeLoadoutClasses, loadoutClassById, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings, MOVEMENT_FEEL, WEAPON_SWITCH_MS, EQUIPMENT_WEAPON_RECOVER_MS,
   DEFAULT_MATCH_RULES, GAME_MODES, normalizeGameMode, gameModeSpec, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, equipmentCollisionRadius, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, FRAG_RADIUS, FRAG_MAX_DAMAGE, SMOKE_RADIUS, SMOKE_DURATION_MS, SMOKE_LOS_RADIUS_SCALE, SMOKE_GROW_MS, SMOKE_START_SCALE, GROUND_FOLLOW_DROP
 } from './game-config.js';
@@ -221,6 +221,22 @@ function matchMode(value){return normalizeGameMode(value?.mode??value);}
 function matchUsesTeams(value){return !!gameModeSpec(matchMode(value)).teamBased;}
 function combatantsAreFriendly(mode,ownerId,ownerTeam,targetId,targetTeam){return ownerId!==targetId&&matchUsesTeams(mode)&&safeTeam(ownerTeam)===safeTeam(targetTeam);}
 
+function normalizeKillstreakList(value,{unique=false}={}){
+  const out=[];for(const raw of Array.isArray(value)?value:[]){const id=normalizeKillstreak(raw);if(!id)continue;if(unique&&out.includes(id))continue;out.push(id);if(out.length>=8)break;}return out;
+}
+function killstreakState(player){return{streak:Math.max(0,Math.floor(finiteNumber(player?.killstreakKills,0))),available:normalizeKillstreakList(player?.killstreakAvailable),earned:normalizeKillstreakList(player?.killstreakEarned,{unique:true})};}
+function structureRoofY(world,structure){
+  const base=world.geometry.terrainHeight(finiteNumber(structure?.x,0),finiteNumber(structure?.z,0));
+  if(Number.isFinite(Number(structure?.floorH))&&Number.isFinite(Number(structure?.levels)))return base+Number(structure.floorH)*Math.max(1,Number(structure.levels));
+  return base+Math.max(0,finiteNumber(structure?.h,0));
+}
+function actorIsOutdoors(world,actor){
+  if(!actor)return false;const x=finiteNumber(actor.x,0),z=finiteNumber(actor.z,0),headY=finiteNumber(actor.y,0)+PLAYER_HEIGHT*.72;
+  for(const b of world.geometry.BUILDINGS||[]){const halfW=finiteNumber(b.w,0)/2,halfD=finiteNumber(b.d,0)/2;if(Math.abs(x-b.x)>halfW-.12||Math.abs(z-b.z)>halfD-.12)continue;if(headY<structureRoofY(world,b)-.08)return false;}
+  return true;
+}
+function rectDistance2D(x,z,rect){const dx=Math.max(Math.abs(x-finiteNumber(rect?.x,0))-Math.max(0,finiteNumber(rect?.w,0))/2,0),dz=Math.max(Math.abs(z-finiteNumber(rect?.z,0))-Math.max(0,finiteNumber(rect?.d,0))/2,0);return Math.hypot(dx,dz);}
+
 function normalizeAdminIds(meta) {
   const owner = safeClientId(meta?.ownerClientId);
   const raw = Array.isArray(meta?.adminClientIds) ? meta.adminClientIds : [];
@@ -426,8 +442,9 @@ function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
     fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,combatAction:'ready',combatActionKind:'',combatReadyAt:0,sprintFireReadyAt:0,ads:false,adsAmount:0,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,
     verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,lastMovementClientAt:now,lastStateSeq:0,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
     flashUntil:0,flashPower:0,flashDurationMs:0,fireHeat:{},fireHeatAt:{},knockVelocityX:0,knockVelocityZ:0,velocityX:0,velocityZ:0,traversal:null,lastTraverseSeq:0,ladder:null,lastLadderSeq:0,
+    killstreakKills:Math.max(0,Math.floor(finiteNumber(player?.killstreakKills,0))),killstreakAvailable:normalizeKillstreakList(player?.killstreakAvailable),killstreakEarned:normalizeKillstreakList(player?.killstreakEarned,{unique:true}),abductedUntil:0,abductedBy:'',
   };
-  if(resetStats)Object.assign(next,{kills:0,deaths:0,multiKillCount:0,lastKillAt:0});
+  if(resetStats)Object.assign(next,{kills:0,deaths:0,multiKillCount:0,lastKillAt:0,killstreakKills:0,killstreakAvailable:[],killstreakEarned:[]});
   return next;
 }
 
@@ -726,6 +743,7 @@ export class GameRoom {
     this.bullets = new Map();
     this.throwables = new Map();
     this.smokeClouds = new Map();
+    this.killstreakEffects = [];
     this.lastSimAt = 0;
     this.simAccumulatorMs = 0;
     this.lastBotBroadcastAt = 0;
@@ -816,7 +834,7 @@ export class GameRoom {
       : type === 'state' ? { rate: 55, burst: 220 }
       : type === 'simTick' ? { rate: 40, burst: 180 }
       : type === 'fire' ? { rate: 24, burst: 72 }
-      : ['equipmentAction','throw','reload','weapon','loadout','team','god','startMatch','returnLobby','adminPlayer','adminSettings','adminBots'].includes(type) ? { rate: 14, burst: 22 }
+      : ['equipmentAction','throw','reload','weapon','loadout','killstreak','team','god','startMatch','returnLobby','adminPlayer','adminSettings','adminBots'].includes(type) ? { rate: 14, burst: 22 }
       : type === 'ping' ? { rate: 8, burst: 12 }
       : type === 'chat' ? { rate: 1.5, burst: 4 }
       : { rate: 30, burst: 45 };
@@ -939,7 +957,7 @@ export class GameRoom {
     const match=meta.match;if(match.status==='ended')return false;
     const result=winner&&typeof winner==='object'?winner:{winner:winner||'draw'};
     Object.assign(match,{status:MATCH_STATUS.ENDED,endedAt:now,restartAt:now+MATCH_END_MS,winner:['blue','red','draw'].includes(result.winner)?result.winner:'',winnerId:safeClientId(result.winnerId||''),winnerName:String(result.winnerName||'').slice(0,24),reason:String(reason||'').slice(0,24),updatedAt:now});
-    this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();
+    this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.killstreakEffects.length=0;
     for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;socket.serializeAttachment(this.freezeHumanState(p,now));}
     for(const bot of this.bots||[]){bot.traversal=null;bot.reloadAt=0;bot.reloadWeapon='';bot.moveSpeed=0;bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y,false);}
     meta.match=match;this.matchDirty=true;this.broadcastMatch(meta,now);return true;
@@ -955,7 +973,7 @@ export class GameRoom {
   prepareRound(meta,now=Date.now()){
     const old=meta.match,mode=matchMode(old);
     meta.match={...defaultMatchState(now,old),round:1,status:MATCH_STATUS.WARMUP,warmupEndsAt:now+MATCH_WARMUP_MS,mode,scoreLimit:old.scoreLimit,timeLimitMs:old.timeLimitMs,minimapRevealAll:!!old.minimapRevealAll,minimapDirectional:!!old.minimapDirectional};
-    this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.recentDeaths=[];this.recentSpawns=[];this.recentGunfire=[];this.recentExplosions=[];const players=[],assigned=[];let index=0;
+    this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.killstreakEffects.length=0;this.recentDeaths=[];this.recentSpawns=[];this.recentGunfire=[];this.recentExplosions=[];const players=[],assigned=[];let index=0;
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;
       const team=matchUsesTeams(mode)&&p.pendingTeam?safeTeam(p.pendingTeam):safeTeam(p.team),spawn=this.selectSpawn(mode,team,assigned,index++,p.clientId,now);
@@ -974,7 +992,7 @@ export class GameRoom {
   returnMatchToLobby(meta,now=Date.now()){
     const old=meta.match,mode=matchMode(old),players=[];
     meta.match={...defaultMatchState(now,old),round:1,status:MATCH_STATUS.WAITING,mode,scoreLimit:old.scoreLimit,timeLimitMs:old.timeLimitMs,minimapRevealAll:!!old.minimapRevealAll,minimapDirectional:!!old.minimapDirectional};
-    this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.recentDeaths=[];this.recentSpawns=[];this.recentGunfire=[];this.recentExplosions=[];
+    this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.killstreakEffects.length=0;this.recentDeaths=[];this.recentSpawns=[];this.recentGunfire=[];this.recentExplosions=[];
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;
       const team=matchUsesTeams(mode)&&p.pendingTeam?safeTeam(p.pendingTeam):safeTeam(p.team),support=this.world.geometry.worldSupportHeight(p.x,p.z,p.y,false);
@@ -1248,6 +1266,10 @@ export class GameRoom {
       combatAction:'ready',combatActionKind:'',combatReadyAt:0,
       kills: Math.max(0, Math.floor(finiteNumber(spawn.kills, 0))),
       deaths: Math.max(0, Math.floor(finiteNumber(spawn.deaths, 0))),
+      killstreakKills: Math.max(0, Math.floor(finiteNumber(preserved?.killstreakKills, spawn.killstreakKills || 0))),
+      killstreakAvailable: normalizeKillstreakList(preserved?.killstreakAvailable || spawn.killstreakAvailable),
+      killstreakEarned: normalizeKillstreakList(preserved?.killstreakEarned || spawn.killstreakEarned,{unique:true}),
+      abductedUntil:0,abductedBy:'',
       godMode: preserved ? !!preserved.godMode : false,
       pendingTeam: preserved?.pendingTeam ? safeTeam(preserved.pendingTeam) : '',
       admin: isRoomAdmin(meta, clientId),
@@ -1282,7 +1304,7 @@ export class GameRoom {
     const currentPlayers = liveMembers.map(({ attachment: a }) => publicPlayer(a));
     sendJson(server,{
       t: "welcome",
-      self: {...publicPlayer(attachment),loadoutClasses:normalizeLoadoutClasses(attachment.loadoutClasses,attachment),activeClassId:normalizeLoadoutClassId(attachment.activeClassId),pendingClassId:attachment.pendingClassId?normalizeLoadoutClassId(attachment.pendingClassId):''},
+      self: {...publicPlayer(attachment),loadoutClasses:normalizeLoadoutClasses(attachment.loadoutClasses,attachment),activeClassId:normalizeLoadoutClassId(attachment.activeClassId),pendingClassId:attachment.pendingClassId?normalizeLoadoutClassId(attachment.pendingClassId):'',killstreak:killstreakState(attachment)},
       players: currentPlayers,
       bots: this.bots.map(publicBot),
       code: meta.code,
@@ -1337,7 +1359,14 @@ export class GameRoom {
     else if(me.traversal||me.ladder)me={...me,traversal:null,ladder:null,verticalVelocity:0,moveSpeed:0};
     socket.serializeAttachment(me);
 
+    if(payload.t==='killstreak'){
+      const kind=normalizeKillstreak(payload.kind);if(!kind){sendJson(socket,{t:'killstreakAck',accepted:false,reason:'invalid'});return;}
+      if(!matchAllowsCombat(meta.match)||me.hp<=0||now<finiteNumber(me.wastedUntil,0)||now<finiteNumber(me.abductedUntil,0)){sendJson(socket,{t:'killstreakAck',accepted:false,kind,reason:'unavailable'});return;}
+      const target={x:Number(payload.x),z:Number(payload.z)},accepted=this.activateKillstreak(socket,me,kind,now,target);sendJson(socket,{t:'killstreakAck',accepted,kind,reason:accepted?'':'not_ready'});if(accepted)await this.stepSimulation(now,meta);return;
+    }
+
     if (payload.t === "state") {
+      if(now<finiteNumber(me.abductedUntil,0)){sendJson(socket,{t:'correction',seq:Math.max(0,Math.floor(finiteNumber(payload.seq,0))),x:me.x,y:me.y,z:me.z,vertical:false,verticalVelocity:0,grounded:true,crouched:false,reason:'abducted'});await this.stepSimulation(now,meta);return;}
       if (me.hp > 0 || now >= me.wastedUntil) {
         if (!matchAllowsMovement(meta.match)) {
           const requestedX=clamp(finiteNumber(payload.x,me.x),-ARENA_LIMIT,ARENA_LIMIT),requestedY=finiteNumber(payload.y,me.y),requestedZ=clamp(finiteNumber(payload.z,me.z),-ARENA_LIMIT,ARENA_LIMIT);
@@ -2013,6 +2042,7 @@ export class GameRoom {
     if (matchAllowsCombat(match)) {
       this.stepThrowables(now, settings);
       this.stepBullets(now, settings);
+      this.stepKillstreaks(now, settings);
       this.stepRegeneration(now, settings);
     }
     if (this.matchDirty) {
@@ -2538,6 +2568,92 @@ export class GameRoom {
     }
   }
 
+  mutableCombatant(id){
+    for(const socket of this.ctx.getWebSockets()){const actor=socket.deserializeAttachment()||{};if(actor.clientId===id&&!actor.replaced)return{actor,socket,isBot:false};}
+    const actor=this.bots.find(bot=>bot.id===id);return actor?{actor,socket:null,isBot:true}:null;
+  }
+
+  killstreakEnemies(ownerId,ownerTeam,now=Date.now()){
+    const mode=matchMode(this.metaCache?.match),out=[];
+    for(const socket of this.ctx.getWebSockets()){
+      const actor=socket.deserializeAttachment()||{},id=actor.clientId;if(!id||actor.replaced||id===ownerId||actor.hp<=0||now<finiteNumber(actor.wastedUntil,0)||now<finiteNumber(actor.spawnProtectedUntil,0)||actor.godMode||combatantsAreFriendly(mode,ownerId,ownerTeam,id,actor.team))continue;
+      out.push({actor,socket,isBot:false,id});
+    }
+    for(const actor of this.bots){const id=actor.id;if(!id||id===ownerId||actor.hp<=0||now<finiteNumber(actor.wastedUntil,0)||now<finiteNumber(actor.spawnProtectedUntil,0)||combatantsAreFriendly(mode,ownerId,ownerTeam,id,actor.team))continue;out.push({actor,socket:null,isBot:true,id});}
+    return out;
+  }
+
+  sendKillstreakState(socket,player,extra={}){sendJson(socket,{t:'killstreakState',...killstreakState(player),...extra});}
+
+  activateKillstreak(socket,player,kind,now,target={}){
+    const id=normalizeKillstreak(kind),spec=KILLSTREAK_SPECS[id];if(!spec)return false;
+    const available=normalizeKillstreakList(player.killstreakAvailable),index=available.indexOf(id);if(index<0)return false;
+    const mapLimit=Math.max(8,finiteNumber(this.world.geometry.MINIMAP_LIMIT,this.world.geometry.ARENA_LIMIT||ARENA_LIMIT));
+    let x=0,z=0;
+    if(spec.targeted){x=clamp(finiteNumber(target.x,NaN),-mapLimit,mapLimit);z=clamp(finiteNumber(target.z,NaN),-mapLimit,mapLimit);if(!Number.isFinite(x)||!Number.isFinite(z))return false;}
+    available.splice(index,1);player.killstreakAvailable=available;socket.serializeAttachment(player);this.sendKillstreakState(socket,player,{used:id});
+    const effectId=crypto.randomUUID().replace(/-/g,'').slice(0,12),base={id:effectId,kind:id,ownerId:player.clientId,ownerTeam:safeTeam(player.team),startedAt:now};
+    if(id==='ufo')this.killstreakEffects.push({...base,endsAt:now+7600,nextAt:now+650,maxVictims:3,victims:[],abductions:[]});
+    else if(id==='lightning')this.killstreakEffects.push({...base,endsAt:now+5200,nextAt:now+320,strikes:0,maxStrikes:7});
+    else{
+      const impacts=[];for(let i=0;i<8;i++){const angle=Math.random()*Math.PI*2,radius=Math.sqrt(Math.random())*11,ix=clamp(x+Math.cos(angle)*radius,-mapLimit,mapLimit),iz=clamp(z+Math.sin(angle)*radius,-mapLimit,mapLimit),warnAt=now+480+i*430;impacts.push({x:ix,z:iz,warnAt,impactAt:warnAt+720,warned:false,done:false});}
+      this.killstreakEffects.push({...base,x,z,endsAt:now+5600,impacts});
+    }
+    this.broadcast({t:'killstreakFx',phase:'start',kind:id,id:effectId,ownerId:player.clientId,ownerTeam:safeTeam(player.team),x,z,startedAt:now,endsAt:this.killstreakEffects[this.killstreakEffects.length-1].endsAt});
+    return true;
+  }
+
+  killstreakStructures(){
+    const buildings=(this.world.geometry.BUILDINGS||[]).map(item=>({...item,streakStructure:'building'}));
+    const boxes=(this.world.geometry.STATIC_BOXES||[]).filter(item=>finiteNumber(item.h,0)>=2.35&&String(item.kind||'')!=='boundary').map(item=>({...item,streakStructure:'structure'}));
+    return [...buildings,...boxes];
+  }
+
+  applyKillstreakArea(ownerId,ownerTeam,x,y,z,radius,maxDamage,weapon,now,settings,{lineOfSight=true}={}){
+    for(const entry of this.killstreakEnemies(ownerId,ownerTeam,now)){
+      const actor=entry.actor,tx=finiteNumber(actor.x,0),ty=finiteNumber(actor.y,0)+1,tz=finiteNumber(actor.z,0),dx=tx-x,dy=ty-y,dz=tz-z,d=Math.hypot(dx,dy,dz);if(d>radius)continue;
+      if(lineOfSight&&!this.world.serverCollision.blastHasLineOfSight(x,y,z,tx,ty,tz))continue;
+      const damage=this.blastDamage(maxDamage,d,radius,.18,.28),horizontal=Math.hypot(dx,dz)||1,force=.36+.72*Math.sqrt(clamp(damage/maxDamage,0,1)),knockback={x:dx/horizontal*7.2*force,z:dz/horizontal*7.2*force,y:2.0+3.6*force};
+      if(entry.isBot)this.damageBot(actor,ownerId,damage,weapon,knockback,now,'',settings,{distance:d,blast:true});else this.damageHuman(entry.socket,actor,ownerId,damage,weapon,knockback,now,'',settings,{distance:d,blast:true});
+    }
+  }
+
+  stepUfoKillstreak(effect,now,settings){
+    if(now>=effect.nextAt&&effect.victims.length<effect.maxVictims){
+      const candidates=this.killstreakEnemies(effect.ownerId,effect.ownerTeam,now).filter(entry=>actorIsOutdoors(this.world,entry.actor)&&now>=finiteNumber(entry.actor.abductedUntil,0)&&!effect.victims.includes(entry.id));
+      if(candidates.length){const entry=candidates[Math.floor(Math.random()*candidates.length)],actor=entry.actor,killAt=now+1850;actor.abductedUntil=killAt;actor.abductedBy=effect.ownerId;if(entry.socket){entry.socket.serializeAttachment(actor);sendJson(entry.socket,{t:'killstreakControl',kind:'ufo',until:killAt});}
+        effect.victims.push(entry.id);effect.abductions.push({targetId:entry.id,killAt,done:false});this.broadcast({t:'killstreakFx',phase:'ufoAbduct',kind:'ufo',id:effect.id,ownerId:effect.ownerId,targetId:entry.id,x:actor.x,y:actor.y,z:actor.z,startAt:now,killAt});
+      }
+      effect.nextAt=now+520;
+    }
+    for(const abduction of effect.abductions){if(abduction.done||now<abduction.killAt)continue;abduction.done=true;const entry=this.mutableCombatant(abduction.targetId);if(!entry||entry.actor.hp<=0)continue;entry.actor.abductedUntil=0;entry.actor.abductedBy='';if(entry.isBot)this.damageBot(entry.actor,effect.ownerId,999,'ufo',{x:0,z:0,y:8.5},now,'',settings,{distance:0});else this.damageHuman(entry.socket,entry.actor,effect.ownerId,999,'ufo',{x:0,z:0,y:8.5},now,'',settings,{distance:0});}
+  }
+
+  stepLightningKillstreak(effect,now,settings){
+    if(effect.strikes>=effect.maxStrikes||now<effect.nextAt)return;
+    const structures=this.killstreakStructures();if(!structures.length){effect.strikes=effect.maxStrikes;return;}
+    const enemies=this.killstreakEnemies(effect.ownerId,effect.ownerTeam,now);let structure=null,target=null;
+    if(enemies.length){const scored=enemies.map(entry=>{let best=null,bestD=Infinity;for(const item of structures){const d=rectDistance2D(entry.actor.x,entry.actor.z,item);if(d<bestD){bestD=d;best=item;}}return{entry,structure:best,d:bestD};}).sort((a,b)=>a.d-b.d);const near=scored.filter(row=>row.d<=7.5);const pick=(near.length?near:scored).slice(0,Math.min(4,(near.length?near:scored).length));if(pick.length){const row=pick[Math.floor(Math.random()*pick.length)];structure=row.structure;target=row.entry.actor;}}
+    if(!structure)structure=structures[Math.floor(Math.random()*structures.length)];
+    const halfW=Math.max(.2,finiteNumber(structure.w,1)/2),halfD=Math.max(.2,finiteNumber(structure.d,1)/2),x=target?clamp(finiteNumber(target.x,structure.x),structure.x-halfW,structure.x+halfW):structure.x+(Math.random()-.5)*halfW*1.5,z=target?clamp(finiteNumber(target.z,structure.z),structure.z-halfD,structure.z+halfD):structure.z+(Math.random()-.5)*halfD*1.5,y=structureRoofY(this.world,structure)+.12,radius=6.6;
+    this.broadcast({t:'killstreakFx',phase:'lightningStrike',kind:'lightning',id:effect.id,ownerId:effect.ownerId,x,y,z,radius,at:now});
+    for(const entry of this.killstreakEnemies(effect.ownerId,effect.ownerTeam,now)){
+      const actor=entry.actor,boltD=Math.hypot(finiteNumber(actor.x,0)-x,finiteNumber(actor.z,0)-z),structureD=rectDistance2D(actor.x,actor.z,structure),d=Math.min(boltD,structureD);if(d>radius)continue;
+      const damage=this.blastDamage(150,d,radius,.24,.36),dx=finiteNumber(actor.x,0)-x,dz=finiteNumber(actor.z,0)-z,horizontal=Math.hypot(dx,dz)||1,force=.34+.68*Math.sqrt(clamp(damage/150,0,1)),knockback={x:dx/horizontal*5.8*force,z:dz/horizontal*5.8*force,y:2.4+3.2*force};
+      if(entry.isBot)this.damageBot(actor,effect.ownerId,damage,'lightning',knockback,now,'',settings,{distance:d,blast:true});else this.damageHuman(entry.socket,actor,effect.ownerId,damage,'lightning',knockback,now,'',settings,{distance:d,blast:true});
+    }
+    this.noteExplosion({x,z,team:effect.ownerTeam,id:effect.id,kind:'lightning'},now);effect.strikes++;effect.nextAt=now+650+Math.floor(Math.random()*190);
+  }
+
+  stepAsteroidKillstreak(effect,now,settings){
+    for(const impact of effect.impacts){if(!impact.warned&&now>=impact.warnAt){impact.warned=true;const y=this.world.geometry.worldSupportHeight(impact.x,impact.z,1000,false,.05);this.broadcast({t:'killstreakFx',phase:'asteroidIncoming',kind:'asteroids',id:effect.id,ownerId:effect.ownerId,x:impact.x,y,z:impact.z,impactAt:impact.impactAt,radius:8.2});}
+      if(impact.done||now<impact.impactAt)continue;impact.done=true;const y=this.world.geometry.worldSupportHeight(impact.x,impact.z,1000,false,.05)+.15,radius=8.2;this.applyKillstreakArea(effect.ownerId,effect.ownerTeam,impact.x,y,impact.z,radius,155,'asteroids',now,settings,{lineOfSight:true});this.noteExplosion({x:impact.x,z:impact.z,team:effect.ownerTeam,id:effect.id,kind:'asteroids'},now);this.broadcast({t:'killstreakFx',phase:'asteroidImpact',kind:'asteroids',id:effect.id,ownerId:effect.ownerId,x:impact.x,y,z:impact.z,radius,at:now});}
+  }
+
+  stepKillstreaks(now,settings){
+    for(let i=this.killstreakEffects.length-1;i>=0;i--){const effect=this.killstreakEffects[i];if(effect.kind==='ufo')this.stepUfoKillstreak(effect,now,settings);else if(effect.kind==='lightning')this.stepLightningKillstreak(effect,now,settings);else if(effect.kind==='asteroids')this.stepAsteroidKillstreak(effect,now,settings);const complete=effect.kind==='ufo'?now>=effect.endsAt&&effect.abductions.every(item=>item.done):effect.kind==='lightning'?effect.strikes>=effect.maxStrikes||now>=effect.endsAt:effect.impacts.every(item=>item.done)||now>=effect.endsAt+1000;if(complete){this.broadcast({t:'killstreakFx',phase:'end',kind:effect.kind,id:effect.id,ownerId:effect.ownerId,at:now});this.killstreakEffects.splice(i,1);}}
+  }
+
   awardKill(attackerId, victimId, now) {
     if (!attackerId || attackerId === victimId) return 0;
     const updateChain = (p) => {
@@ -2550,8 +2666,13 @@ export class GameRoom {
       const p = socket.deserializeAttachment() || {};
       if (p.clientId !== attackerId || p.replaced) continue;
       p.kills = Math.max(0, Math.floor(finiteNumber(p.kills, 0))) + 1;
+      p.killstreakKills=Math.max(0,Math.floor(finiteNumber(p.killstreakKills,0)))+1;
+      p.killstreakAvailable=normalizeKillstreakList(p.killstreakAvailable);p.killstreakEarned=normalizeKillstreakList(p.killstreakEarned,{unique:true});
+      const newlyEarned=[];for(const kind of KILLSTREAK_ORDER){const spec=KILLSTREAK_SPECS[kind];if(p.killstreakKills<spec.kills||p.killstreakEarned.includes(kind))continue;p.killstreakEarned.push(kind);p.killstreakAvailable.push(kind);newlyEarned.push(kind);}
+      p.killstreakAvailable=normalizeKillstreakList(p.killstreakAvailable);p.killstreakEarned=normalizeKillstreakList(p.killstreakEarned,{unique:true});
       const multiKill = updateChain(p);
       socket.serializeAttachment(p);
+      sendJson(socket,{t:'killstreakState',...killstreakState(p),justEarned:newlyEarned});
       this.recordMatchKill(attackerId, victimId, now);
       return multiKill;
     }
@@ -2590,10 +2711,11 @@ export class GameRoom {
       target.deaths = Math.max(0, Math.floor(finiteNumber(target.deaths, 0))) + 1;
       target.multiKillCount = 0;
       target.lastKillAt = 0;
+      target.killstreakKills=0;target.killstreakEarned=[];target.abductedUntil=0;target.abductedBy='';
       // Publish the victim's authoritative death count before awardKill builds
       // the kill event snapshot. This keeps the scoreboard/KD state in sync
       // during the death screen instead of correcting only after respawn.
-      socket.serializeAttachment(target);
+      socket.serializeAttachment(target);sendJson(socket,{t:'killstreakState',...killstreakState(target)});
       multiKill = this.awardKill(attackerId, target.clientId, now);
     }
     const headshot = !!hitMeta.headshot;
@@ -2624,6 +2746,7 @@ export class GameRoom {
       bot.deaths = Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))) + 1;
       bot.multiKillCount = 0;
       bot.lastKillAt = 0;
+      bot.killstreakKills=0;bot.killstreakEarned=[];bot.abductedUntil=0;bot.abductedBy='';
       multiKill = this.awardKill(attackerId, bot.id, now);
     }
     const headshot = !!hitMeta.headshot;
@@ -2659,7 +2782,7 @@ export class GameRoom {
     const attacker = this.findCombatant(attackerId);
     const victim = this.findCombatant(victimId);
     return {
-      t: "kill", at: now, weapon: (weapon === "sticky" || weapon === "frag") ? weapon : safeWeapon(weapon), attacker, victim,
+      t: "kill", at: now, weapon: (["sticky","frag","ufo","lightning","asteroids"].includes(weapon)) ? weapon : safeWeapon(weapon), attacker, victim,
       headshot: !!meta.headshot, distance: Math.max(0, finiteNumber(meta.distance, 0)),
       multiKill: Math.max(0, Math.floor(finiteNumber(meta.multiKill, 0))),
     };

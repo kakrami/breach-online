@@ -1,4 +1,4 @@
-import { ARENA_LIMIT, PLAYER_HEIGHT, PLAYER_RADIUS, WORLD_PLAYER_COLLIDERS, BUILDING_WINDOW_PORTALS, worldSupportHeight } from './world-geometry.js?v=1.44.61';
+import { ARENA_LIMIT, PLAYER_HEIGHT, PLAYER_RADIUS, WORLD_PLAYER_COLLIDERS, BUILDING_WINDOW_PORTALS, worldSupportHeight } from './world-geometry.js?v=1.44.62';
 
 const CELL_SIZE = 8;
 const CELL_HEIGHT = 3;

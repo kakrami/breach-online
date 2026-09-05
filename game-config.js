@@ -1,9 +1,17 @@
-export const APP_VERSION = '1.44.61';
-export const PROTOCOL_VERSION = 84;
+export const APP_VERSION = '1.44.62';
+export const PROTOCOL_VERSION = 85;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
 export const TEAM_COLORS = { blue:'#54a9ff', red:'#ff3b45' };
+
+export const KILLSTREAK_ORDER = Object.freeze(['ufo','lightning','asteroids']);
+export const KILLSTREAK_SPECS = Object.freeze({
+  ufo:Object.freeze({id:'ufo',name:'UFO ABDUCTION',short:'UFO',kills:5,targeted:false}),
+  lightning:Object.freeze({id:'lightning',name:'LIGHTNING STORM',short:'LIGHTNING',kills:7,targeted:false}),
+  asteroids:Object.freeze({id:'asteroids',name:'ASTEROID STRIKE',short:'ASTEROIDS',kills:9,targeted:true}),
+});
+export function normalizeKillstreak(value){const id=String(value||'').toLowerCase();return KILLSTREAK_SPECS[id]?id:'';}
 
 export const MAP_ORDER = ['highlands','depot','yard','rig'];
 export const DEFAULT_MAP_ID = 'highlands';
