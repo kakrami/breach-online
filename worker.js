@@ -2621,7 +2621,7 @@ export class GameRoom {
   stepUfoKillstreak(effect,now,settings){
     if(now>=effect.nextAt&&effect.victims.length<effect.maxVictims){
       const candidates=this.killstreakEnemies(effect.ownerId,effect.ownerTeam,now).filter(entry=>actorIsOutdoors(this.world,entry.actor)&&now>=finiteNumber(entry.actor.abductedUntil,0)&&!effect.victims.includes(entry.id));
-      if(candidates.length){const entry=candidates[Math.floor(Math.random()*candidates.length)],actor=entry.actor,killAt=now+1850;actor.abductedUntil=killAt;actor.abductedBy=effect.ownerId;if(entry.socket){entry.socket.serializeAttachment(actor);sendJson(entry.socket,{t:'killstreakControl',kind:'ufo',until:killAt});}
+      if(candidates.length){const entry=candidates[Math.floor(Math.random()*candidates.length)],actor=entry.actor,killAt=now+3200;actor.abductedUntil=killAt;actor.abductedBy=effect.ownerId;if(entry.socket){entry.socket.serializeAttachment(actor);sendJson(entry.socket,{t:'killstreakControl',kind:'ufo',until:killAt});}
         effect.victims.push(entry.id);effect.abductions.push({targetId:entry.id,killAt,done:false});this.broadcast({t:'killstreakFx',phase:'ufoAbduct',kind:'ufo',id:effect.id,ownerId:effect.ownerId,targetId:entry.id,x:actor.x,y:actor.y,z:actor.z,startAt:now,killAt});
       }
       effect.nextAt=now+520;
@@ -2636,7 +2636,7 @@ export class GameRoom {
     if(enemies.length){const scored=enemies.map(entry=>{let best=null,bestD=Infinity;for(const item of structures){const d=rectDistance2D(entry.actor.x,entry.actor.z,item);if(d<bestD){bestD=d;best=item;}}return{entry,structure:best,d:bestD};}).sort((a,b)=>a.d-b.d);const near=scored.filter(row=>row.d<=7.5);const pick=(near.length?near:scored).slice(0,Math.min(4,(near.length?near:scored).length));if(pick.length){const row=pick[Math.floor(Math.random()*pick.length)];structure=row.structure;target=row.entry.actor;}}
     if(!structure)structure=structures[Math.floor(Math.random()*structures.length)];
     const halfW=Math.max(.2,finiteNumber(structure.w,1)/2),halfD=Math.max(.2,finiteNumber(structure.d,1)/2),x=target?clamp(finiteNumber(target.x,structure.x),structure.x-halfW,structure.x+halfW):structure.x+(Math.random()-.5)*halfW*1.5,z=target?clamp(finiteNumber(target.z,structure.z),structure.z-halfD,structure.z+halfD):structure.z+(Math.random()-.5)*halfD*1.5,y=structureRoofY(this.world,structure)+.12,radius=6.6;
-    this.broadcast({t:'killstreakFx',phase:'lightningStrike',kind:'lightning',id:effect.id,ownerId:effect.ownerId,x,y,z,radius,at:now});
+    this.broadcast({t:'killstreakFx',phase:'lightningStrike',kind:'lightning',id:effect.id,ownerId:effect.ownerId,x,y,z,radius,at:now,structureX:structure.x,structureZ:structure.z,structureW:structure.w,structureD:structure.d,structureRoofY:y,structureKind:structure.streakStructure||'structure'});
     for(const entry of this.killstreakEnemies(effect.ownerId,effect.ownerTeam,now)){
       const actor=entry.actor,boltD=Math.hypot(finiteNumber(actor.x,0)-x,finiteNumber(actor.z,0)-z),structureD=rectDistance2D(actor.x,actor.z,structure),d=Math.min(boltD,structureD);if(d>radius)continue;
       const damage=this.blastDamage(150,d,radius,.24,.36),dx=finiteNumber(actor.x,0)-x,dz=finiteNumber(actor.z,0)-z,horizontal=Math.hypot(dx,dz)||1,force=.34+.68*Math.sqrt(clamp(damage/150,0,1)),knockback={x:dx/horizontal*5.8*force,z:dz/horizontal*5.8*force,y:2.4+3.2*force};
