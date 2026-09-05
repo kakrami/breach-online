@@ -1662,7 +1662,7 @@ export class GameRoom {
     }
 
     if (payload.t === "adminSettings") {
-      if (matchAllowsLobbyEdits(meta.match)) {sendJson(socket,{t:'notice',tone:'error',text:'APPLIES ON START'});return;}
+      if (matchAllowsLobbyEdits(meta.match)) return;
       if (!isRoomAdmin(meta, me.clientId)) {
         sendJson(socket,{t:"notice",tone:"error",text:"ADMIN REQUIRED"});
         return;
@@ -1682,7 +1682,7 @@ export class GameRoom {
     }
 
     if (payload.t === "adminBots") {
-      if (matchAllowsLobbyEdits(meta.match)) {sendJson(socket,{t:'notice',tone:'error',text:'APPLIES ON START'});return;}
+      if (matchAllowsLobbyEdits(meta.match)) return;
       if (!isRoomAdmin(meta, me.clientId)) {
         sendJson(socket,{t:"notice",tone:"error",text:"ADMIN REQUIRED"});
         return;
