@@ -2605,12 +2605,12 @@ export class GameRoom {
       const impacts=[];for(let i=0;i<8;i++){const angle=Math.random()*Math.PI*2,radius=Math.sqrt(Math.random())*11,ix=clamp(x+Math.cos(angle)*radius,-mapLimit,mapLimit),iz=clamp(z+Math.sin(angle)*radius,-mapLimit,mapLimit),warnAt=now+480+i*430;impacts.push({x:ix,z:iz,warnAt,impactAt:warnAt+720,warned:false,done:false});}
       this.killstreakEffects.push({...base,x,z,endsAt:now+5600,impacts});
     }else if(id==='earthquake'){
-      const seed=Math.floor(Math.random()*0x7fffffff);this.killstreakEffects.push({...base,endsAt:now+9000,nextAt:now+220,pulses:0,seed});
+      const seed=Math.floor(Math.random()*0x7fffffff),radius=Math.max(10,finiteNumber(spec.targetRadius,18));this.killstreakEffects.push({...base,x,z,radius,endsAt:now+9500,nextAt:now+140,pulses:0,seed});
     }else if(id==='solarnuke'){
-      this.killstreakEffects.push({...base,endsAt:now+10500,blastAt:now+5200,blasted:false});
+      this.killstreakEffects.push({...base,endsAt:now+14000,blastAt:now+8000,blasted:false});
     }
     const activeEffect=this.killstreakEffects[this.killstreakEffects.length-1];
-    this.broadcast({t:'killstreakFx',phase:'start',kind:id,id:effectId,ownerId:player.clientId,ownerTeam:safeTeam(player.team),x,z,startedAt:now,endsAt:activeEffect.endsAt,blastAt:finiteNumber(activeEffect.blastAt,0),seed:Math.floor(finiteNumber(activeEffect.seed,0))});
+    this.broadcast({t:'killstreakFx',phase:'start',kind:id,id:effectId,ownerId:player.clientId,ownerTeam:safeTeam(player.team),x,z,radius:Math.max(0,finiteNumber(activeEffect.radius,finiteNumber(spec.targetRadius,0))),startedAt:now,endsAt:activeEffect.endsAt,blastAt:finiteNumber(activeEffect.blastAt,0),seed:Math.floor(finiteNumber(activeEffect.seed,0))});
     return true;
   }
 
@@ -2662,12 +2662,14 @@ export class GameRoom {
   }
 
   stepEarthquakeKillstreak(effect,now){
-    if(now<effect.nextAt)return;const strength=.82+.28*Math.sin(effect.pulses*1.73+(effect.seed%97)*.11),angle=(effect.seed%6283)/1000+effect.pulses*1.91,pushX=Math.cos(angle)*1.05*strength,pushZ=Math.sin(angle)*1.05*strength;
+    if(now<effect.nextAt)return;const radius=Math.max(10,finiteNumber(effect.radius,18)),phase=.92+.34*Math.sin(effect.pulses*1.73+(effect.seed%97)*.11),angle=(effect.seed%6283)/1000+effect.pulses*1.91;
     for(const entry of this.killstreakEnemies(effect.ownerId,effect.ownerTeam,now)){
-      const actor=entry.actor;actor.knockVelocityX=clamp(finiteNumber(actor.knockVelocityX,0)+pushX,-5.2,5.2);actor.knockVelocityZ=clamp(finiteNumber(actor.knockVelocityZ,0)+pushZ,-5.2,5.2);
-      if(entry.socket){entry.socket.serializeAttachment(actor);sendJson(entry.socket,{t:'killstreakControl',kind:'earthquake',until:effect.endsAt,seed:effect.seed,pushX,pushZ,strength});}
+      const actor=entry.actor,dx=finiteNumber(actor.x,0)-finiteNumber(effect.x,0),dz=finiteNumber(actor.z,0)-finiteNumber(effect.z,0),distance=Math.hypot(dx,dz);if(distance>radius)continue;
+      const proximity=clamp(1-distance/radius,0,1),strength=phase*(1.0+1.25*proximity),pushMagnitude=1.55+1.45*proximity,pushX=Math.cos(angle)*pushMagnitude*strength,pushZ=Math.sin(angle)*pushMagnitude*strength;
+      actor.knockVelocityX=clamp(finiteNumber(actor.knockVelocityX,0)+pushX,-7.5,7.5);actor.knockVelocityZ=clamp(finiteNumber(actor.knockVelocityZ,0)+pushZ,-7.5,7.5);
+      if(entry.socket){entry.socket.serializeAttachment(actor);sendJson(entry.socket,{t:'killstreakControl',kind:'earthquake',until:Math.min(effect.endsAt,now+760),seed:effect.seed,pushX,pushZ,strength});}
     }
-    effect.pulses++;effect.nextAt=now+520;
+    effect.pulses++;effect.nextAt=now+390;
   }
 
   stepSolarNukeKillstreak(effect,now,settings){
@@ -2816,7 +2818,7 @@ export class GameRoom {
     const attacker = this.findCombatant(attackerId);
     const victim = this.findCombatant(victimId);
     return {
-      t: "kill", at: now, weapon: (["sticky","frag","ufo","lightning","asteroids"].includes(weapon)) ? weapon : safeWeapon(weapon), attacker, victim,
+      t: "kill", at: now, weapon: (["sticky","frag","ufo","lightning","asteroids","solarnuke"].includes(weapon)) ? weapon : safeWeapon(weapon), attacker, victim,
       headshot: !!meta.headshot, distance: Math.max(0, finiteNumber(meta.distance, 0)),
       multiKill: Math.max(0, Math.floor(finiteNumber(meta.multiKill, 0))),
     };
