@@ -4,7 +4,7 @@ import * as DepotGeometry from './world-geometry-depot.js';
 import * as YardGeometry from './world-geometry-yard.js';
 import * as RigGeometry from './world-geometry-rig.js';
 import {
-  APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS, KILLSTREAK_ORDER, KILLSTREAK_SPECS, normalizeKillstreak, DEFAULT_MAP_ID, normalizeMapId, mapSpec,
+  APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS, KILLSTREAK_SPECS, KILLSTREAK_SELECTION_COUNT, normalizeKillstreak, normalizeKillstreakSelection, DEFAULT_MAP_ID, normalizeMapId, mapSpec,
   WEAPON_ORDER, PRIMARY_WEAPONS, SECONDARY_WEAPONS, WEAPON_SPECS, normalizeWeaponAttachments, resolveWeaponSpec, weaponSpreadRadians, weaponHeatAfterDelay, weaponHeatAfterShot, weaponDamageAtDistance, weaponZoneDamageScale, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, EQUIPMENT_SPECS, TACTICAL_EQUIPMENT, LETHAL_EQUIPMENT, normalizeTactical, normalizeLethal, equipmentForLoadout, LOADOUT_CLASS_COUNT, LOADOUT_CLASS_IDS, normalizeLoadoutClassId, normalizeLoadoutClassName, normalizeLoadoutDefinition, defaultLoadoutClasses, normalizeLoadoutClasses, loadoutClassById, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings, MOVEMENT_FEEL, WEAPON_SWITCH_MS, EQUIPMENT_WEAPON_RECOVER_MS,
   DEFAULT_MATCH_RULES, GAME_MODES, normalizeGameMode, gameModeSpec, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, equipmentCollisionRadius, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, FRAG_RADIUS, FRAG_MAX_DAMAGE, SMOKE_RADIUS, SMOKE_DURATION_MS, SMOKE_LOS_RADIUS_SCALE, SMOKE_GROW_MS, SMOKE_START_SCALE, GROUND_FOLLOW_DROP
 } from './game-config.js';
@@ -224,7 +224,7 @@ function combatantsAreFriendly(mode,ownerId,ownerTeam,targetId,targetTeam){retur
 function normalizeKillstreakList(value,{unique=false}={}){
   const out=[];for(const raw of Array.isArray(value)?value:[]){const id=normalizeKillstreak(raw);if(!id)continue;if(unique&&out.includes(id))continue;out.push(id);if(out.length>=8)break;}return out;
 }
-function killstreakState(player){return{streak:Math.max(0,Math.floor(finiteNumber(player?.killstreakKills,0))),available:normalizeKillstreakList(player?.killstreakAvailable),earned:normalizeKillstreakList(player?.killstreakEarned,{unique:true})};}
+function killstreakState(player){const selection=normalizeKillstreakSelection(player?.killstreakSelection),selected=new Set(selection);return{streak:Math.max(0,Math.floor(finiteNumber(player?.killstreakKills,0))),selection,available:normalizeKillstreakList(player?.killstreakAvailable).filter(id=>selected.has(id)),earned:normalizeKillstreakList(player?.killstreakEarned,{unique:true}).filter(id=>selected.has(id))};}
 function structureRoofY(world,structure){
   const base=world.geometry.terrainHeight(finiteNumber(structure?.x,0),finiteNumber(structure?.z,0));
   if(Number.isFinite(Number(structure?.floorH))&&Number.isFinite(Number(structure?.levels)))return base+Number(structure.floorH)*Math.max(1,Number(structure.levels));
@@ -442,7 +442,7 @@ function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
     fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,combatAction:'ready',combatActionKind:'',combatReadyAt:0,sprintFireReadyAt:0,ads:false,adsAmount:0,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,
     verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,lastMovementClientAt:now,lastStateSeq:0,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
     flashUntil:0,flashPower:0,flashDurationMs:0,fireHeat:{},fireHeatAt:{},knockVelocityX:0,knockVelocityZ:0,velocityX:0,velocityZ:0,traversal:null,lastTraverseSeq:0,ladder:null,lastLadderSeq:0,
-    killstreakKills:Math.max(0,Math.floor(finiteNumber(player?.killstreakKills,0))),killstreakAvailable:normalizeKillstreakList(player?.killstreakAvailable),killstreakEarned:normalizeKillstreakList(player?.killstreakEarned,{unique:true}),abductedUntil:0,abductedBy:'',
+    killstreakSelection:normalizeKillstreakSelection(player?.killstreakSelection),killstreakKills:Math.max(0,Math.floor(finiteNumber(player?.killstreakKills,0))),killstreakAvailable:normalizeKillstreakList(player?.killstreakAvailable).filter(id=>normalizeKillstreakSelection(player?.killstreakSelection).includes(id)),killstreakEarned:normalizeKillstreakList(player?.killstreakEarned,{unique:true}).filter(id=>normalizeKillstreakSelection(player?.killstreakSelection).includes(id)),abductedUntil:0,abductedBy:'',
   };
   if(resetStats)Object.assign(next,{kills:0,deaths:0,multiKillCount:0,lastKillAt:0,killstreakKills:0,killstreakAvailable:[],killstreakEarned:[]});
   return next;
@@ -834,7 +834,7 @@ export class GameRoom {
       : type === 'state' ? { rate: 55, burst: 220 }
       : type === 'simTick' ? { rate: 40, burst: 180 }
       : type === 'fire' ? { rate: 24, burst: 72 }
-      : ['equipmentAction','throw','reload','weapon','loadout','killstreak','team','god','startMatch','returnLobby','adminPlayer','adminSettings','adminBots'].includes(type) ? { rate: 14, burst: 22 }
+      : ['equipmentAction','throw','reload','weapon','loadout','killstreakLoadout','killstreak','team','god','startMatch','returnLobby','adminPlayer','adminSettings','adminBots'].includes(type) ? { rate: 14, burst: 22 }
       : type === 'ping' ? { rate: 8, burst: 12 }
       : type === 'chat' ? { rate: 1.5, burst: 4 }
       : { rate: 30, burst: 45 };
@@ -1079,7 +1079,7 @@ export class GameRoom {
     const primaryAttachments=normalizeWeaponAttachments(primaryWeapon,body?.primaryAttachments),secondaryAttachments=normalizeWeaponAttachments(secondaryWeapon,body?.secondaryAttachments);
     const tactical = safeTactical(body?.tactical);
     const lethal = safeLethal(body?.lethal);
-    const baseLoadout=normalizeLoadout({primaryWeapon,secondaryWeapon,primaryAttachments,secondaryAttachments,tactical,lethal}),loadoutClasses=normalizeLoadoutClasses(body?.loadoutClasses,baseLoadout),activeClassId=normalizeLoadoutClassId(body?.activeClassId),activeClass=normalizeLoadout(loadoutClassById(loadoutClasses,activeClassId,baseLoadout),baseLoadout);
+    const baseLoadout=normalizeLoadout({primaryWeapon,secondaryWeapon,primaryAttachments,secondaryAttachments,tactical,lethal}),loadoutClasses=normalizeLoadoutClasses(body?.loadoutClasses,baseLoadout),activeClassId=normalizeLoadoutClassId(body?.activeClassId),activeClass=normalizeLoadout(loadoutClassById(loadoutClasses,activeClassId,baseLoadout),baseLoadout),killstreakSelection=normalizeKillstreakSelection(body?.killstreakSelection);
     if (!clientId) return { status: 400, data: { error: "Missing client ID." } };
     if (clientAuth.length < 32) return { status: 401, data: { error: "Missing client credential." } };
     if (!this.allowJoinTicketRequest(clientId, now)) return { status: 429, data: { error: "Too many join attempts. Try again shortly." } };
@@ -1088,7 +1088,7 @@ export class GameRoom {
     if (expected && expected !== clientAuthHash) return { status: 403, data: { error: "Client credential rejected." } };
     const tickets = await this.loadJoinTickets(now);
     const ticket = makeJoinTicket();
-    tickets[ticket] = { clientId, clientAuthHash, name, team, ...activeClass, loadoutClasses, activeClassId, issuedAt: now, expiresAt: now + JOIN_TICKET_TTL_MS };
+    tickets[ticket] = { clientId, clientAuthHash, name, team, ...activeClass, loadoutClasses, activeClassId, killstreakSelection, issuedAt: now, expiresAt: now + JOIN_TICKET_TTL_MS };
     await this.ctx.storage.put("joinTickets", tickets);
     return { status: 201, data: { ticket, expiresInMs: JOIN_TICKET_TTL_MS } };
   }
@@ -1190,7 +1190,7 @@ export class GameRoom {
     const requestedPrimaryAttachments=normalizeWeaponAttachments(requestedPrimary,join.primaryAttachments),requestedSecondaryAttachments=normalizeWeaponAttachments(requestedSecondary,join.secondaryAttachments);
     const requestedTactical = safeTactical(join.tactical);
     const requestedLethal = safeLethal(join.lethal);
-    const requestedBase=normalizeLoadout({primaryWeapon:requestedPrimary,secondaryWeapon:requestedSecondary,primaryAttachments:requestedPrimaryAttachments,secondaryAttachments:requestedSecondaryAttachments,tactical:requestedTactical,lethal:requestedLethal}),requestedClasses=normalizeLoadoutClasses(join.loadoutClasses,requestedBase),requestedClassId=normalizeLoadoutClassId(join.activeClassId);
+    const requestedBase=normalizeLoadout({primaryWeapon:requestedPrimary,secondaryWeapon:requestedSecondary,primaryAttachments:requestedPrimaryAttachments,secondaryAttachments:requestedSecondaryAttachments,tactical:requestedTactical,lethal:requestedLethal}),requestedClasses=normalizeLoadoutClasses(join.loadoutClasses,requestedBase),requestedClassId=normalizeLoadoutClassId(join.activeClassId),requestedKillstreakSelection=normalizeKillstreakSelection(join.killstreakSelection);
     const authHashes = meta.clientAuthHashes;
     const expectedAuthHash = authHashes[clientId] || '';
     if (expectedAuthHash && expectedAuthHash !== clientAuthHash) return json(request, this.env, { error: "Client credential rejected." }, 403);
@@ -1266,9 +1266,10 @@ export class GameRoom {
       combatAction:'ready',combatActionKind:'',combatReadyAt:0,
       kills: Math.max(0, Math.floor(finiteNumber(spawn.kills, 0))),
       deaths: Math.max(0, Math.floor(finiteNumber(spawn.deaths, 0))),
+      killstreakSelection: normalizeKillstreakSelection(preserved?.killstreakSelection || requestedKillstreakSelection),
       killstreakKills: Math.max(0, Math.floor(finiteNumber(preserved?.killstreakKills, spawn.killstreakKills || 0))),
-      killstreakAvailable: normalizeKillstreakList(preserved?.killstreakAvailable || spawn.killstreakAvailable),
-      killstreakEarned: normalizeKillstreakList(preserved?.killstreakEarned || spawn.killstreakEarned,{unique:true}),
+      killstreakAvailable: normalizeKillstreakList(preserved?.killstreakAvailable || spawn.killstreakAvailable).filter(id=>normalizeKillstreakSelection(preserved?.killstreakSelection || requestedKillstreakSelection).includes(id)),
+      killstreakEarned: normalizeKillstreakList(preserved?.killstreakEarned || spawn.killstreakEarned,{unique:true}).filter(id=>normalizeKillstreakSelection(preserved?.killstreakSelection || requestedKillstreakSelection).includes(id)),
       abductedUntil:0,abductedBy:'',
       godMode: preserved ? !!preserved.godMode : false,
       pendingTeam: preserved?.pendingTeam ? safeTeam(preserved.pendingTeam) : '',
@@ -1359,8 +1360,17 @@ export class GameRoom {
     else if(me.traversal||me.ladder)me={...me,traversal:null,ladder:null,verticalVelocity:0,moveSpeed:0};
     socket.serializeAttachment(me);
 
+    if(payload.t==='killstreakLoadout'){
+      const rev=Math.max(0,Math.floor(finiteNumber(payload.rev,0))),supplied=Array.isArray(payload.selection)?payload.selection:[],raw=normalizeKillstreakSelection(supplied,{fill:false});
+      if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'killstreakLoadout',accepted:false,reason:'locked',rev,selection:normalizeKillstreakSelection(me.killstreakSelection)});return;}
+      if(supplied.length!==KILLSTREAK_SELECTION_COUNT||raw.length!==KILLSTREAK_SELECTION_COUNT){sendJson(socket,{t:'killstreakLoadout',accepted:false,reason:'invalid',rev,selection:normalizeKillstreakSelection(me.killstreakSelection)});return;}
+      me.killstreakSelection=normalizeKillstreakSelection(raw);me.killstreakKills=0;me.killstreakAvailable=[];me.killstreakEarned=[];socket.serializeAttachment(me);
+      sendJson(socket,{t:'killstreakLoadout',accepted:true,rev,selection:me.killstreakSelection});sendJson(socket,{t:'killstreakState',...killstreakState(me)});return;
+    }
+
     if(payload.t==='killstreak'){
       const kind=normalizeKillstreak(payload.kind);if(!kind){sendJson(socket,{t:'killstreakAck',accepted:false,reason:'invalid'});return;}
+      if(!normalizeKillstreakSelection(me.killstreakSelection).includes(kind)){sendJson(socket,{t:'killstreakAck',accepted:false,kind,reason:'not_selected'});return;}
       if(!matchAllowsCombat(meta.match)||me.hp<=0||now<finiteNumber(me.wastedUntil,0)||now<finiteNumber(me.abductedUntil,0)){sendJson(socket,{t:'killstreakAck',accepted:false,kind,reason:'unavailable'});return;}
       const target={x:Number(payload.x),z:Number(payload.z)},accepted=this.activateKillstreak(socket,me,kind,now,target);sendJson(socket,{t:'killstreakAck',accepted,kind,reason:accepted?'':'not_ready'});if(accepted)await this.stepSimulation(now,meta);return;
     }
@@ -1558,7 +1568,7 @@ export class GameRoom {
       const blueBots=clamp(Math.floor(finiteNumber(setup.bots.blueBots,0)),0,MAX_BOTS),redBots=clamp(Math.floor(finiteNumber(setup.bots.redBots,0)),0,MAX_BOTS);
       if(blueBots+redBots>MAX_BOTS){sendJson(socket,{t:'notice',tone:'error',text:`Maximum ${MAX_BOTS} bots per match.`});return;}
       meta.mapId=normalizeMapId(setup.mapId);this.world=worldBundle(meta.mapId);meta.settings=normalizeWorldSettings(setup.settings);meta.blueBots=blueBots;meta.redBots=redBots;meta.botDifficulty=safeBotDifficulty(setup.bots.difficulty);meta.match=defaultMatchState(now,rules);
-      if(setup.loadout&&typeof setup.loadout==='object'){const base=normalizeLoadout(me),classes=normalizeLoadoutClasses(setup.loadoutClasses??me.loadoutClasses,base),classId=normalizeLoadoutClassId(setup.classId??me.activeClassId),next=normalizeLoadout(setup.loadout,loadoutClassById(classes,classId,base)),idx=classes.findIndex(item=>item.id===classId);if(idx>=0)classes[idx]={...classes[idx],...next};me.loadoutClasses=classes;me.pendingClassId=classId;me.pendingLoadout=next;socket.serializeAttachment(me);}
+      if(setup.loadout&&typeof setup.loadout==='object'){const base=normalizeLoadout(me),classes=normalizeLoadoutClasses(setup.loadoutClasses??me.loadoutClasses,base),classId=normalizeLoadoutClassId(setup.classId??me.activeClassId),next=normalizeLoadout(setup.loadout,loadoutClassById(classes,classId,base)),idx=classes.findIndex(item=>item.id===classId);if(idx>=0)classes[idx]={...classes[idx],...next};me.loadoutClasses=classes;me.pendingClassId=classId;me.pendingLoadout=next;}me.killstreakSelection=normalizeKillstreakSelection(setup.killstreakSelection??me.killstreakSelection);socket.serializeAttachment(me);
       this.prepareRound(meta,now);await this.putMeta(meta);await this.ctx.storage.put('bots',this.bots);await this.updateDirectory(this.liveSockets().length,meta);return;
     }
 
@@ -2587,6 +2597,7 @@ export class GameRoom {
 
   activateKillstreak(socket,player,kind,now,target={}){
     const id=normalizeKillstreak(kind),spec=KILLSTREAK_SPECS[id];if(!spec)return false;
+    if((id==='earthquake'||id==='solarnuke')&&this.killstreakEffects.some(effect=>effect.kind===id&&now<effect.endsAt))return false;
     const available=normalizeKillstreakList(player.killstreakAvailable),index=available.indexOf(id);if(index<0)return false;
     const mapLimit=Math.max(8,finiteNumber(this.world.geometry.MINIMAP_LIMIT,this.world.geometry.ARENA_LIMIT||ARENA_LIMIT));
     let x=0,z=0;
@@ -2595,11 +2606,16 @@ export class GameRoom {
     const effectId=crypto.randomUUID().replace(/-/g,'').slice(0,12),base={id:effectId,kind:id,ownerId:player.clientId,ownerTeam:safeTeam(player.team),startedAt:now};
     if(id==='ufo')this.killstreakEffects.push({...base,endsAt:now+7600,nextAt:now+650,maxVictims:3,victims:[],abductions:[]});
     else if(id==='lightning')this.killstreakEffects.push({...base,endsAt:now+5200,nextAt:now+320,strikes:0,maxStrikes:7});
-    else{
+    else if(id==='asteroids'){
       const impacts=[];for(let i=0;i<8;i++){const angle=Math.random()*Math.PI*2,radius=Math.sqrt(Math.random())*11,ix=clamp(x+Math.cos(angle)*radius,-mapLimit,mapLimit),iz=clamp(z+Math.sin(angle)*radius,-mapLimit,mapLimit),warnAt=now+480+i*430;impacts.push({x:ix,z:iz,warnAt,impactAt:warnAt+720,warned:false,done:false});}
       this.killstreakEffects.push({...base,x,z,endsAt:now+5600,impacts});
+    }else if(id==='earthquake'){
+      const seed=Math.floor(Math.random()*0x7fffffff);this.killstreakEffects.push({...base,endsAt:now+9000,nextAt:now+220,pulses:0,seed});
+    }else if(id==='solarnuke'){
+      this.killstreakEffects.push({...base,endsAt:now+10500,blastAt:now+5200,blasted:false});
     }
-    this.broadcast({t:'killstreakFx',phase:'start',kind:id,id:effectId,ownerId:player.clientId,ownerTeam:safeTeam(player.team),x,z,startedAt:now,endsAt:this.killstreakEffects[this.killstreakEffects.length-1].endsAt});
+    const activeEffect=this.killstreakEffects[this.killstreakEffects.length-1];
+    this.broadcast({t:'killstreakFx',phase:'start',kind:id,id:effectId,ownerId:player.clientId,ownerTeam:safeTeam(player.team),x,z,startedAt:now,endsAt:activeEffect.endsAt,blastAt:finiteNumber(activeEffect.blastAt,0),seed:Math.floor(finiteNumber(activeEffect.seed,0))});
     return true;
   }
 
@@ -2650,8 +2666,31 @@ export class GameRoom {
       if(impact.done||now<impact.impactAt)continue;impact.done=true;const y=this.world.geometry.worldSupportHeight(impact.x,impact.z,1000,false,.05)+.15,radius=8.2;this.applyKillstreakArea(effect.ownerId,effect.ownerTeam,impact.x,y,impact.z,radius,155,'asteroids',now,settings,{lineOfSight:true});this.noteExplosion({x:impact.x,z:impact.z,team:effect.ownerTeam,id:effect.id,kind:'asteroids'},now);this.broadcast({t:'killstreakFx',phase:'asteroidImpact',kind:'asteroids',id:effect.id,ownerId:effect.ownerId,x:impact.x,y,z:impact.z,radius,at:now});}
   }
 
+  stepEarthquakeKillstreak(effect,now){
+    if(now<effect.nextAt)return;const strength=.82+.28*Math.sin(effect.pulses*1.73+(effect.seed%97)*.11),angle=(effect.seed%6283)/1000+effect.pulses*1.91,pushX=Math.cos(angle)*1.05*strength,pushZ=Math.sin(angle)*1.05*strength;
+    for(const entry of this.killstreakEnemies(effect.ownerId,effect.ownerTeam,now)){
+      const actor=entry.actor;actor.knockVelocityX=clamp(finiteNumber(actor.knockVelocityX,0)+pushX,-5.2,5.2);actor.knockVelocityZ=clamp(finiteNumber(actor.knockVelocityZ,0)+pushZ,-5.2,5.2);
+      if(entry.socket){entry.socket.serializeAttachment(actor);sendJson(entry.socket,{t:'killstreakControl',kind:'earthquake',until:effect.endsAt,seed:effect.seed,pushX,pushZ,strength});}
+    }
+    effect.pulses++;effect.nextAt=now+520;
+  }
+
+  stepSolarNukeKillstreak(effect,now,settings){
+    if(effect.blasted||now<effect.blastAt)return;effect.blasted=true;
+    for(const entry of this.killstreakEnemies(effect.ownerId,effect.ownerTeam,now)){
+      const actor=entry.actor,dx=finiteNumber(actor.x,0),dz=finiteNumber(actor.z,0),horizontal=Math.hypot(dx,dz)||1,knockback={x:dx/horizontal*7.5,z:dz/horizontal*7.5,y:7.8};
+      if(entry.isBot)this.damageBot(actor,effect.ownerId,999,'solarnuke',knockback,now,'',settings,{distance:0,blast:true});else this.damageHuman(entry.socket,actor,effect.ownerId,999,'solarnuke',knockback,now,'',settings,{distance:0,blast:true});
+    }
+    this.broadcast({t:'killstreakFx',phase:'solarBlast',kind:'solarnuke',id:effect.id,ownerId:effect.ownerId,ownerTeam:effect.ownerTeam,at:now});
+  }
+
   stepKillstreaks(now,settings){
-    for(let i=this.killstreakEffects.length-1;i>=0;i--){const effect=this.killstreakEffects[i];if(effect.kind==='ufo')this.stepUfoKillstreak(effect,now,settings);else if(effect.kind==='lightning')this.stepLightningKillstreak(effect,now,settings);else if(effect.kind==='asteroids')this.stepAsteroidKillstreak(effect,now,settings);const complete=effect.kind==='ufo'?now>=effect.endsAt&&effect.abductions.every(item=>item.done):effect.kind==='lightning'?effect.strikes>=effect.maxStrikes||now>=effect.endsAt:effect.impacts.every(item=>item.done)||now>=effect.endsAt+1000;if(complete){this.broadcast({t:'killstreakFx',phase:'end',kind:effect.kind,id:effect.id,ownerId:effect.ownerId,at:now});this.killstreakEffects.splice(i,1);}}
+    for(let i=this.killstreakEffects.length-1;i>=0;i--){
+      const effect=this.killstreakEffects[i];
+      if(effect.kind==='ufo')this.stepUfoKillstreak(effect,now,settings);else if(effect.kind==='lightning')this.stepLightningKillstreak(effect,now,settings);else if(effect.kind==='asteroids')this.stepAsteroidKillstreak(effect,now,settings);else if(effect.kind==='earthquake')this.stepEarthquakeKillstreak(effect,now);else if(effect.kind==='solarnuke')this.stepSolarNukeKillstreak(effect,now,settings);
+      const complete=effect.kind==='ufo'?(now>=effect.endsAt&&effect.abductions.every(item=>item.done)):effect.kind==='lightning'?(effect.strikes>=effect.maxStrikes||now>=effect.endsAt):effect.kind==='asteroids'?(effect.impacts.every(item=>item.done)||now>=effect.endsAt+1000):now>=effect.endsAt;
+      if(complete){this.broadcast({t:'killstreakFx',phase:'end',kind:effect.kind,id:effect.id,ownerId:effect.ownerId,at:now});this.killstreakEffects.splice(i,1);}
+    }
   }
 
   awardKill(attackerId, victimId, now) {
@@ -2668,7 +2707,7 @@ export class GameRoom {
       p.kills = Math.max(0, Math.floor(finiteNumber(p.kills, 0))) + 1;
       p.killstreakKills=Math.max(0,Math.floor(finiteNumber(p.killstreakKills,0)))+1;
       p.killstreakAvailable=normalizeKillstreakList(p.killstreakAvailable);p.killstreakEarned=normalizeKillstreakList(p.killstreakEarned,{unique:true});
-      const newlyEarned=[];for(const kind of KILLSTREAK_ORDER){const spec=KILLSTREAK_SPECS[kind];if(p.killstreakKills<spec.kills||p.killstreakEarned.includes(kind))continue;p.killstreakEarned.push(kind);p.killstreakAvailable.push(kind);newlyEarned.push(kind);}
+      const selected=normalizeKillstreakSelection(p.killstreakSelection);p.killstreakAvailable=p.killstreakAvailable.filter(id=>selected.includes(id));p.killstreakEarned=p.killstreakEarned.filter(id=>selected.includes(id));const newlyEarned=[];for(const kind of selected){const spec=KILLSTREAK_SPECS[kind];if(p.killstreakKills<spec.kills||p.killstreakEarned.includes(kind))continue;p.killstreakEarned.push(kind);p.killstreakAvailable.push(kind);newlyEarned.push(kind);}
       p.killstreakAvailable=normalizeKillstreakList(p.killstreakAvailable);p.killstreakEarned=normalizeKillstreakList(p.killstreakEarned,{unique:true});
       const multiKill = updateChain(p);
       socket.serializeAttachment(p);

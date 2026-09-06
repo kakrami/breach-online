@@ -1,17 +1,26 @@
-export const APP_VERSION = '1.44.65';
-export const PROTOCOL_VERSION = 85;
+export const APP_VERSION = '1.44.67';
+export const PROTOCOL_VERSION = 87;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
 export const TEAM_COLORS = { blue:'#54a9ff', red:'#ff3b45' };
 
-export const KILLSTREAK_ORDER = Object.freeze(['ufo','lightning','asteroids']);
+export const KILLSTREAK_SELECTION_COUNT = 3;
+export const KILLSTREAK_ORDER = Object.freeze(['ufo','lightning','asteroids','earthquake','solarnuke']);
 export const KILLSTREAK_SPECS = Object.freeze({
-  ufo:Object.freeze({id:'ufo',name:'UFO ABDUCTION',short:'UFO',kills:5,targeted:false}),
-  lightning:Object.freeze({id:'lightning',name:'LIGHTNING STORM',short:'LIGHTNING',kills:7,targeted:false}),
-  asteroids:Object.freeze({id:'asteroids',name:'ASTEROID STRIKE',short:'ASTEROIDS',kills:9,targeted:true}),
+  ufo:Object.freeze({id:'ufo',name:'UFO ABDUCTION',short:'UFO',kills:5,targeted:false,description:'Fast UFOs abduct exposed enemies.'}),
+  lightning:Object.freeze({id:'lightning',name:'LIGHTNING STORM',short:'LIGHTNING',kills:7,targeted:false,description:'Lightning electrifies structures and nearby enemies.'}),
+  asteroids:Object.freeze({id:'asteroids',name:'ASTEROID STRIKE',short:'ASTEROIDS',kills:9,targeted:true,description:'Target an area from the tactical map for a meteor barrage.'}),
+  earthquake:Object.freeze({id:'earthquake',name:'EARTHQUAKE',short:'QUAKE',kills:11,targeted:false,description:'Shakes the battlefield and disrupts enemy aim and movement.'}),
+  solarnuke:Object.freeze({id:'solarnuke',name:'SOLAR NUKE',short:'NUKE',kills:15,targeted:false,description:'Pulls the sun down into an apocalyptic map-wide burn.'}),
 });
+export const DEFAULT_KILLSTREAK_SELECTION = Object.freeze(['ufo','lightning','asteroids']);
 export function normalizeKillstreak(value){const id=String(value||'').toLowerCase();return KILLSTREAK_SPECS[id]?id:'';}
+export function normalizeKillstreakSelection(value,{fill=true}={}){
+  const picked=[];for(const raw of Array.isArray(value)?value:[]){const id=normalizeKillstreak(raw);if(id&&!picked.includes(id))picked.push(id);if(picked.length>=KILLSTREAK_SELECTION_COUNT)break;}
+  if(fill){for(const id of [...DEFAULT_KILLSTREAK_SELECTION,...KILLSTREAK_ORDER]){if(picked.length>=KILLSTREAK_SELECTION_COUNT)break;if(!picked.includes(id))picked.push(id);}}
+  return KILLSTREAK_ORDER.filter(id=>picked.includes(id)).slice(0,KILLSTREAK_SELECTION_COUNT);
+}
 
 export const MAP_ORDER = ['highlands','depot','yard','rig'];
 export const DEFAULT_MAP_ID = 'highlands';
