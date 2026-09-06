@@ -4,7 +4,7 @@ import * as DepotGeometry from './world-geometry-depot.js';
 import * as YardGeometry from './world-geometry-yard.js';
 import * as RigGeometry from './world-geometry-rig.js';
 import {
-  APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS, KILLSTREAK_SPECS, KILLSTREAK_SELECTION_COUNT, normalizeKillstreak, normalizeKillstreakSelection, DEFAULT_MAP_ID, normalizeMapId, mapSpec,
+  APP_VERSION, BUILD_ID, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS, KILLSTREAK_SPECS, KILLSTREAK_SELECTION_COUNT, normalizeKillstreak, normalizeKillstreakSelection, DEFAULT_MAP_ID, normalizeMapId, mapSpec,
   WEAPON_ORDER, PRIMARY_WEAPONS, SECONDARY_WEAPONS, WEAPON_SPECS, normalizeWeaponAttachments, resolveWeaponSpec, weaponSpreadRadians, weaponHeatAfterDelay, weaponHeatAfterShot, weaponDamageAtDistance, weaponZoneDamageScale, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, EQUIPMENT_SPECS, TACTICAL_EQUIPMENT, LETHAL_EQUIPMENT, normalizeTactical, normalizeLethal, equipmentForLoadout, LOADOUT_CLASS_COUNT, LOADOUT_CLASS_IDS, normalizeLoadoutClassId, normalizeLoadoutClassName, normalizeLoadoutDefinition, defaultLoadoutClasses, normalizeLoadoutClasses, loadoutClassById, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings, MOVEMENT_FEEL, WEAPON_SWITCH_MS, EQUIPMENT_WEAPON_RECOVER_MS,
   DEFAULT_MATCH_RULES, GAME_MODES, normalizeGameMode, gameModeSpec, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, equipmentCollisionRadius, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, FRAG_RADIUS, FRAG_MAX_DAMAGE, SMOKE_RADIUS, SMOKE_DURATION_MS, SMOKE_LOS_RADIUS_SCALE, SMOKE_GROW_MS, SMOKE_START_SCALE, GROUND_FOLLOW_DROP
 } from './game-config.js';
@@ -556,6 +556,7 @@ export default {
         service: "breach-online",
         protocol: PROTOCOL_VERSION,
         game: GAME_VERSION,
+        build: BUILD_ID,
         mode: "durable-object-tactical-fps-lobby-modes",
       });
     }
@@ -572,7 +573,7 @@ export default {
       const clientId = safeClientId(body.client);
       const clientAuth = safeClientAuth(body.auth);
       const protocol = Math.floor(finiteNumber(body.protocol, 0));
-      if (protocol !== PROTOCOL_VERSION) return json(request, env, { error: `CLIENT UPDATE REQUIRED`, protocol: PROTOCOL_VERSION }, 409);
+      if (protocol !== PROTOCOL_VERSION) return json(request, env, { error: `CLIENT UPDATE REQUIRED`, protocol: PROTOCOL_VERSION, game: GAME_VERSION, build: BUILD_ID }, 409);
       if (!clientId) return json(request, env, { error: "Missing client ID." }, 400);
       if (clientAuth.length < 32) return json(request, env, { error: "Missing client credential." }, 400);
 
@@ -948,7 +949,7 @@ export class GameRoom {
 
   freezeHumanState(player,now=Date.now()){
     const support=this.world.geometry.worldSupportHeight(player.x,player.z,player.y,false);
-    return {...player,y:support,ads:false,adsAmount:0,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,lastMovementClientAt:now,lastStateSeq:0,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0,velocityX:0,velocityZ:0,reloadAt:0,reloadWeapon:'',weaponReadyAt:0,equipmentReadyAt:0,combatAction:'ready',combatActionKind:'',combatReadyAt:0,sprintFireReadyAt:0,fireReadyAt:normalizeFireReady()};
+    return {...player,y:support,ads:false,adsAmount:0,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,lastMovementClientAt:now,lastStateSeq:0,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0,velocityX:0,velocityZ:0,reloadAt:0,reloadWeapon:'',weaponReadyAt:0,equipmentReadyAt:0,combatAction:'ready',combatActionKind:'',combatReadyAt:0,sprintFireReadyAt:0,fireReadyAt:normalizeFireReady(),abductedUntil:0,abductedBy:''};
   }
 
   broadcastMatch(meta,now=Date.now(),extra={}){this.broadcast({t:'match',match:publicMatchState(meta.match,now),custom:this.isCustomMatch(meta),...extra});}
@@ -959,7 +960,7 @@ export class GameRoom {
     Object.assign(match,{status:MATCH_STATUS.ENDED,endedAt:now,restartAt:now+MATCH_END_MS,winner:['blue','red','draw'].includes(result.winner)?result.winner:'',winnerId:safeClientId(result.winnerId||''),winnerName:String(result.winnerName||'').slice(0,24),reason:String(reason||'').slice(0,24),updatedAt:now});
     this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.killstreakEffects.length=0;
     for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;socket.serializeAttachment(this.freezeHumanState(p,now));}
-    for(const bot of this.bots||[]){bot.traversal=null;bot.reloadAt=0;bot.reloadWeapon='';bot.moveSpeed=0;bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y,false);}
+    for(const bot of this.bots||[]){bot.traversal=null;bot.reloadAt=0;bot.reloadWeapon='';bot.moveSpeed=0;bot.knockVelocityX=0;bot.knockVelocityZ=0;bot.abductedUntil=0;bot.abductedBy='';bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y,false);}
     meta.match=match;this.matchDirty=true;this.broadcastMatch(meta,now);return true;
   }
 
@@ -1069,7 +1070,7 @@ export class GameRoom {
 
   async issueJoinTicket(meta, body, now = Date.now()) {
     const protocol = Math.floor(finiteNumber(body?.protocol, 0));
-    if (protocol !== PROTOCOL_VERSION) return { status: 409, data: { error: "Client update required.", protocol: PROTOCOL_VERSION } };
+    if (protocol !== PROTOCOL_VERSION) return { status: 409, data: { error: "Client update required.", protocol: PROTOCOL_VERSION, game: GAME_VERSION, build: BUILD_ID } };
     const clientId = safeClientId(body?.client);
     const clientAuth = safeClientAuth(body?.auth);
     const name = safeName(body?.name);
@@ -1151,7 +1152,7 @@ export class GameRoom {
     if (url.pathname === "/ticket" && request.method === "POST") {
       const meta = await this.getMeta();
       if (!meta) return json(request, this.env, { error: "Match not found." }, 404);
-      if (Math.floor(finiteNumber(meta.protocol, 0)) !== PROTOCOL_VERSION) return json(request, this.env, { error: "Match protocol mismatch. Create a new match.", protocol: PROTOCOL_VERSION }, 409);
+      if (Math.floor(finiteNumber(meta.protocol, 0)) !== PROTOCOL_VERSION) return json(request, this.env, { error: "Match protocol mismatch. Create a new match.", protocol: PROTOCOL_VERSION, game: GAME_VERSION, build: BUILD_ID }, 409);
       let body = {};
       try { body = await request.json(); } catch {}
       const result = await this.issueJoinTicket(meta, body);
@@ -1160,7 +1161,7 @@ export class GameRoom {
 
     let meta = await this.getMeta();
     if (!meta) return json(request, this.env, { error: "Match not found." }, 404);
-    if (Math.floor(finiteNumber(meta.protocol, 0)) !== PROTOCOL_VERSION) return json(request, this.env, { error: "Match protocol mismatch. Create a new match.", protocol: PROTOCOL_VERSION }, 409);
+    if (Math.floor(finiteNumber(meta.protocol, 0)) !== PROTOCOL_VERSION) return json(request, this.env, { error: "Match protocol mismatch. Create a new match.", protocol: PROTOCOL_VERSION, game: GAME_VERSION, build: BUILD_ID }, 409);
     const fetchNow = Date.now();
     if (fetchNow >= finiteNumber(meta.expiresAt, 0)) return json(request, this.env, { error: "Match expired." }, 410);
     if (finiteNumber(meta.expiresAt, 0) <= fetchNow + 60_000) {
@@ -1174,7 +1175,7 @@ export class GameRoom {
     }
 
     const protocol = Math.floor(finiteNumber(url.searchParams.get("protocol"), 0));
-    if (protocol !== PROTOCOL_VERSION) return json(request, this.env, { error: "Client update required.", protocol: PROTOCOL_VERSION }, 409);
+    if (protocol !== PROTOCOL_VERSION) return json(request, this.env, { error: "Client update required.", protocol: PROTOCOL_VERSION, game: GAME_VERSION, build: BUILD_ID }, 409);
 
     const join = await this.consumeJoinTicket(url.searchParams.get("ticket"));
     if (!join) return json(request, this.env, { error: "Join ticket is missing, expired, or already used." }, 401);
@@ -1315,6 +1316,7 @@ export class GameRoom {
       serverTime: Date.now(),
       protocol: PROTOCOL_VERSION,
       gameVersion: GAME_VERSION,
+      buildId: BUILD_ID,
     });
 
     this.broadcast({ t: "join", player: publicPlayer(attachment) }, server);
@@ -2605,7 +2607,7 @@ export class GameRoom {
       const impacts=[];for(let i=0;i<8;i++){const angle=Math.random()*Math.PI*2,radius=Math.sqrt(Math.random())*11,ix=clamp(x+Math.cos(angle)*radius,-mapLimit,mapLimit),iz=clamp(z+Math.sin(angle)*radius,-mapLimit,mapLimit),warnAt=now+480+i*430;impacts.push({x:ix,z:iz,warnAt,impactAt:warnAt+720,warned:false,done:false});}
       this.killstreakEffects.push({...base,x,z,endsAt:now+5600,impacts});
     }else if(id==='earthquake'){
-      const seed=Math.floor(Math.random()*0x7fffffff),radius=Math.max(10,finiteNumber(spec.targetRadius,18));this.killstreakEffects.push({...base,x,z,radius,endsAt:now+9500,nextAt:now+140,pulses:0,seed});
+      const seed=Math.floor(Math.random()*0x7fffffff),radius=Math.max(10,finiteNumber(spec.targetRadius,34));this.killstreakEffects.push({...base,x,z,radius,endsAt:now+9500,nextAt:now+140,pulses:0,seed});
     }else if(id==='solarnuke'){
       this.killstreakEffects.push({...base,endsAt:now+14000,blastAt:now+8000,blasted:false});
     }
@@ -2662,7 +2664,7 @@ export class GameRoom {
   }
 
   stepEarthquakeKillstreak(effect,now){
-    if(now<effect.nextAt)return;const radius=Math.max(10,finiteNumber(effect.radius,18)),phase=.92+.34*Math.sin(effect.pulses*1.73+(effect.seed%97)*.11),angle=(effect.seed%6283)/1000+effect.pulses*1.91;
+    if(now<effect.nextAt)return;const radius=Math.max(10,finiteNumber(effect.radius,34)),phase=.92+.34*Math.sin(effect.pulses*1.73+(effect.seed%97)*.11),angle=(effect.seed%6283)/1000+effect.pulses*1.91;
     for(const entry of this.killstreakEnemies(effect.ownerId,effect.ownerTeam,now)){
       const actor=entry.actor,dx=finiteNumber(actor.x,0)-finiteNumber(effect.x,0),dz=finiteNumber(actor.z,0)-finiteNumber(effect.z,0),distance=Math.hypot(dx,dz);if(distance>radius)continue;
       const proximity=clamp(1-distance/radius,0,1),strength=phase*(1.0+1.25*proximity),pushMagnitude=1.55+1.45*proximity,pushX=Math.cos(angle)*pushMagnitude*strength,pushZ=Math.sin(angle)*pushMagnitude*strength;

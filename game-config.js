@@ -1,4 +1,5 @@
-export const APP_VERSION = '1.44.72';
+export const APP_VERSION = '1.44.76';
+export const BUILD_ID = '20260906T050750Z';
 export const PROTOCOL_VERSION = 89;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
@@ -10,7 +11,7 @@ export const KILLSTREAK_ORDER = Object.freeze(['ufo','lightning','earthquake','a
 export const KILLSTREAK_SPECS = Object.freeze({
   ufo:Object.freeze({id:'ufo',name:'UFO ABDUCTION',short:'UFO',kills:5,targeted:false,description:'Fast UFOs abduct exposed enemies.'}),
   lightning:Object.freeze({id:'lightning',name:'LIGHTNING STORM',short:'LIGHTNING',kills:7,targeted:false,description:'Lightning electrifies structures and nearby enemies.'}),
-  earthquake:Object.freeze({id:'earthquake',name:'EARTHQUAKE',short:'QUAKE',kills:8,targeted:true,targetRadius:18,description:'Target an area for a violent localized quake that disrupts aim and movement.'}),
+  earthquake:Object.freeze({id:'earthquake',name:'EARTHQUAKE',short:'QUAKE',kills:8,targeted:true,targetRadius:34,description:'Target a large area for a violent localized quake that disrupts enemy aim and movement.'}),
   asteroids:Object.freeze({id:'asteroids',name:'ASTEROID STRIKE',short:'ASTEROIDS',kills:9,targeted:true,targetRadius:11,description:'Target an area from the tactical map for a meteor barrage.'}),
   solarnuke:Object.freeze({id:'solarnuke',name:'SOLAR NUKE',short:'NUKE',kills:15,targeted:false,description:'Pulls the sun down into an apocalyptic map-wide burn.'}),
 });
@@ -215,7 +216,7 @@ export function normalizeLoadoutDefinition(value={},fallback={primaryWeapon:'ass
   const v=value&&typeof value==='object'?value:{},f=fallback&&typeof fallback==='object'?fallback:{};
   const requestedPrimary=String(v.primaryWeapon||''),requestedSecondary=String(v.secondaryWeapon||'');
   const fallbackPrimary=PRIMARY_WEAPONS.includes(f.primaryWeapon)?f.primaryWeapon:'assault',fallbackSecondary=SECONDARY_WEAPONS.includes(f.secondaryWeapon)?f.secondaryWeapon:'pistol';
-  // v1.44.72 migration: launchers and shotguns moved from the primary pool to the
+  // v1.44.74 migration: launchers and shotguns moved from the primary pool to the
   // secondary pool. Preserve a saved legacy primary (and its attachments) by
   // moving it into the secondary slot instead of silently replacing it.
   const migratedSecondary=SECONDARY_WEAPONS.includes(requestedPrimary)&&!PRIMARY_WEAPONS.includes(requestedPrimary)?requestedPrimary:'';
