@@ -1074,12 +1074,9 @@ export class GameRoom {
     const clientAuth = safeClientAuth(body?.auth);
     const name = safeName(body?.name);
     const team = safeTeam(body?.team);
-    const primaryWeapon = safePrimaryWeapon(body?.primaryWeapon);
-    const secondaryWeapon = safeSecondaryWeapon(body?.secondaryWeapon);
-    const primaryAttachments=normalizeWeaponAttachments(primaryWeapon,body?.primaryAttachments),secondaryAttachments=normalizeWeaponAttachments(secondaryWeapon,body?.secondaryAttachments);
-    const tactical = safeTactical(body?.tactical);
-    const lethal = safeLethal(body?.lethal);
-    const baseLoadout=normalizeLoadout({primaryWeapon,secondaryWeapon,primaryAttachments,secondaryAttachments,tactical,lethal}),loadoutClasses=normalizeLoadoutClasses(body?.loadoutClasses,baseLoadout),activeClassId=normalizeLoadoutClassId(body?.activeClassId),activeClass=normalizeLoadout(loadoutClassById(loadoutClasses,activeClassId,baseLoadout),baseLoadout),killstreakSelection=normalizeKillstreakSelection(body?.killstreakSelection);
+    const baseLoadout=normalizeLoadout({primaryWeapon:body?.primaryWeapon,secondaryWeapon:body?.secondaryWeapon,primaryAttachments:body?.primaryAttachments,secondaryAttachments:body?.secondaryAttachments,tactical:body?.tactical,lethal:body?.lethal});
+    const {primaryWeapon,secondaryWeapon,primaryAttachments,secondaryAttachments,tactical,lethal}=baseLoadout;
+    const loadoutClasses=normalizeLoadoutClasses(body?.loadoutClasses,baseLoadout),activeClassId=normalizeLoadoutClassId(body?.activeClassId),activeClass=normalizeLoadout(loadoutClassById(loadoutClasses,activeClassId,baseLoadout),baseLoadout),killstreakSelection=normalizeKillstreakSelection(body?.killstreakSelection);
     if (!clientId) return { status: 400, data: { error: "Missing client ID." } };
     if (clientAuth.length < 32) return { status: 401, data: { error: "Missing client credential." } };
     if (!this.allowJoinTicketRequest(clientId, now)) return { status: 429, data: { error: "Too many join attempts. Try again shortly." } };
@@ -1185,12 +1182,9 @@ export class GameRoom {
     const clientAuthHash = String(join.clientAuthHash || "");
     const name = safeName(join.name);
     const requestedTeam = safeTeam(join.team);
-    const requestedPrimary = safePrimaryWeapon(join.primaryWeapon);
-    const requestedSecondary = safeSecondaryWeapon(join.secondaryWeapon);
-    const requestedPrimaryAttachments=normalizeWeaponAttachments(requestedPrimary,join.primaryAttachments),requestedSecondaryAttachments=normalizeWeaponAttachments(requestedSecondary,join.secondaryAttachments);
-    const requestedTactical = safeTactical(join.tactical);
-    const requestedLethal = safeLethal(join.lethal);
-    const requestedBase=normalizeLoadout({primaryWeapon:requestedPrimary,secondaryWeapon:requestedSecondary,primaryAttachments:requestedPrimaryAttachments,secondaryAttachments:requestedSecondaryAttachments,tactical:requestedTactical,lethal:requestedLethal}),requestedClasses=normalizeLoadoutClasses(join.loadoutClasses,requestedBase),requestedClassId=normalizeLoadoutClassId(join.activeClassId),requestedKillstreakSelection=normalizeKillstreakSelection(join.killstreakSelection);
+    const requestedBase=normalizeLoadout({primaryWeapon:join.primaryWeapon,secondaryWeapon:join.secondaryWeapon,primaryAttachments:join.primaryAttachments,secondaryAttachments:join.secondaryAttachments,tactical:join.tactical,lethal:join.lethal});
+    const {primaryWeapon:requestedPrimary,secondaryWeapon:requestedSecondary,primaryAttachments:requestedPrimaryAttachments,secondaryAttachments:requestedSecondaryAttachments,tactical:requestedTactical,lethal:requestedLethal}=requestedBase;
+    const requestedClasses=normalizeLoadoutClasses(join.loadoutClasses,requestedBase),requestedClassId=normalizeLoadoutClassId(join.activeClassId),requestedKillstreakSelection=normalizeKillstreakSelection(join.killstreakSelection);
     const authHashes = meta.clientAuthHashes;
     const expectedAuthHash = authHashes[clientId] || '';
     if (expectedAuthHash && expectedAuthHash !== clientAuthHash) return json(request, this.env, { error: "Client credential rejected." }, 403);
@@ -1219,6 +1213,7 @@ export class GameRoom {
       await this.putMeta(meta);
     }
 
+    const preservedLoadout=preserved?normalizeLoadout(preserved,requestedBase):requestedBase;
     const mode=matchMode(meta.match),joinTeam=matchUsesTeams(mode)&&preserved?.pendingTeam?safeTeam(preserved.pendingTeam):safeTeam(preserved?.team||requestedTeam);
     const requestedTeamCount = liveMembers.filter(({attachment:a}) => safeTeam(a.team) === joinTeam).length;
     const spawnActors=[...liveMembers.map(({attachment})=>attachment),...(this.bots||[])];
@@ -1244,19 +1239,19 @@ export class GameRoom {
       velocityX:0,velocityZ:0,
       fireReadyAt: normalizeFireReady(spawn.fireReadyAt),
       regenAt: finiteNumber(spawn.regenAt, 0),
-      loadoutClasses: normalizeLoadoutClasses(preserved?.loadoutClasses||requestedClasses,preserved||requestedBase),
+      loadoutClasses: normalizeLoadoutClasses(preserved?.loadoutClasses||requestedClasses,preservedLoadout),
       activeClassId: normalizeLoadoutClassId(preserved?.activeClassId||requestedClassId),
       pendingClassId: preserved?.pendingClassId ? normalizeLoadoutClassId(preserved.pendingClassId) : '',
-      primaryWeapon: safePrimaryWeapon(preserved?.primaryWeapon || requestedPrimary),
-      secondaryWeapon: safeSecondaryWeapon(preserved?.secondaryWeapon || requestedSecondary),
-      primaryAttachments: normalizeWeaponAttachments(safePrimaryWeapon(preserved?.primaryWeapon || requestedPrimary),preserved?.primaryAttachments||requestedPrimaryAttachments),
-      secondaryAttachments: normalizeWeaponAttachments(safeSecondaryWeapon(preserved?.secondaryWeapon || requestedSecondary),preserved?.secondaryAttachments||requestedSecondaryAttachments),
-      tactical: safeTactical(preserved?.tactical || requestedTactical),
-      lethal: safeLethal(preserved?.lethal || requestedLethal),
+      primaryWeapon: preservedLoadout.primaryWeapon,
+      secondaryWeapon: preservedLoadout.secondaryWeapon,
+      primaryAttachments: preservedLoadout.primaryAttachments,
+      secondaryAttachments: preservedLoadout.secondaryAttachments,
+      tactical: preservedLoadout.tactical,
+      lethal: preservedLoadout.lethal,
       pendingLoadout: preserved?.pendingLoadout ? normalizeLoadout(preserved.pendingLoadout,{primaryWeapon:preserved.primaryWeapon,secondaryWeapon:preserved.secondaryWeapon,primaryAttachments:preserved.primaryAttachments,secondaryAttachments:preserved.secondaryAttachments,tactical:preserved.tactical,lethal:preserved.lethal}) : null,
-      weapon: preserved && playerCanEquip({ primaryWeapon: preserved?.primaryWeapon || requestedPrimary, secondaryWeapon:preserved?.secondaryWeapon || requestedSecondary }, preserved.weapon)
+      weapon: preserved && playerCanEquip(preservedLoadout,preserved.weapon)
         ? safeWeapon(preserved.weapon)
-        : safePrimaryWeapon(preserved?.primaryWeapon || requestedPrimary),
+        : preservedLoadout.primaryWeapon,
       ammo: normalizeAmmo(spawn.ammo),
       equipment: preserved ? normalizeEquipment(spawn.equipment) : freshEquipment(requestedTactical,requestedLethal),
       reloadAt: finiteNumber(spawn.reloadAt, 0),

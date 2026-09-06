@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.44.67';
-export const PROTOCOL_VERSION = 87;
+export const APP_VERSION = '1.44.70';
+export const PROTOCOL_VERSION = 88;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -34,8 +34,8 @@ export function normalizeMapId(value){const id=String(value||'').toLowerCase();r
 export function mapSpec(value){return MAPS[normalizeMapId(value)];}
 
 export const WEAPON_ORDER = ['pistol','akimbo1887','assault','ump','machineGun','shotgun','semiShotgun','sniper','grenadeLauncher','rpg'];
-export const PRIMARY_WEAPONS = ['assault','ump','machineGun','sniper','grenadeLauncher','rpg'];
-export const SECONDARY_WEAPONS = ['pistol','shotgun','semiShotgun','akimbo1887'];
+export const PRIMARY_WEAPONS = ['assault','ump','machineGun','sniper'];
+export const SECONDARY_WEAPONS = ['pistol','akimbo1887','shotgun','semiShotgun','grenadeLauncher','rpg'];
 
 export const ATTACHMENT_SLOTS = Object.freeze(['optic','muzzle','barrel','magazine','underbarrel','stock']);
 export const ATTACHMENTS = Object.freeze({
@@ -212,8 +212,18 @@ const LOADOUT_CLASS_PRESETS = Object.freeze([
 export function normalizeLoadoutClassId(value){const id=String(value||'');return LOADOUT_CLASS_IDS.includes(id)?id:LOADOUT_CLASS_IDS[0];}
 export function normalizeLoadoutClassName(value,index=0){const clean=String(value||'').replace(/[\r\n\t]+/g,' ').replace(/\s+/g,' ').trim().slice(0,18);return clean||`CLASS ${Math.max(1,Math.min(LOADOUT_CLASS_COUNT,Number(index)+1))}`;}
 export function normalizeLoadoutDefinition(value={},fallback={primaryWeapon:'assault',secondaryWeapon:'pistol',primaryAttachments:{},secondaryAttachments:{},tactical:'flash',lethal:'sticky'}){
-  const v=value&&typeof value==='object'?value:{},f=fallback&&typeof fallback==='object'?fallback:{},primaryWeapon=PRIMARY_WEAPONS.includes(v.primaryWeapon)?v.primaryWeapon:(PRIMARY_WEAPONS.includes(f.primaryWeapon)?f.primaryWeapon:'assault'),secondaryWeapon=SECONDARY_WEAPONS.includes(v.secondaryWeapon)?v.secondaryWeapon:(SECONDARY_WEAPONS.includes(f.secondaryWeapon)?f.secondaryWeapon:'pistol');
-  return {primaryWeapon,secondaryWeapon,primaryAttachments:normalizeWeaponAttachments(primaryWeapon,v.primaryAttachments??f.primaryAttachments),secondaryAttachments:normalizeWeaponAttachments(secondaryWeapon,v.secondaryAttachments??f.secondaryAttachments),tactical:normalizeTactical(v.tactical??f.tactical),lethal:normalizeLethal(v.lethal??f.lethal)};
+  const v=value&&typeof value==='object'?value:{},f=fallback&&typeof fallback==='object'?fallback:{};
+  const requestedPrimary=String(v.primaryWeapon||''),requestedSecondary=String(v.secondaryWeapon||'');
+  const fallbackPrimary=PRIMARY_WEAPONS.includes(f.primaryWeapon)?f.primaryWeapon:'assault',fallbackSecondary=SECONDARY_WEAPONS.includes(f.secondaryWeapon)?f.secondaryWeapon:'pistol';
+  // v1.44.70 migration: launchers and shotguns moved from the primary pool to the
+  // secondary pool. Preserve a saved legacy primary (and its attachments) by
+  // moving it into the secondary slot instead of silently replacing it.
+  const migratedSecondary=SECONDARY_WEAPONS.includes(requestedPrimary)&&!PRIMARY_WEAPONS.includes(requestedPrimary)?requestedPrimary:'';
+  const primaryWeapon=PRIMARY_WEAPONS.includes(requestedPrimary)?requestedPrimary:fallbackPrimary;
+  const secondaryWeapon=migratedSecondary||(SECONDARY_WEAPONS.includes(requestedSecondary)?requestedSecondary:fallbackSecondary);
+  const primaryAttachmentSource=PRIMARY_WEAPONS.includes(requestedPrimary)?(v.primaryAttachments??f.primaryAttachments):(primaryWeapon===f.primaryWeapon?f.primaryAttachments:{});
+  const secondaryAttachmentSource=migratedSecondary?(v.primaryAttachments??(migratedSecondary===f.primaryWeapon?f.primaryAttachments:{})):(v.secondaryAttachments??f.secondaryAttachments);
+  return {primaryWeapon,secondaryWeapon,primaryAttachments:normalizeWeaponAttachments(primaryWeapon,primaryAttachmentSource),secondaryAttachments:normalizeWeaponAttachments(secondaryWeapon,secondaryAttachmentSource),tactical:normalizeTactical(v.tactical??f.tactical),lethal:normalizeLethal(v.lethal??f.lethal)};
 }
 export function defaultLoadoutClasses(baseLoadout=null){const out=[];for(let i=0;i<LOADOUT_CLASS_COUNT;i++){const preset=LOADOUT_CLASS_PRESETS[i]||LOADOUT_CLASS_PRESETS[0],seed=i===0&&baseLoadout?normalizeLoadoutDefinition(baseLoadout,preset):normalizeLoadoutDefinition(preset,preset);out.push({id:LOADOUT_CLASS_IDS[i],name:normalizeLoadoutClassName(preset.name,i),...seed});}return out;}
 export function normalizeLoadoutClasses(value,baseLoadout=null){const fallback=defaultLoadoutClasses(baseLoadout),raw=Array.isArray(value)?value:[];return LOADOUT_CLASS_IDS.map((id,i)=>{const source=raw.find(item=>String(item?.id||'')===id)||raw[i]||fallback[i],loadout=normalizeLoadoutDefinition(source,fallback[i]);return{id,name:normalizeLoadoutClassName(source?.name,i),...loadout};});}
