@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.44.70';
+export const APP_VERSION = '1.44.71';
 export const PROTOCOL_VERSION = 88;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
@@ -215,7 +215,7 @@ export function normalizeLoadoutDefinition(value={},fallback={primaryWeapon:'ass
   const v=value&&typeof value==='object'?value:{},f=fallback&&typeof fallback==='object'?fallback:{};
   const requestedPrimary=String(v.primaryWeapon||''),requestedSecondary=String(v.secondaryWeapon||'');
   const fallbackPrimary=PRIMARY_WEAPONS.includes(f.primaryWeapon)?f.primaryWeapon:'assault',fallbackSecondary=SECONDARY_WEAPONS.includes(f.secondaryWeapon)?f.secondaryWeapon:'pistol';
-  // v1.44.70 migration: launchers and shotguns moved from the primary pool to the
+  // v1.44.71 migration: launchers and shotguns moved from the primary pool to the
   // secondary pool. Preserve a saved legacy primary (and its attachments) by
   // moving it into the secondary slot instead of silently replacing it.
   const migratedSecondary=SECONDARY_WEAPONS.includes(requestedPrimary)&&!PRIMARY_WEAPONS.includes(requestedPrimary)?requestedPrimary:'';
