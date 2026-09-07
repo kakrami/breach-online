@@ -2607,9 +2607,9 @@ export class GameRoom {
       const impacts=[];for(let i=0;i<8;i++){const angle=Math.random()*Math.PI*2,radius=Math.sqrt(Math.random())*11,ix=clamp(x+Math.cos(angle)*radius,-mapLimit,mapLimit),iz=clamp(z+Math.sin(angle)*radius,-mapLimit,mapLimit),warnAt=now+480+i*430;impacts.push({x:ix,z:iz,warnAt,impactAt:warnAt+720,warned:false,done:false});}
       this.killstreakEffects.push({...base,x,z,endsAt:now+5600,impacts});
     }else if(id==='earthquake'){
-      const seed=Math.floor(Math.random()*0x7fffffff),radius=Math.max(10,finiteNumber(spec.targetRadius,34));this.killstreakEffects.push({...base,x,z,radius,endsAt:now+9500,nextAt:now+140,pulses:0,seed});
+      const seed=Math.floor(Math.random()*0x7fffffff);this.killstreakEffects.push({...base,endsAt:now+15000,nextAt:now+140,pulses:0,seed});
     }else if(id==='solarnuke'){
-      this.killstreakEffects.push({...base,endsAt:now+14000,blastAt:now+8000,blasted:false});
+      this.killstreakEffects.push({...base,endsAt:now+15500,blastAt:now+9000,blasted:false});
     }
     const activeEffect=this.killstreakEffects[this.killstreakEffects.length-1];
     this.broadcast({t:'killstreakFx',phase:'start',kind:id,id:effectId,ownerId:player.clientId,ownerTeam:safeTeam(player.team),x,z,radius:Math.max(0,finiteNumber(activeEffect.radius,finiteNumber(spec.targetRadius,0))),startedAt:now,endsAt:activeEffect.endsAt,blastAt:finiteNumber(activeEffect.blastAt,0),seed:Math.floor(finiteNumber(activeEffect.seed,0))});
@@ -2664,10 +2664,10 @@ export class GameRoom {
   }
 
   stepEarthquakeKillstreak(effect,now){
-    if(now<effect.nextAt)return;const radius=Math.max(10,finiteNumber(effect.radius,34)),phase=.92+.34*Math.sin(effect.pulses*1.73+(effect.seed%97)*.11),angle=(effect.seed%6283)/1000+effect.pulses*1.91;
+    if(now<effect.nextAt)return;
+    const phase=1.02+.24*Math.sin(effect.pulses*1.73+(effect.seed%97)*.11),angle=(effect.seed%6283)/1000+effect.pulses*1.91,strength=Math.max(.82,phase),pushMagnitude=1.72,pushX=Math.cos(angle)*pushMagnitude*strength,pushZ=Math.sin(angle)*pushMagnitude*strength;
     for(const entry of this.killstreakEnemies(effect.ownerId,effect.ownerTeam,now)){
-      const actor=entry.actor,dx=finiteNumber(actor.x,0)-finiteNumber(effect.x,0),dz=finiteNumber(actor.z,0)-finiteNumber(effect.z,0),distance=Math.hypot(dx,dz);if(distance>radius)continue;
-      const proximity=clamp(1-distance/radius,0,1),strength=phase*(1.0+1.25*proximity),pushMagnitude=1.55+1.45*proximity,pushX=Math.cos(angle)*pushMagnitude*strength,pushZ=Math.sin(angle)*pushMagnitude*strength;
+      const actor=entry.actor;
       actor.knockVelocityX=clamp(finiteNumber(actor.knockVelocityX,0)+pushX,-7.5,7.5);actor.knockVelocityZ=clamp(finiteNumber(actor.knockVelocityZ,0)+pushZ,-7.5,7.5);
       if(entry.socket){entry.socket.serializeAttachment(actor);sendJson(entry.socket,{t:'killstreakControl',kind:'earthquake',until:Math.min(effect.endsAt,now+760),seed:effect.seed,pushX,pushZ,strength});}
     }

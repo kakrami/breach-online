@@ -1,6 +1,6 @@
-export const APP_VERSION = '1.44.76';
-export const BUILD_ID = '20260906T050750Z';
-export const PROTOCOL_VERSION = 89;
+export const APP_VERSION = '1.44.79';
+export const BUILD_ID = '20260906T144429Z';
+export const PROTOCOL_VERSION = 90;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -11,7 +11,7 @@ export const KILLSTREAK_ORDER = Object.freeze(['ufo','lightning','earthquake','a
 export const KILLSTREAK_SPECS = Object.freeze({
   ufo:Object.freeze({id:'ufo',name:'UFO ABDUCTION',short:'UFO',kills:5,targeted:false,description:'Fast UFOs abduct exposed enemies.'}),
   lightning:Object.freeze({id:'lightning',name:'LIGHTNING STORM',short:'LIGHTNING',kills:7,targeted:false,description:'Lightning electrifies structures and nearby enemies.'}),
-  earthquake:Object.freeze({id:'earthquake',name:'EARTHQUAKE',short:'QUAKE',kills:8,targeted:true,targetRadius:34,description:'Target a large area for a violent localized quake that disrupts enemy aim and movement.'}),
+  earthquake:Object.freeze({id:'earthquake',name:'EARTHQUAKE',short:'QUAKE',kills:8,targeted:false,description:'Shakes the entire battlefield, disrupting enemy aim and movement while sparing friendlies.'}),
   asteroids:Object.freeze({id:'asteroids',name:'ASTEROID STRIKE',short:'ASTEROIDS',kills:9,targeted:true,targetRadius:11,description:'Target an area from the tactical map for a meteor barrage.'}),
   solarnuke:Object.freeze({id:'solarnuke',name:'SOLAR NUKE',short:'NUKE',kills:15,targeted:false,description:'Pulls the sun down into an apocalyptic map-wide burn.'}),
 });
