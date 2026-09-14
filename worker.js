@@ -1,1 +1,1 @@
-export { default, GameRoom } from "./apps/server/src/index.js";
+export { default, GameRoom, WorldDirectory } from "./apps/server/src/index.js";

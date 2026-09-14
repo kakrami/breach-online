@@ -1,6 +1,17 @@
+import { DurableObject } from "cloudflare:workers";
 import { roomId } from "../../../packages/shared/src/ids.js";
 import { BREACH_VERSION, PROTOCOL_VERSION } from "../../../packages/shared/src/version.js";
 export { GameRoom } from "./room/GameRoom.js";
+// Compatibility export for the already-provisioned production Durable Object
+// namespace. Phase 4.1 no longer uses the room directory, but removing this
+// class from declarative exports would orphan the existing namespace and make
+// Cloudflare reject the deployment. Keep it live and non-mutating until a
+// deliberate data-retirement migration is approved.
+export class WorldDirectory extends DurableObject {
+    async fetch() {
+        return Response.json({ ok: false, error: "legacy_directory_inactive", preserved: true }, { status: 410 });
+    }
+}
 export default {
     async fetch(request, env) {
         const url = new URL(request.url);
