@@ -1,20 +1,18 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "breach-online",
-  "main": "worker.js",
+  "name": "breach-online-alpha",
+  "main": "apps/server/src/index.js",
   "compatibility_date": "2026-08-14",
   "vars": {
-    "GAME_ORIGIN": "https://kakrami.github.io"
+    "GAME_ORIGIN": "*"
   },
   "durable_objects": {
     "bindings": [
-      { "name": "ROOMS", "class_name": "GameRoom" },
-      { "name": "DIRECTORY", "class_name": "WorldDirectory" }
+      { "name": "ROOMS", "class_name": "GameRoom" }
     ]
   },
   "exports": {
-    "GameRoom": { "type": "durable-object", "storage": "sqlite" },
-    "WorldDirectory": { "type": "durable-object", "storage": "sqlite" }
+    "GameRoom": { "type": "durable-object", "storage": "sqlite" }
   },
   "observability": {
     "enabled": true
