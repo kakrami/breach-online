@@ -1382,7 +1382,7 @@ export class GameRoom {
           me={...me,y:support,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,adsAmount:0,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,lastMovementClientAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,lastJumpSeq:incomingJumpSeq,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0};
           socket.serializeAttachment(me);
           const stateSeq=Math.max(0,Math.floor(finiteNumber(payload.seq,0))),stateAt=Math.min(now,sanitizeCombatTimestamp(payload.at,now));
-          this.broadcast({t:'state',id:me.clientId,team:safeTeam(me.team),at:stateAt,x:me.x,y:me.y,z:me.z,yaw:me.yaw,pitch:me.pitch,ads:false,adsAmount:0,crouched:false,sprinting:false,sliding:false,traversal:'',ladderId:'',ladderPhase:''},socket);
+          this.broadcast({t:'state',id:me.clientId,at:stateAt,x:me.x,y:me.y,z:me.z,yaw:me.yaw,pitch:me.pitch,ads:false,adsAmount:0,crouched:false,sprinting:false,sliding:false,traversal:'',ladderId:'',ladderPhase:''},socket);
           if(corrected)sendJson(socket,{t:'correction',seq:stateSeq,x:me.x,y:me.y,z:me.z,vertical:false,verticalVelocity:0,grounded:true,crouched:false,reason:'movement_locked'});
         } else {
           const previousStateAt=finiteNumber(me.lastStateAt,now),serverStateGapMs=clamp(now-previousStateAt,0,10000);
@@ -1390,7 +1390,7 @@ export class GameRoom {
           me = {...next.player,lastCombatStateAt:combatAt,diagLastStateGapMs:serverStateGapMs,diagMaxStateGapMs:Math.max(finiteNumber(me.diagMaxStateGapMs,0),serverStateGapMs)};
           socket.serializeAttachment(me);
           this.recordCombatPose(me,combatAt);
-          const state = { t: "state", id: me.clientId, team:safeTeam(me.team), at:combatAt, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched, sprinting:!!me.sprinting, sliding:!!me.sliding, traversal:me.traversal?.mode||'', ladderId:me.ladder?.id||'', ladderPhase:me.ladder?.phase||'' };
+          const state = { t: "state", id: me.clientId, at:combatAt, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched, sprinting:!!me.sprinting, sliding:!!me.sliding, traversal:me.traversal?.mode||'', ladderId:me.ladder?.id||'', ladderPhase:me.ladder?.phase||'' };
           this.broadcast(state, socket);
           if (next.corrected) sendJson(socket,{
             t:"correction",seq:stateSeq,x:me.x,y:me.y,z:me.z,vertical:next.verticalCorrected,
