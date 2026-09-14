@@ -1,3 +1,4 @@
+import { DurableObject } from "cloudflare:workers";
 import { roomId, sessionId } from "../../../../packages/shared/src/ids.js";
 import { decodeClientCommand } from "../../../../packages/shared/src/validation.js";
 import { PROTOCOL_VERSION } from "../../../../packages/shared/src/version.js";
@@ -6,7 +7,7 @@ import { RoomRuntime } from "./RoomRuntime.js";
 const TICK_MS = SERVER_FIXED_STEP * 1000;
 const MAX_CATCH_UP_STEPS = 4;
 const PERSIST_INTERVAL_MS = 1000;
-export class GameRoom {
+export class GameRoom extends DurableObject {
     state;
     ready;
     runtime = new RoomRuntime();
@@ -15,7 +16,8 @@ export class GameRoom {
     accumulatorMs = 0;
     lastPersistAt = 0;
     ticking = false;
-    constructor(state) {
+    constructor(state, env) {
+        super(state, env);
         this.state = state;
         this.ready = state.blockConcurrencyWhile(async () => {
             const persisted = await state.storage.get("room");
