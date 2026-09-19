@@ -5,7 +5,7 @@ import * as YardGeometry from './world-geometry-yard.js';
 import * as RigGeometry from './world-geometry-rig.js';
 import {
   APP_VERSION, BUILD_ID, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS, KILLSTREAK_SPECS, KILLSTREAK_SELECTION_COUNT, normalizeKillstreak, normalizeKillstreakSelection, DEFAULT_MAP_ID, normalizeMapId, mapSpec,
-  WEAPON_ORDER, PRIMARY_WEAPONS, SECONDARY_WEAPONS, WEAPON_SPECS, normalizeWeaponAttachments, resolveWeaponSpec, weaponSpreadRadians, weaponHeatAfterDelay, weaponHeatAfterShot, weaponDamageAtDistance, weaponZoneDamageScale, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, EQUIPMENT_SPECS, TACTICAL_EQUIPMENT, LETHAL_EQUIPMENT, normalizeTactical, normalizeLethal, equipmentForLoadout, LOADOUT_CLASS_COUNT, LOADOUT_CLASS_IDS, normalizeLoadoutClassId, normalizeLoadoutClassName, normalizeLoadoutDefinition, defaultLoadoutClasses, normalizeLoadoutClasses, loadoutClassById, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings, MOVEMENT_FEEL, WEAPON_SWITCH_MS, EQUIPMENT_WEAPON_RECOVER_MS,
+  WEAPON_ORDER, PRIMARY_WEAPONS, SECONDARY_WEAPONS, WEAPON_SPECS, normalizeWeaponAttachments, resolveWeaponSpec, weaponSpreadRadians, weaponHeatAfterDelay, weaponHeatAfterShot, weaponDamageAtDistance, weaponZoneDamageScale, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, EQUIPMENT_SPECS, TACTICAL_EQUIPMENT, LETHAL_EQUIPMENT, normalizeTactical, normalizeLethal, equipmentForLoadout, LOADOUT_CLASS_COUNT, LOADOUT_CLASS_IDS, normalizeLoadoutClassId, normalizeLoadoutClassName, normalizeLoadoutDefinition, defaultLoadoutClasses, normalizeLoadoutClasses, loadoutClassById, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings, modMovement, modGravity, MOVEMENT_FEEL, WEAPON_SWITCH_MS, EQUIPMENT_WEAPON_RECOVER_MS,
   DEFAULT_MATCH_RULES, GAME_MODES, normalizeGameMode, gameModeSpec, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, equipmentCollisionRadius, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, FRAG_RADIUS, FRAG_MAX_DAMAGE, SMOKE_RADIUS, SMOKE_DURATION_MS, SMOKE_LOS_RADIUS_SCALE, SMOKE_GROW_MS, SMOKE_START_SCALE, GROUND_FOLLOW_DROP
 } from './game-config.js';
 import { normalizeMatchRules, defaultMatchState, normalizeMatchState, publicMatchState, matchRulesAreDefault } from './match-model.js';
@@ -1349,7 +1349,7 @@ export class GameRoom {
     if (!me.clientId || me.replaced) return;
     const now = receivedAt;
     if(!['ready','equipmentAim','recover'].includes(me.combatAction))me={...me,combatAction:'ready',combatActionKind:'',combatReadyAt:0};
-    const settings = meta.settings;
+    const settings = {...meta.settings,movement:modMovement(meta.settings)};
 
     me = this.advanceReloadForSocket(socket, me, now, settings);
     if(me.combatAction==='recover'&&now>=finiteNumber(me.combatReadyAt,0))me={...me,combatAction:'ready',combatActionKind:'',combatReadyAt:0};
@@ -1502,7 +1502,7 @@ export class GameRoom {
       const launcherPitchOffset=(Number(resolvedSpec.launchPitchDeg)||0)*Math.PI/180,basePitch=clamp(shotPitch+launcherPitchOffset,-1.4,1.4);
       for(let i=0;i<pellets;i++){
         const a=shotgunPattern?shotgunPelletAngles(shotYaw,basePitch,spreadRadius,i,pellets,patternRotation):spreadShotAngles(shotYaw,basePitch,spreadRadius),launch=shotLaunchPose(shooterPose,a.yaw,a.pitch,!!shooterPose.crouched,weapon,this.world.serverCollision.segmentFirstWorldHitT,resolvedSpec.projectileRadius),centerScale=i===0?Math.max(1,finiteNumber(resolvedSpec.centerPelletDamageScale,1)):1;
-        this.spawnBullet({ownerId:me.clientId,hand,ownerTeam:safeTeam(me.team),damage:spec.damage*centerScale,weapon,attachments,lifetimeMs:resolvedSpec.lifetimeMs,x:launch.x,y:launch.y,z:launch.z,vx:launch.dx*spec.speed,vy:launch.dy*spec.speed,vz:launch.dz*spec.speed,now,shotAt,targetRewindMs,consumeAmmo:i===0&&!unlimited,primaryShot:i===0});
+        this.spawnBullet({mod:settings.mod,ownerId:me.clientId,hand,ownerTeam:safeTeam(me.team),damage:spec.damage*centerScale,weapon,attachments,lifetimeMs:resolvedSpec.lifetimeMs,x:launch.x,y:launch.y,z:launch.z,vx:launch.dx*spec.speed,vy:launch.dy*spec.speed,vz:launch.dz*spec.speed,now,shotAt,targetRewindMs,consumeAmmo:i===0&&!unlimited,primaryShot:i===0});
       }
       sendLoadout(socket,me,{action:'fire',accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
     }
@@ -2001,13 +2001,13 @@ export class GameRoom {
     }
   }
 
-  spawnBullet({ ownerId, ownerTeam, damage, weapon, attachments={}, hand='', lifetimeMs, x, y, z, vx, vy, vz, now, shotAt=now, targetRewindMs=0, consumeAmmo=true, primaryShot=consumeAmmo }) {
+  spawnBullet({ mod='normal', ownerId, ownerTeam, damage, weapon, attachments={}, hand='', lifetimeMs, x, y, z, vx, vy, vz, now, shotAt=now, targetRewindMs=0, consumeAmmo=true, primaryShot=consumeAmmo }) {
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
     const safe = safeWeapon(weapon),bornAt=Math.min(now,sanitizeCombatTimestamp(shotAt,now));
     const normalizedAttachments=normalizeWeaponAttachments(safe,attachments),weaponSpec=resolveWeaponSpec(safe,normalizedAttachments),bullet = {
       id, ownerId, ownerTeam: safeTeam(ownerTeam), damage, weapon: safe, attachments:normalizedAttachments, suppressed:normalizedAttachments.muzzle==='suppressor', hand:hand==='left'?'left':hand==='right'?'right':'',
       penetrationEnergy:1,targetRewindMs:clamp(finiteNumber(targetRewindMs,0),0,MAX_TARGET_REWIND_MS),
-      gravity:Math.max(0,finiteNumber(weaponSpec.projectileGravity,0)),projectileRadius:Math.max(0,finiteNumber(weaponSpec.projectileRadius,0)),explosionRadius:Math.max(0,finiteNumber(weaponSpec.explosionRadius,0)),explosionDamage:Math.max(0,finiteNumber(weaponSpec.explosionDamage,0)),
+      gravity:modGravity(Math.max(0,finiteNumber(weaponSpec.projectileGravity,0)),{mod}),projectileRadius:Math.max(0,finiteNumber(weaponSpec.projectileRadius,0)),explosionRadius:Math.max(0,finiteNumber(weaponSpec.explosionRadius,0)),explosionDamage:Math.max(0,finiteNumber(weaponSpec.explosionDamage,0)),
       hitTargets: new Set(),traveledDistance: 0,
       lifetimeMs: lifetimeMs || weaponSpec.lifetimeMs, x, y, z, vx, vy, vz, born: bornAt, lastAt: bornAt, lastBroadcast: now,
       rpgBaseSpeed:safe==='rpg'?Math.max(1,Math.hypot(vx,vy,vz)):0,rpgBaseYaw:safe==='rpg'?Math.atan2(-vx,-vz):0,rpgBasePitch:safe==='rpg'?Math.asin(clamp(vy/Math.max(1,Math.hypot(vx,vy,vz)),-1,1)):0,rpgWanderPhase:safe==='rpg'?Math.random()*Math.PI*2:0,
@@ -2022,7 +2022,7 @@ export class GameRoom {
     // 30 Hz accumulator so idle clients no longer slow the match, while a
     // bounded catch-up window prevents a long-suspended room from creating a
     // large CPU spike on the first packet back.
-    const settings = meta.settings;
+    const settings = {...meta.settings,movement:modMovement(meta.settings)};
     this.stepMatch(now, meta);
     const match = meta.match;
     if (matchAllowsRespawn(match)) this.respawnExpiredHumans(now);
@@ -2289,7 +2289,7 @@ export class GameRoom {
         for(let pellet=0;pellet<pellets;pellet++){
           let shotYaw=baseYaw,shotPitch=basePitch;if(shotgunPattern){const a=shotgunPelletAngles(baseYaw,basePitch,weaponSpread,pellet,pellets,patternRotation);shotYaw=a.yaw;shotPitch=a.pitch;}else if(weaponSpread>0){const a=spreadShotAngles(baseYaw,basePitch,weaponSpread);shotYaw=a.yaw;shotPitch=a.pitch;}
           const v=shotVector(shotYaw,shotPitch),centerScale=pellet===0?Math.max(1,finiteNumber(resolvedWeapon.centerPelletDamageScale,1)):1;
-          this.spawnBullet({ownerId:bot.id,ownerTeam:safeTeam(bot.team),damage:weaponSettings.damage*centerScale,weapon:botWeapon,lifetimeMs:resolvedWeapon.lifetimeMs,x:bot.x+v.x*.55,y:bot.y+1.25,z:bot.z+v.z*.55,vx:v.x*weaponSettings.speed,vy:v.y*weaponSettings.speed,vz:v.z*weaponSettings.speed,now,consumeAmmo:pellet===0});
+          this.spawnBullet({mod:settings.mod,ownerId:bot.id,ownerTeam:safeTeam(bot.team),damage:weaponSettings.damage*centerScale,weapon:botWeapon,lifetimeMs:resolvedWeapon.lifetimeMs,x:bot.x+v.x*.55,y:bot.y+1.25,z:bot.z+v.z*.55,vx:v.x*weaponSettings.speed,vy:v.y*weaponSettings.speed,vz:v.z*weaponSettings.speed,now,consumeAmmo:pellet===0});
         }
         bot.aimPitch=clamp(bot.aimPitch+finiteNumber(resolvedWeapon.recoilPitch,0)*(.55+Math.random()*.32),-1.2,1.2);bot.aimYaw=normalizeAngle(bot.aimYaw+(Math.random()-.5)*finiteNumber(resolvedWeapon.recoilYaw,0)*1.25);
         if(automatic){bot.burstShotsLeft=Math.max(0,Math.floor(finiteNumber(bot.burstShotsLeft,1))-1);if(bot.burstShotsLeft<=0)bot.burstPauseUntil=now+botBurstPause(profile);}
@@ -2336,7 +2336,7 @@ export class GameRoom {
             continue;
           }
 
-          g.vy-=TACTICAL_GRAVITY*st;
+          g.vy-=modGravity(TACTICAL_GRAVITY,settings)*st;
           const nx=px+g.vx*st,ny=py+g.vy*st,nz=pz+g.vz*st;
           const actorHit=this.findThrowableActorHit(g,px,py,pz,nx,ny,nz,stepAt),worldT=this.world.serverCollision.segmentFirstWorldHitT(px,py,pz,nx,ny,nz,g.radius);
           if(actorHit&&(worldT==null||actorHit.t<worldT-.0001)){this.resolveThrowableActorHit(g,actorHit,px,py,pz,nx,ny,nz,stepAt);continue;}

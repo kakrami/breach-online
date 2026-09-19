@@ -1,6 +1,6 @@
-export const APP_VERSION = '1.44.84';
-export const BUILD_ID = '20260919T040408Z';
-export const PROTOCOL_VERSION = 90;
+export const APP_VERSION = '1.45.0';
+export const BUILD_ID = '20260919T180000Z';
+export const PROTOCOL_VERSION = 91;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -244,7 +244,19 @@ export const DEFAULT_MATCH_RULES = { mode:DEFAULT_GAME_MODE, scoreLimit:GAME_MOD
 export const MATCH_WARMUP_MS = 4000;
 export const MATCH_END_MS = 7000;
 
+export const GAME_MOD_ORDER = Object.freeze(['normal','moon']);
+export const GAME_MODS = Object.freeze({
+  normal:Object.freeze({id:'normal',name:'Normal',gravityScale:1,jumpHeightScale:1,environment:'normal'}),
+  moon:Object.freeze({id:'moon',name:'Moon',gravityScale:.35,jumpHeightScale:2,environment:'moon'}),
+});
+export function normalizeGameMod(value){const id=String(value||'').toLowerCase();return Object.hasOwn(GAME_MODS,id)?id:'normal';}
+export function gameModSpec(value){return GAME_MODS[normalizeGameMod(value)];}
+// Resolve from stored base tuning, never from previously scaled movement.
+export function modMovement(settings){const movement=settings.movement,mod=gameModSpec(settings.mod);return{...movement,gravity:movement.gravity*mod.gravityScale,jumpHeight:movement.jumpHeight*mod.jumpHeightScale};}
+export function modGravity(gravity,settings){return gravity*gameModSpec(settings?.mod).gravityScale;}
+
 export const DEFAULT_WORLD_SETTINGS = {
+  mod:'normal',
   movement: { runSpeed:8.4, walkSpeed:4.6, jumpHeight:1.6, gravity:23 },
   combat: { regenDelayMs:5000, regenPerSecond:50, respawnMs:2800 },
   weapons: Object.fromEntries(WEAPON_ORDER.map((name) => {
@@ -260,6 +272,7 @@ export function normalizeWorldSettings(value) {
   const weapon=(name)=>{const src=weapons[name]&&typeof weapons[name]==='object'?weapons[name]:{},def=DEFAULT_WORLD_SETTINGS.weapons[name];return{damage:bounded(src.damage,1,400,def.damage),speed:bounded(src.speed,10,800,def.speed),reloadMs:Math.round(bounded(src.reloadMs,100,5000,def.reloadMs)),cooldownMs:Math.round(bounded(src.cooldownMs,50,2500,def.cooldownMs)),recoilScale:bounded(src.recoilScale,0,300,def.recoilScale)}};
   const runSpeed=bounded(movement.runSpeed,3,16,DEFAULT_WORLD_SETTINGS.movement.runSpeed);
   return {
+    mod:normalizeGameMod(v.mod),
     movement:{runSpeed,walkSpeed:Math.min(runSpeed,bounded(movement.walkSpeed,1.5,9,DEFAULT_WORLD_SETTINGS.movement.walkSpeed)),jumpHeight:bounded(movement.jumpHeight,.4,5,DEFAULT_WORLD_SETTINGS.movement.jumpHeight),gravity:bounded(movement.gravity,8,40,DEFAULT_WORLD_SETTINGS.movement.gravity)},
     combat:{regenDelayMs:Math.round(bounded(combat.regenDelayMs,0,15000,DEFAULT_WORLD_SETTINGS.combat.regenDelayMs)),regenPerSecond:bounded(combat.regenPerSecond,0,100,DEFAULT_WORLD_SETTINGS.combat.regenPerSecond),respawnMs:Math.round(bounded(combat.respawnMs,1000,10000,DEFAULT_WORLD_SETTINGS.combat.respawnMs))},
     weapons:Object.fromEntries(WEAPON_ORDER.map(name=>[name,weapon(name)])),
