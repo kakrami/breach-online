@@ -1,6 +1,6 @@
-export const APP_VERSION = '1.45.0';
-export const BUILD_ID = '20260919T180000Z';
-export const PROTOCOL_VERSION = 91;
+export const APP_VERSION = '1.46.0';
+export const BUILD_ID = '20260919T190000Z';
+export const PROTOCOL_VERSION = 92;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -230,17 +230,23 @@ export function defaultLoadoutClasses(baseLoadout=null){const out=[];for(let i=0
 export function normalizeLoadoutClasses(value,baseLoadout=null){const fallback=defaultLoadoutClasses(baseLoadout),raw=Array.isArray(value)?value:[];return LOADOUT_CLASS_IDS.map((id,i)=>{const source=raw.find(item=>String(item?.id||'')===id)||raw[i]||fallback[i],loadout=normalizeLoadoutDefinition(source,fallback[i]);return{id,name:normalizeLoadoutClassName(source?.name,i),...loadout};});}
 export function loadoutClassById(classes,id,baseLoadout=null){const normalized=normalizeLoadoutClasses(classes,baseLoadout),safeId=normalizeLoadoutClassId(id);return normalized.find(item=>item.id===safeId)||normalized[0];}
 
-export const GAME_MODE_ORDER = ['tdm','ffa','sandbox'];
+export const GAME_MODE_ORDER = ['tdm','ffa','sandbox','zombies'];
 export const DEFAULT_GAME_MODE = 'tdm';
 export const GAME_MODES = Object.freeze({
   tdm:Object.freeze({id:'tdm',name:'TEAM DEATHMATCH',short:'TDM',teamBased:true,scoreType:'team',scoreLimit:30,timeLimitMs:8*60*1000}),
   ffa:Object.freeze({id:'ffa',name:'FREE FOR ALL',short:'FFA',teamBased:false,scoreType:'player',scoreLimit:20,timeLimitMs:8*60*1000}),
+  zombies:Object.freeze({id:'zombies',name:'ZOMBIES',short:'ZOMBIES',teamBased:true,cooperative:true,scoreType:'waves',scoreLimit:0,timeLimitMs:0}),
   sandbox:Object.freeze({id:'sandbox',name:'SANDBOX',short:'SANDBOX',teamBased:true,scoreType:'none',scoreLimit:0,timeLimitMs:0}),
 });
-export function normalizeGameMode(value){const id=String(value||'').toLowerCase();return GAME_MODES[id]?id:DEFAULT_GAME_MODE;}
+export function normalizeGameMode(value){const id=String(value||'').toLowerCase();return Object.hasOwn(GAME_MODES,id)?id:DEFAULT_GAME_MODE;}
 export function gameModeSpec(value){return GAME_MODES[normalizeGameMode(value)];}
 export function gameModeIsTeamBased(value){return !!gameModeSpec(value).teamBased;}
 export const DEFAULT_MATCH_RULES = { mode:DEFAULT_GAME_MODE, scoreLimit:GAME_MODES.tdm.scoreLimit, timeLimitMs:GAME_MODES.tdm.timeLimitMs, minimapRevealAll:false, minimapDirectional:false };
+export const ZOMBIE_WAVE_BREAK_MS = 8000;
+export function zombieWaveSpec(wave,players=1){
+  const level=Math.max(1,Math.floor(Number(wave)||1)),people=Math.max(1,Math.min(MAX_PLAYERS,Math.floor(Number(players)||1)));
+  return{count:Math.min(80,6+(level-1)*3+(people-1)*2),health:Math.min(500,100+(level-1)*20),speed:Math.min(6.8,3.4+(level-1)*.18),damage:Math.min(40,20+(level-1)*2),attackMs:1000,reach:1.45};
+}
 export const MATCH_WARMUP_MS = 4000;
 export const MATCH_END_MS = 7000;
 
