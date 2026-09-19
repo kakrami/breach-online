@@ -81,13 +81,27 @@ export function projectileSegmentHitZone(target, x1, y1, z1, x2, y2, z2) {
   const ty = finite(target?.y, terrainHeight(tx, tz));
   const scaleY = target?.crouched ? CROUCH_HEIGHT / PLAYER_HEIGHT : 1;
   const headT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx, ty + 1.66 * scaleY, tz, 0.30, 0.30 * scaleY, 0.30);
-  const torsoT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx, ty + 0.99 * scaleY, tz, 0.50, 0.57 * scaleY, 0.40);
-  const lowerT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx, ty + 0.39 * scaleY, tz, 0.39, 0.40 * scaleY, 0.34);
-  let bodyT = torsoT;
-  if (lowerT != null && (bodyT == null || lowerT < bodyT)) bodyT = lowerT;
-  if (headT != null && (bodyT == null || headT <= bodyT + 0.012)) return { zone: 'head', t: headT };
-  if (bodyT != null) return { zone: 'body', t: bodyT };
-  if (headT != null) return { zone: 'head', t: headT };
+  const torsoT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx, ty + 0.99 * scaleY, tz, 0.52, 0.59 * scaleY, 0.42);
+  const lowerT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx, ty + 0.39 * scaleY, tz, 0.42, 0.42 * scaleY, 0.37);
+
+  // The rendered arms sit outside the torso at local X +/-0.44.  Previously
+  // those visible limb volumes were not part of the authoritative projectile
+  // hit model, so a clean shot through an arm could miss the player entirely.
+  // Rotate the arm centers with the actor yaw and treat limb hits as body hits.
+  const yaw = finite(target?.yaw, 0), sideX = Math.cos(yaw) * 0.43, sideZ = -Math.sin(yaw) * 0.43;
+  const armY = ty + 1.05 * scaleY, armRY = 0.39 * scaleY;
+  const leftArmT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx - sideX, armY, tz - sideZ, 0.19, armRY, 0.19);
+  const rightArmT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx + sideX, armY, tz + sideZ, 0.19, armRY, 0.19);
+
+  let bodyHit = torsoT == null ? null : { zone:'upper', t:torsoT };
+  for (const hit of [
+    lowerT == null ? null : { zone:'lower', t:lowerT },
+    leftArmT == null ? null : { zone:'arm', t:leftArmT },
+    rightArmT == null ? null : { zone:'arm', t:rightArmT },
+  ]) if (hit && (bodyHit == null || hit.t < bodyHit.t)) bodyHit = hit;
+  if (headT != null && (bodyHit == null || headT <= bodyHit.t + 0.012)) return { zone:'head', t:headT };
+  if (bodyHit != null) return bodyHit;
+  if (headT != null) return { zone:'head', t:headT };
   return null;
 }
 
@@ -138,6 +152,19 @@ export function segmentFirstWorldOcclusionT(x1, y1, z1, x2, y2, z2) {
   if (obstacle == null) return terrain;
   if (terrain == null) return obstacle;
   return Math.min(obstacle, terrain);
+}
+
+export function blastHasLineOfSight(x1, y1, z1, x2, y2, z2, clearance = 0.22) {
+  const dx=x2-x1,dy=y2-y1,dz=z2-z1,distance=Math.hypot(dx,dy,dz);
+  if(distance<=0.001)return true;
+  // Blast origins commonly sit exactly on the wall/terrain contact that caused
+  // detonation. Starting an occlusion ray on that surface returns t=0 and can
+  // incorrectly block the whole explosion. Step a short distance toward each
+  // target so the contact surface is cleared on the exposed side while targets
+  // genuinely behind the obstacle remain occluded.
+  const step=Math.min(Math.max(0,Number(clearance)||0),distance*.35);
+  const scale=step/distance,sx=x1+dx*scale,sy=y1+dy*scale,sz=z1+dz*scale;
+  return segmentFirstWorldOcclusionT(sx,sy,sz,x2,y2,z2)==null;
 }
 
 export function segmentHitsObstacle(x1, y1, z1, x2, y2, z2) {

@@ -30,18 +30,6 @@ function approachThreat(actor,x,z){
   return clamp((vx*dx+vz*dz)/(speed*distance),-1,1);
 }
 
-function actorPlanarVelocity(actor){
-  let vx=finite(actor?.velocityX,NaN),vz=finite(actor?.velocityZ,NaN);
-  if(!Number.isFinite(vx)||!Number.isFinite(vz)||Math.hypot(vx,vz)<.15){const speed=Math.max(0,finite(actor?.moveSpeed,0)),yaw=finite(actor?.yaw,0);vx=-Math.sin(yaw)*speed;vz=-Math.cos(yaw)*speed;}
-  return{vx:Number.isFinite(vx)?vx:0,vz:Number.isFinite(vz)?vz:0};
-}
-
-function allyAnchorScore(allies,x,z,policy){
-  if(!allies?.length)return 0;
-  let sx=0,sz=0;for(const ally of allies){sx+=finite(ally?.x);sz+=finite(ally?.z);}const cx=sx/allies.length,cz=sz/allies.length,d=Math.hypot(x-cx,z-cz),ideal=Math.max(1,finite(policy.allyAnchorIdeal,18)),range=Math.max(2,finite(policy.allyAnchorRange,14)),weight=finite(policy.allyAnchorWeight,8_000),delta=Math.abs(d-ideal);
-  return Math.max(0,1-delta/range)*weight;
-}
-
 function radialEventPenalty(entries,x,z,now,windowMs,radius,weight,factorFn=null){
   let penalty=0;
   for(const item of entries||[]){
@@ -73,97 +61,64 @@ function allySupportScore(distance,policy){
   return Math.max(0,1-(distance-idealMax)/(fade-idealMax))*finite(policy.allySupportWeight,7_000);
 }
 
-function clusterMomentumScore(policy,recentSpawns,team,candidateCluster,now){
-  if(!candidateCluster||candidateCluster==='ffa')return 0;
-  const windowMs=Math.max(500,finite(policy.clusterStickWindowMs,8_000)),weight=finite(policy.clusterStickWeight,11_000);
-  let last=null;
-  for(let i=(recentSpawns?.length||0)-1;i>=0;i--){
-    const item=recentSpawns[i],age=now-finite(item?.at,0);if(age>windowMs)break;
-    if(safeTeam(item?.team)===safeTeam(team)&&item?.cluster){last=item;break;}
-  }
-  if(!last)return 0;
-  const age=clamp(now-finite(last.at,0),0,windowMs),strength=1-age/windowMs;
-  return last.cluster===candidateCluster?weight*strength:-weight*.55*strength;
-}
-
-function inwardYaw(x,z){
-  const dx=-finite(x),dz=-finite(z);if(Math.hypot(dx,dz)<1e-5)return 0;
-  return Math.atan2(-dx,-dz);
-}
-function clearSpawnYaw(x,y,z,blockedAt){
-  const base=inwardYaw(x,z),offsets=[0,Math.PI/6,-Math.PI/6,Math.PI/3,-Math.PI/3,Math.PI/2,-Math.PI/2,Math.PI];
-  for(const offset of offsets){const yaw=base+offset,fx=-Math.sin(yaw),fz=-Math.cos(yaw);if(!blockedAt?.(x+fx*.90,z+fz*.90,y))return yaw;}
-  return base;
-}
-
 export function spawnPointCountFor(mode,team,teamPoints,ffaPoints){
   return modeId(mode)==='ffa'?ffaPoints.length:teamPoints[safeTeam(team)].length;
 }
 
 export function spawnForModeFromPoints(mode,team,index,terrainHeight,teamPoints,ffaPoints){
   const points=modeId(mode)==='ffa'?ffaPoints:teamPoints[safeTeam(team)],p=points[Math.abs(Math.floor(finite(index,0)))%points.length],x=p[0],z=p[1];
-  return{x,y:finite(terrainHeight?.(x,z),0),z,yaw:inwardYaw(x,z)};
+  return{x,y:finite(terrainHeight?.(x,z),0),z};
 }
 
 export function scoreSpawnCandidate(policy,{
-  mode,team,x,y,z,actors=[],excludeId='',candidateCluster='',recentDeaths=[],recentSpawns=[],recentGunfire=[],recentExplosions=[],projectiles=[],throwables=[],now=Date.now(),lineOfSight,
+  mode,team,x,y,z,actors=[],excludeId='',recentDeaths=[],recentSpawns=[],recentGunfire=[],recentExplosions=[],projectiles=[],throwables=[],now=Date.now(),lineOfSight,
 }){
-  const normalizedMode=modeId(mode),normalizedTeam=safeTeam(team),ffa=normalizedMode==='ffa',live=(actors||[]).filter(actor=>actorId(actor)!==excludeId&&alive(actor,now));
+  const normalizedMode=modeId(mode),normalizedTeam=safeTeam(team),live=(actors||[]).filter(actor=>actorId(actor)!==excludeId&&alive(actor,now));
   const enemies=[],allies=[];for(const actor of live)(isEnemy(normalizedMode,normalizedTeam,actor)?enemies:allies).push(actor);
-  const enemyCap=finite(policy.enemyDistanceCap,ffa?120:220),anyCap=finite(policy.anyDistanceCap,60),nearDistance=finite(policy.nearEnemyDistance,policy.minEnemyDistance*1.4);
-  let minEnemy=enemies.length?Infinity:enemyCap,minProjectedEnemy=enemies.length?Infinity:enemyCap,minAny=live.length?Infinity:anyCap,minAlly=allies.length?Infinity:anyCap,visibleEnemies=0,facingEnemies=0,approachingEnemies=0,nearEnemies=0;
+  const enemyCap=finite(policy.enemyDistanceCap,normalizedMode==='ffa'?120:220),anyCap=finite(policy.anyDistanceCap,60),nearDistance=finite(policy.nearEnemyDistance,policy.minEnemyDistance*1.4);
+  let minEnemy=enemies.length?Infinity:enemyCap,minAny=live.length?Infinity:anyCap,minAlly=allies.length?Infinity:anyCap,visibleEnemies=0,facingEnemies=0,approachingEnemies=0,nearEnemies=0;
   let enemyPressure=0,allyPressure=0;
-  const zoneRadius=Math.max(1,finite(policy.zoneRadius,policy.lineOfSightDistance)),predictionSec=Math.max(0,finite(policy.enemyPredictionSec,.75));
+  const zoneRadius=Math.max(1,finite(policy.zoneRadius,policy.lineOfSightDistance));
   for(const actor of live){
     const d=distance2d({x,z},actor);minAny=Math.min(minAny,d);
     if(!isEnemy(normalizedMode,normalizedTeam,actor)){
       minAlly=Math.min(minAlly,d);if(d<zoneRadius)allyPressure+=1-d/zoneRadius;continue;
     }
-    minEnemy=Math.min(minEnemy,d);const velocity=actorPlanarVelocity(actor),projectedD=Math.hypot(x-(finite(actor.x)+velocity.vx*predictionSec),z-(finite(actor.z)+velocity.vz*predictionSec));minProjectedEnemy=Math.min(minProjectedEnemy,projectedD);if(d<nearDistance)nearEnemies++;if(d<zoneRadius)enemyPressure+=1-d/zoneRadius;
+    minEnemy=Math.min(minEnemy,d);if(d<nearDistance)nearEnemies++;if(d<zoneRadius)enemyPressure+=1-d/zoneRadius;
     if(d<=finite(policy.lineOfSightDistance,60)&&lineOfSight?.({x,y,z},actor))visibleEnemies++;
     if(d<=finite(policy.facingThreatDistance,70)&&facingThreat(actor,x,z)>=finite(policy.facingThreatCos,.55))facingEnemies++;
     if(d<=finite(policy.approachThreatDistance,policy.facingThreatDistance)&&approachThreat(actor,x,z)>=finite(policy.approachThreatCos,.35))approachingEnemies++;
   }
   const projectile=movingThreatPenalty(projectiles,x,z,finite(policy.projectileThreatRadius,12),finite(policy.projectileThreatWeight,28_000),finite(policy.projectileLookaheadSec,.38));
   const throwable=movingThreatPenalty(throwables,x,z,finite(policy.throwableThreatRadius,15),finite(policy.throwableThreatWeight,34_000),finite(policy.throwableLookaheadSec,.65));
-  const deathPenalty=radialEventPenalty(recentDeaths,x,z,now,finite(policy.recentDeathWindowMs,9000),finite(policy.recentDeathRadius,20),finite(policy.recentDeathWeight,48_000),item=>ffa?1:(safeTeam(item?.team)===normalizedTeam?1:.38));
-  const spawnPenalty=radialEventPenalty(recentSpawns,x,z,now,finite(policy.recentSpawnWindowMs,6500),finite(policy.recentSpawnRadius,16),finite(policy.recentSpawnWeight,18_000),item=>ffa?1:(safeTeam(item?.team)===normalizedTeam?1:.55));
-  // A player's own previous death/spawn is deliberately more important than the
-  // generic heat map. This prevents repeated revenge-spawn loops even when the
-  // rest of the lobby has made another nearby candidate look statistically safe.
-  const personalDeathPenalty=excludeId?radialEventPenalty(recentDeaths,x,z,now,finite(policy.personalDeathWindowMs,10_500),finite(policy.personalDeathRadius,finite(policy.recentDeathRadius,20)*1.22),finite(policy.personalDeathWeight,72_000),item=>actorId(item)===String(excludeId)?1:0):0;
-  const personalSpawnPenalty=excludeId?radialEventPenalty(recentSpawns,x,z,now,finite(policy.personalSpawnWindowMs,11_000),finite(policy.personalSpawnRadius,finite(policy.recentSpawnRadius,16)*1.10),finite(policy.personalSpawnWeight,46_000),item=>actorId(item)===String(excludeId)?1:0):0;
-  const gunfirePenalty=radialEventPenalty(recentGunfire,x,z,now,finite(policy.gunfireWindowMs,3000),finite(policy.gunfireRadius,policy.lineOfSightDistance*.65),finite(policy.gunfireWeight,25_000),item=>ffa?1:(safeTeam(item?.team)===normalizedTeam?0.28:1));
+  const deathPenalty=radialEventPenalty(recentDeaths,x,z,now,finite(policy.recentDeathWindowMs,9000),finite(policy.recentDeathRadius,20),finite(policy.recentDeathWeight,48_000),item=>normalizedMode==='ffa'?1:(safeTeam(item?.team)===normalizedTeam?1:.38));
+  const spawnPenalty=radialEventPenalty(recentSpawns,x,z,now,finite(policy.recentSpawnWindowMs,6500),finite(policy.recentSpawnRadius,16),finite(policy.recentSpawnWeight,18_000),item=>normalizedMode==='ffa'?1:(safeTeam(item?.team)===normalizedTeam?1:.55));
+  const gunfirePenalty=radialEventPenalty(recentGunfire,x,z,now,finite(policy.gunfireWindowMs,3000),finite(policy.gunfireRadius,policy.lineOfSightDistance*.65),finite(policy.gunfireWeight,25_000),item=>normalizedMode==='ffa'?1:(safeTeam(item?.team)===normalizedTeam?0.28:1));
   const explosionPenalty=radialEventPenalty(recentExplosions,x,z,now,finite(policy.explosionWindowMs,4200),finite(policy.explosionRadius,policy.lineOfSightDistance*.45),finite(policy.explosionWeight,34_000));
-  const occupied=minAny<finite(policy.minActorSeparation,2.2),predictedDangerDistance=finite(policy.predictedEnemyDistance,finite(policy.minEnemyDistance,20)*.82),predictedEnemyPenalty=minProjectedEnemy<predictedDangerDistance?(1-minProjectedEnemy/Math.max(1,predictedDangerDistance))*finite(policy.predictedEnemyWeight,24_000):0;
-  const hardDanger=occupied||minEnemy<finite(policy.minEnemyDistance,20)||minProjectedEnemy<finite(policy.minProjectedEnemyDistance,finite(policy.minEnemyDistance,20)*.68)||visibleEnemies>0||projectile.critical>0||throwable.critical>0;
+  const occupied=minAny<finite(policy.minActorSeparation,2.2);
+  const hardDanger=occupied||minEnemy<finite(policy.minEnemyDistance,20)||visibleEnemies>0||projectile.critical>0||throwable.critical>0;
   const safe=!hardDanger;
   let score=safe?1_000_000:0;
-  const enemyDistanceWeight=finite(policy.enemyDistanceWeight,150)*(ffa?1.30:1),exposureScale=ffa?1.16:1;
-  score+=Math.min(minEnemy,enemyCap)*enemyDistanceWeight+Math.min(minAny,anyCap)*finite(policy.anyDistanceWeight,5);
-  score-=visibleEnemies*finite(policy.visibleEnemyPenalty,45_000)*exposureScale+facingEnemies*finite(policy.facingEnemyPenalty,12_000)*exposureScale+approachingEnemies*finite(policy.approachingEnemyPenalty,18_000)*(ffa?1.10:1)+nearEnemies*finite(policy.nearEnemyPenalty,6_000)*(ffa?1.12:1);
+  score+=Math.min(minEnemy,enemyCap)*finite(policy.enemyDistanceWeight,150)+Math.min(minAny,anyCap)*finite(policy.anyDistanceWeight,5);
+  score-=visibleEnemies*finite(policy.visibleEnemyPenalty,45_000)+facingEnemies*finite(policy.facingEnemyPenalty,12_000)+approachingEnemies*finite(policy.approachingEnemyPenalty,18_000)+nearEnemies*finite(policy.nearEnemyPenalty,6_000);
   if(occupied)score-=finite(policy.occupiedSpawnPenalty,750_000);
   score+=(allyPressure-enemyPressure)*finite(policy.zoneControlWeight,10_000);
-  const anchorScore=ffa?0:allyAnchorScore(allies,x,z,policy);if(!ffa)score+=allySupportScore(minAlly,policy)+anchorScore;
-  const clusterScore=ffa?0:clusterMomentumScore(policy,recentSpawns,normalizedTeam,candidateCluster,now);score+=clusterScore;
-  score-=deathPenalty+spawnPenalty+personalDeathPenalty+personalSpawnPenalty+gunfirePenalty+explosionPenalty+predictedEnemyPenalty+projectile.penalty+throwable.penalty;
-  return{score,safe,hardDanger,occupied,minEnemy,minProjectedEnemy,minAny,minAlly,visibleEnemies,facingEnemies,approachingEnemies,nearEnemies,enemyPressure,allyPressure,predictedEnemyPenalty,anchorScore,deathPenalty,spawnPenalty,personalDeathPenalty,personalSpawnPenalty,gunfirePenalty,explosionPenalty,clusterScore,projectileThreats:projectile.critical,throwableThreats:throwable.critical};
+  if(normalizedMode!=='ffa')score+=allySupportScore(minAlly,policy);
+  score-=deathPenalty+spawnPenalty+gunfirePenalty+explosionPenalty+projectile.penalty+throwable.penalty;
+  return{score,safe,hardDanger,occupied,minEnemy,minAny,minAlly,visibleEnemies,facingEnemies,approachingEnemies,nearEnemies,enemyPressure,allyPressure,deathPenalty,spawnPenalty,gunfirePenalty,explosionPenalty,projectileThreats:projectile.critical,throwableThreats:throwable.critical};
 }
 
 export function chooseSafeSpawnFromPoints(policy,teamPoints,ffaPoints,{
   mode,team,actors=[],index=0,excludeId='',recentDeaths=[],recentSpawns=[],recentGunfire=[],recentExplosions=[],projectiles=[],throwables=[],now=Date.now(),terrainHeight,blockedAt,lineOfSight,
 }){
   const normalizedMode=modeId(mode),normalizedTeam=safeTeam(team),homePoints=teamPoints[normalizedTeam],awayPoints=teamPoints[normalizedTeam==='blue'?'red':'blue'];
-  const catalog=normalizedMode==='ffa'
-    ?ffaPoints.map(p=>({p,cluster:'ffa'}))
-    :(policy.allowTeamFlip?[...homePoints.map(p=>({p,cluster:'home'})),...awayPoints.map(p=>({p,cluster:'away'}))]:homePoints.map(p=>({p,cluster:'home'})));
-  const start=Math.abs(Math.floor(finite(index,0)))%Math.max(1,catalog.length);
+  const points=normalizedMode==='ffa'?ffaPoints:(policy.allowTeamFlip?[...homePoints,...awayPoints]:homePoints),start=Math.abs(Math.floor(finite(index,0)))%Math.max(1,homePoints.length);
   let bestSafe=null,bestUnsafe=null;
-  for(let offset=0;offset<catalog.length;offset++){
-    const entry=catalog[(start+offset)%catalog.length],p=entry.p,x=p[0],z=p[1],y=finite(terrainHeight?.(x,z),0);if(blockedAt?.(x,z,y))continue;
-    const detail=scoreSpawnCandidate(policy,{mode,team,x,y,z,actors,excludeId,candidateCluster:entry.cluster,recentDeaths,recentSpawns,recentGunfire,recentExplosions,projectiles,throwables,now,lineOfSight});
-    const candidate={score:detail.score-offset*.01,x,y,z,yaw:clearSpawnYaw(x,y,z,blockedAt),cluster:entry.cluster,detail,emergency:!detail.safe};
+  for(let offset=0;offset<points.length;offset++){
+    const p=points[(start+offset)%points.length],x=p[0],z=p[1],y=finite(terrainHeight?.(x,z),0);if(blockedAt?.(x,z,y))continue;
+    const detail=scoreSpawnCandidate(policy,{mode,team,x,y,z,actors,excludeId,recentDeaths,recentSpawns,recentGunfire,recentExplosions,projectiles,throwables,now,lineOfSight});
+    const candidate={score:detail.score-offset*.01,x,y,z,detail,emergency:!detail.safe};
     if(detail.safe){if(!bestSafe||candidate.score>bestSafe.score)bestSafe=candidate;}else if(!bestUnsafe||candidate.score>bestUnsafe.score)bestUnsafe=candidate;
   }
-  return bestSafe||bestUnsafe||{...spawnForModeFromPoints(mode,team,index,terrainHeight,teamPoints,ffaPoints),cluster:normalizedMode==='ffa'?'ffa':'home',score:-Infinity,detail:null,emergency:true};
+  return bestSafe||bestUnsafe||{...spawnForModeFromPoints(mode,team,index,terrainHeight,teamPoints,ffaPoints),score:-Infinity,detail:null,emergency:true};
 }

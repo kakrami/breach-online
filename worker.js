@@ -1,19 +1,38 @@
+import { PLAYER_HEIGHT, PLAYER_RADIUS, ARENA_LIMIT, MAX_STEP_HEIGHT } from './world-geometry.js';
+import * as HighlandsGeometry from './world-geometry.js';
+import * as DepotGeometry from './world-geometry-depot.js';
+import * as YardGeometry from './world-geometry-yard.js';
+import * as RigGeometry from './world-geometry-rig.js';
 import {
-  PLAYER_HEIGHT, PLAYER_RADIUS, ARENA_LIMIT, COMBAT_FLOW_NODES, terrainHeight, worldSupportHeight, resolveCeilingCollision
-} from './world-geometry.js';
-import {
-  APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS,
-  WEAPON_ORDER, PRIMARY_WEAPONS, WEAPON_SPECS, weaponSpreadRadians, weaponDamageAtDistance, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings, MOVEMENT_FEEL, WEAPON_SWITCH_MS,
-  DEFAULT_MATCH_RULES, GAME_MODES, normalizeGameMode, gameModeSpec, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, GROUND_FOLLOW_DROP
+  APP_VERSION, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, TEAM_COLORS, DEFAULT_MAP_ID, normalizeMapId, mapSpec,
+  WEAPON_ORDER, PRIMARY_WEAPONS, WEAPON_SPECS, weaponSpreadRadians, weaponHeatAfterDelay, weaponHeatAfterShot, weaponDamageAtDistance, weaponZoneDamageScale, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, EQUIPMENT_SPECS, TACTICAL_EQUIPMENT, LETHAL_EQUIPMENT, normalizeTactical, normalizeLethal, equipmentForLoadout, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings, MOVEMENT_FEEL, WEAPON_SWITCH_MS,
+  DEFAULT_MATCH_RULES, GAME_MODES, normalizeGameMode, gameModeSpec, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, FRAG_RADIUS, FRAG_MAX_DAMAGE, SMOKE_RADIUS, SMOKE_DURATION_MS, GROUND_FOLLOW_DROP
 } from './game-config.js';
 import { normalizeMatchRules, defaultMatchState, normalizeMatchState, publicMatchState, matchRulesAreDefault } from './match-model.js';
 import { MATCH_STATUS, matchAllowsLobbyEdits, matchAllowsMovement, matchAllowsCombat, matchAllowsRespawn, matchPreservesReconnectPosition } from './gameplay-phase.js';
-import { spawnForMode as directedSpawnForMode, chooseSafeSpawn as directedChooseSafeSpawn, spawnPointCount } from './spawn-director.js';
-import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback, sweepHorizontalMovement, createTraversalPlan, traversalPose, tacticalThrowVelocity } from './movement-model.js';
-import { projectileSegmentHitZone, segmentFirstWorldHitT, segmentFirstWorldOcclusionT, segmentHitsObstacle, actorHasLineOfSight } from './server-collision.js';
-import { worldBlockedAt, worldMoveBlockedAt, findTraversalCandidate } from './world-collision.js';
+import * as HighlandsSpawns from './spawn-director.js';
+import * as DepotSpawns from './spawn-director-depot.js';
+import * as YardSpawns from './spawn-director-yard.js';
+import * as RigSpawns from './spawn-director-rig.js';
+import { MAX_PLAYER_PHYSICS_STEP_SEC, advanceVerticalMotion, advanceKnockback, sweepHorizontalMovement, createTraversalPlan, traversalPose, tacticalThrowVelocity, LADDER_CLIMB_SPEED, ladderById, ladderClimbPoint, ladderBottomExitPoint, ladderTopExitPoint, findLadderEntry, ladderClimbStep } from './movement-model.js';
+import * as HighlandsServerCollision from './server-collision.js';
+import * as DepotServerCollision from './server-collision-depot.js';
+import * as YardServerCollision from './server-collision-yard.js';
+import * as RigServerCollision from './server-collision-rig.js';
+import * as HighlandsWorldCollision from './world-collision.js';
+import * as DepotWorldCollision from './world-collision-depot.js';
+import * as YardWorldCollision from './world-collision-yard.js';
+import * as RigWorldCollision from './world-collision-rig.js';
 
 const GAME_VERSION = APP_VERSION;
+
+const WORLD_BUNDLES = Object.freeze({
+  highlands:Object.freeze({id:'highlands',geometry:HighlandsGeometry,spawns:HighlandsSpawns,worldCollision:HighlandsWorldCollision,serverCollision:HighlandsServerCollision}),
+  depot:Object.freeze({id:'depot',geometry:DepotGeometry,spawns:DepotSpawns,worldCollision:DepotWorldCollision,serverCollision:DepotServerCollision}),
+  yard:Object.freeze({id:'yard',geometry:YardGeometry,spawns:YardSpawns,worldCollision:YardWorldCollision,serverCollision:YardServerCollision}),
+  rig:Object.freeze({id:'rig',geometry:RigGeometry,spawns:RigSpawns,worldCollision:RigWorldCollision,serverCollision:RigServerCollision}),
+});
+function worldBundle(value){return WORLD_BUNDLES[normalizeMapId(value)]||WORLD_BUNDLES[DEFAULT_MAP_ID];}
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAX_MESSAGE_BYTES = 24 * 1024;
 const ROOM_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
@@ -25,17 +44,32 @@ const SIM_MIN_STEP_MS = 16;
 const SIM_FIXED_STEP_MS = 1000 / 30;
 const SIM_MAX_CATCHUP_MS = 400;
 const MOVE_BUDGET_INITIAL_SEC = 0.04;
-const MOVE_BUDGET_MAX_SEC = 0.26;
+const LADDER_BUDGET_INITIAL_SEC = 0.09;
+const MOVE_BUDGET_MAX_SEC = 0.18;
+const SPRINT_SPEED_MULTIPLIER = MOVEMENT_FEEL.sprintSpeedMultiplier;
+const SPRINT_MIN_FORWARD = MOVEMENT_FEEL.sprintMinForward;
+const SPRINT_MIN_INPUT = MOVEMENT_FEEL.sprintMinInput;
+const SLIDE_START_SPEED_MULTIPLIER = MOVEMENT_FEEL.slideStartSpeedMultiplier;
+const SLIDE_SERVER_GRACE_MS = MOVEMENT_FEEL.slideServerGraceMs;
+const MAX_STATE_ELAPSED_SEC = 0.40;
 const BOT_PERSIST_INTERVAL_MS = 10 * 1000;
 const BULLET_MAX_SEGMENT_DISTANCE = 6;
+const COMBAT_HISTORY_WINDOW_MS = 650;
+const COMBAT_HISTORY_MAX_SAMPLES = 40;
+const COMBAT_HISTORY_EXTRAPOLATION_MS = 70;
+const MAX_LAG_COMPENSATION_MS = 240;
+const MAX_TARGET_REWIND_MS = 220;
+const MAX_CLIENT_COMBAT_CLOCK_LEAD_MS = 35;
+const MIN_PLAYER_PENETRATION_ENERGY = .12;
 const THROWABLE_BROADCAST_MS = 33;
+const EXPLOSIVE_PROJECTILE_BROADCAST_MS = 45;
 const SERVER_VERTICAL_MAX_CATCHUP_SEC = .40;
 const SERVER_COYOTE_TIME_MS = MOVEMENT_FEEL.coyoteTimeMs + 5;
 const BOT_TARGET_MEMORY_MS = 3200;
 const BOT_PATROL_MIN_MS = 1800;
 const BOT_PATROL_MAX_MS = 4200;
 const RECONNECT_GRACE_MS = 45 * 1000;
-const HEALTH_REGEN_TICK_MS = 500;
+const HEALTH_REGEN_TICK_MS = 100;
 const MULTI_KILL_WINDOW_MS = 4500;
 const CREATE_RATE_WINDOW_MS = 60 * 1000;
 const CREATE_RATE_MAX_PER_CLIENT = 5;
@@ -177,6 +211,14 @@ function safeName(value) {
   return cleaned || "Player";
 }
 
+function safeChatText(value) {
+  return String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+}
+
 function finiteNumber(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -214,17 +256,20 @@ function playerCanEquip(player, weapon) {
 }
 
 function safeEquipmentKind(value){return Object.prototype.hasOwnProperty.call(EQUIPMENT_CAPS,value)?value:'flash';}
+function safeTactical(value){return normalizeTactical(value);}
+function safeLethal(value){return normalizeLethal(value);}
+function normalizeLoadout(value,fallback={primaryWeapon:'assault',tactical:'flash',lethal:'sticky'}){const v=value&&typeof value==='object'?value:{};return{primaryWeapon:safePrimaryWeapon(v.primaryWeapon??fallback.primaryWeapon),tactical:safeTactical(v.tactical??fallback.tactical),lethal:safeLethal(v.lethal??fallback.lethal)};}
 function freshAmmo(){return Object.fromEntries(WEAPON_ORDER.map(name=>[name,WEAPON_SPECS[name].mag]));}
 function normalizeFireReady(value){const v=value&&typeof value==='object'?value:{};return Object.fromEntries(WEAPON_ORDER.map(name=>[name,Math.max(0,finiteNumber(v[name],0))]));}
 function normalizeAmmo(value){
   const v=value&&typeof value==="object"?value:{};
   return Object.fromEntries(WEAPON_ORDER.map(name=>{const mag=WEAPON_SPECS[name].mag;return[name,clamp(Math.floor(finiteNumber(v[name],mag)),0,mag)]}));
 }
-function freshEquipment(){return {...EQUIPMENT_CAPS};}
+function freshEquipment(tactical='flash',lethal='sticky'){return equipmentForLoadout(safeTactical(tactical),safeLethal(lethal));}
 function normalizeEquipment(v){v=v&&typeof v==="object"?v:{};return Object.fromEntries(Object.entries(EQUIPMENT_CAPS).map(([name,cap])=>[name,clamp(Math.floor(finiteNumber(v[name],cap)),0,cap)]));}
 function refreshUnlimitedResources(me){
   if(!me?.godMode)return;
-  me.ammo=freshAmmo();me.equipment=freshEquipment();me.reloadAt=0;me.reloadWeapon='';
+  me.ammo=freshAmmo();me.equipment=freshEquipment(me.tactical,me.lethal);me.reloadAt=0;me.reloadWeapon='';
 }
 
 function clamp(value, min, max) {
@@ -251,6 +296,51 @@ function spreadShotAngles(yaw, pitch, radius) {
   };
 }
 
+function shotgunPelletAngles(yaw,pitch,radius,index,pellets,rotation=0){
+  if(index<=0||!(radius>0)||pellets<=1)return{yaw,pitch};
+  // Stable center-weighted pattern: one guaranteed center pellet, three inner
+  // pellets, then the remaining pellets on an outer ring. A random rotation
+  // keeps successive blasts organic without letting RNG decide whether a
+  // perfectly centered close-range pump shot registers enough pellets to kill.
+  const innerCount=Math.min(3,Math.max(0,pellets-1)),outerCount=Math.max(1,pellets-1-innerCount);
+  let radial,angle;
+  if(index<=innerCount){radial=.34*radius;angle=rotation+(index-1)*(Math.PI*2/innerCount);}
+  else{const outerIndex=index-innerCount-1;radial=.72*radius;angle=rotation+Math.PI/4+outerIndex*(Math.PI*2/outerCount);}
+  const yawScale=Math.max(.32,Math.cos(pitch));
+  return{yaw:yaw+Math.cos(angle)*radial/yawScale,pitch:clamp(pitch+Math.sin(angle)*radial,-1.4,1.4)};
+}
+function sanitizeCombatTimestamp(value,now){return clamp(finiteNumber(value,now),now-MAX_LAG_COMPENSATION_MS,now+MAX_CLIENT_COMBAT_CLOCK_LEAD_MS);}
+
+function normalizeAngle(value){let angle=Number(value)||0;while(angle>Math.PI)angle-=Math.PI*2;while(angle<-Math.PI)angle+=Math.PI*2;return angle;}
+function safeShotAim(me,payload){
+  // State and fire packets share one ordered WebSocket. Bound the fire aim to
+  // the most recent body aim so recoil/fast input is allowed without turning
+  // the fire packet into an arbitrary server-side direction override.
+  const baseYaw=finiteNumber(me.yaw,0),basePitch=clamp(finiteNumber(me.pitch,0),-1.4,1.4),requestedYaw=finiteNumber(payload.yaw,baseYaw),requestedPitch=clamp(finiteNumber(payload.pitch,basePitch),-1.4,1.4);
+  return{yaw:baseYaw+clamp(normalizeAngle(requestedYaw-baseYaw),-.20,.20),pitch:clamp(basePitch+clamp(requestedPitch-basePitch,-.20,.20),-1.4,1.4)};
+}
+function shotVector(yaw,pitch){const cp=Math.cos(pitch);return{x:-Math.sin(yaw)*cp,y:Math.sin(pitch),z:-Math.cos(yaw)*cp};}
+function shotLaunchPose(me,yaw,pitch,crouched=false,weapon='pistol',segmentFirstWorldHitTFn=HighlandsServerCollision.segmentFirstWorldHitT){
+  const dir=shotVector(yaw,pitch),eyeHeight=(crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.08,eye={x:me.x,y:me.y+eyeHeight,z:me.z},ballistic={x:eye.x+dir.x*.18,y:eye.y+dir.y*.18,z:eye.z+dir.z*.18};
+  // Standard firearms are camera/reticle authoritative. Their old synthetic
+  // muzzle sat below and to the side of the eye, which could intersect a
+  // balcony/window lip while the center-screen ray was visibly clear. That
+  // made steep downward fire get redirected into the ledge. Large launcher
+  // projectiles retain a physical barrel-clearance check because their actual
+  // projectile body must fit past nearby cover.
+  if(weapon!=='grenadeLauncher'&&weapon!=='rpg')return{x:ballistic.x,y:ballistic.y,z:ballistic.z,dx:dir.x,dy:dir.y,dz:dir.z,muzzleBlocked:false};
+  const right={x:Math.cos(yaw),z:-Math.sin(yaw)},muzzle={x:me.x+right.x*.23+(-Math.sin(yaw))*.43,y:eye.y-.20,z:me.z+right.z*.23+(-Math.cos(yaw))*.43},near={x:ballistic.x+dir.x*1.15,y:ballistic.y+dir.y*1.15,z:ballistic.z+dir.z*1.15},hitT=segmentFirstWorldHitTFn(muzzle.x,muzzle.y,muzzle.z,near.x,near.y,near.z);
+  if(hitT!=null&&hitT<.995){const hx=muzzle.x+(near.x-muzzle.x)*hitT,hy=muzzle.y+(near.y-muzzle.y)*hitT,hz=muzzle.z+(near.z-muzzle.z)*hitT,dx=hx-muzzle.x,dy=hy-muzzle.y,dz=hz-muzzle.z,len=Math.hypot(dx,dy,dz);if(len<.025)return{x:muzzle.x,y:muzzle.y,z:muzzle.z,dx:dir.x,dy:dir.y,dz:dir.z,muzzleBlocked:true};return{x:muzzle.x,y:muzzle.y,z:muzzle.z,dx:dx/len,dy:dy/len,dz:dz/len,muzzleBlocked:true};}
+  return{x:ballistic.x,y:ballistic.y,z:ballistic.z,dx:dir.x,dy:dir.y,dz:dir.z,muzzleBlocked:false};
+}
+function decayedFireHeat(me,weapon,now){const heats=me.fireHeat&&typeof me.fireHeat==='object'?me.fireHeat:{},times=me.fireHeatAt&&typeof me.fireHeatAt==='object'?me.fireHeatAt:{},last=Math.max(0,finiteNumber(times[weapon],0));return weaponHeatAfterDelay(weapon,finiteNumber(heats[weapon],0),last?now-last:0);}
+function storeFireHeat(me,weapon,now,preShotHeat){me.fireHeat={...(me.fireHeat&&typeof me.fireHeat==='object'?me.fireHeat:{}),[weapon]:weaponHeatAfterShot(weapon,preShotHeat)};me.fireHeatAt={...(me.fireHeatAt&&typeof me.fireHeatAt==='object'?me.fireHeatAt:{}),[weapon]:now};}
+
+function publicLadderState(value){
+  const ladder=value&&typeof value==='object'?value:null;if(!ladder||!ladder.id)return null;
+  return {id:String(ladder.id),seq:Math.max(0,Math.floor(finiteNumber(ladder.seq,0))),phase:'climb',entry:ladder.entry==='top'?'top':'bottom'};
+}
+
 function publicPlayer(attachment) {
   return {
     id: attachment.clientId,
@@ -269,6 +359,9 @@ function publicPlayer(attachment) {
     crouched: !!attachment.crouched,
     weapon: safeWeapon(attachment.weapon),
     primaryWeapon: safePrimaryWeapon(attachment.primaryWeapon),
+    tactical: safeTactical(attachment.tactical),
+    lethal: safeLethal(attachment.lethal),
+    pendingLoadout: attachment.pendingLoadout ? normalizeLoadout(attachment.pendingLoadout,{primaryWeapon:attachment.primaryWeapon,tactical:attachment.tactical,lethal:attachment.lethal}) : null,
     pendingTeam: attachment.pendingTeam ? safeTeam(attachment.pendingTeam) : '',
     ammo: attachment.ammo,
     equipment: attachment.equipment,
@@ -282,7 +375,8 @@ function publicPlayer(attachment) {
     grounded: attachment.serverGrounded !== false,
     verticalVelocity: finiteNumber(attachment.verticalVelocity, 0),
     jumpSeq: Math.max(0, Math.floor(finiteNumber(attachment.lastJumpSeq, 0))),
-    traversal: attachment.traversal ? {mode:attachment.traversal.mode,role:attachment.traversal.role||'',seq:attachment.traversal.seq,startX:attachment.traversal.startX,startY:attachment.traversal.startY,startZ:attachment.traversal.startZ,endX:attachment.traversal.endX,endY:attachment.traversal.endY,endZ:attachment.traversal.endZ,peakY:attachment.traversal.peakY,startedAt:attachment.traversal.startedAt,durationMs:attachment.traversal.durationMs} : null,
+    traversal: attachment.traversal ? {mode:attachment.traversal.mode,role:attachment.traversal.role||'',seq:attachment.traversal.seq,startX:attachment.traversal.startX,startY:attachment.traversal.startY,startZ:attachment.traversal.startZ,endX:attachment.traversal.endX,endY:attachment.traversal.endY,endZ:attachment.traversal.endZ,peakY:attachment.traversal.peakY,startedAt:attachment.traversal.startedAt,durationMs:attachment.traversal.durationMs,endGrounded:attachment.traversal.endGrounded!==false,exitVelocityY:Number(attachment.traversal.exitVelocityY)||0,portalId:String(attachment.traversal.portalId||''),viewMaxY:Number.isFinite(Number(attachment.traversal.viewMaxY))?Number(attachment.traversal.viewMaxY):null} : null,
+    ladder: publicLadderState(attachment.ladder),
   };
 }
 
@@ -302,33 +396,38 @@ function publicBot(bot) {
     pitch: 0,
     weapon: safePrimaryWeapon(bot.weapon||bot.primaryWeapon),
     primaryWeapon: safePrimaryWeapon(bot.primaryWeapon||bot.weapon),
+    tactical:'flash',lethal:'sticky',pendingLoadout:null,
     ads: false,
     reloadAt: bot.reloadAt || 0,
     reloadWeapon: bot.reloadWeapon || "",
     kills: Math.max(0, Math.floor(finiteNumber(bot.kills, 0))),
     deaths: Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))),
-    traversal: bot.traversal ? {mode:bot.traversal.mode,role:bot.traversal.role||'',seq:bot.traversal.seq,startX:bot.traversal.startX,startY:bot.traversal.startY,startZ:bot.traversal.startZ,endX:bot.traversal.endX,endY:bot.traversal.endY,endZ:bot.traversal.endZ,peakY:bot.traversal.peakY,startedAt:bot.traversal.startedAt,durationMs:bot.traversal.durationMs} : null,
+    traversal: bot.traversal ? {mode:bot.traversal.mode,role:bot.traversal.role||'',seq:bot.traversal.seq,startX:bot.traversal.startX,startY:bot.traversal.startY,startZ:bot.traversal.startZ,endX:bot.traversal.endX,endY:bot.traversal.endY,endZ:bot.traversal.endZ,peakY:bot.traversal.peakY,startedAt:bot.traversal.startedAt,durationMs:bot.traversal.durationMs,endGrounded:bot.traversal.endGrounded!==false,exitVelocityY:Number(bot.traversal.exitVelocityY)||0,portalId:String(bot.traversal.portalId||''),viewMaxY:Number.isFinite(Number(bot.traversal.viewMaxY))?Number(bot.traversal.viewMaxY):null} : null,
+    ladder: publicLadderState(bot.ladder),
   };
 }
 
-function sendLoadout(socket, me, extra = {}) { sendJson(socket,{t:'loadout',weapon:safeWeapon(me.weapon),primaryWeapon:safePrimaryWeapon(me.primaryWeapon),ammo:me.ammo,reloadAt:me.reloadAt||0,reloadWeapon:me.reloadWeapon||'',rev:0,...extra}); }
+function sendLoadout(socket, me, extra = {}) { sendJson(socket,{t:'loadout',weapon:safeWeapon(me.weapon),primaryWeapon:safePrimaryWeapon(me.primaryWeapon),tactical:safeTactical(me.tactical),lethal:safeLethal(me.lethal),pendingLoadout:me.pendingLoadout?normalizeLoadout(me.pendingLoadout,{primaryWeapon:me.primaryWeapon,tactical:me.tactical,lethal:me.lethal}):null,ammo:me.ammo,equipment:me.equipment,reloadAt:me.reloadAt||0,reloadWeapon:me.reloadWeapon||'',rev:0,...extra}); }
 
-function spawnForTeam(team,index){return directedSpawnForMode('tdm',safeTeam(team),index,terrainHeight);}
-function spawnForMode(mode,team,index){return directedSpawnForMode(normalizeGameMode(mode),safeTeam(team),index,terrainHeight);}
+function spawnForTeam(world,team,index){return world.spawns.spawnForMode('tdm',safeTeam(team),index,world.geometry.terrainHeight);}
+function spawnForMode(world,mode,team,index){return world.spawns.spawnForMode(normalizeGameMode(mode),safeTeam(team),index,world.geometry.terrainHeight);}
 function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
+  const active=normalizeLoadout(player?.pendingLoadout||player,{primaryWeapon:player?.primaryWeapon,tactical:player?.tactical,lethal:player?.lethal});
   const next={
-    ...player,...spawn,team,pendingTeam:'',hp:100,wastedUntil:0,regenAt:0,
-    weapon:safePrimaryWeapon(player.primaryWeapon),ammo:freshAmmo(),equipment:freshEquipment(),reloadAt:0,reloadWeapon:'',
-    fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,ads:false,crouched:false,moveSpeed:0,
-    verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
-    flashUntil:0,flashPower:0,flashDurationMs:0,knockVelocityX:0,knockVelocityZ:0,traversal:null,lastTraverseSeq:0,
+    ...player,...spawn,team,spawnProtectedUntil:Math.max(0,finiteNumber(spawn?.spawnProtectedUntil,0)),pendingTeam:'',pendingLoadout:null,primaryWeapon:active.primaryWeapon,tactical:active.tactical,lethal:active.lethal,hp:100,wastedUntil:0,regenAt:0,
+    weapon:active.primaryWeapon,ammo:freshAmmo(),equipment:freshEquipment(active.tactical,active.lethal),reloadAt:0,reloadWeapon:'',
+    fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,
+    verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
+    flashUntil:0,flashPower:0,flashDurationMs:0,fireHeat:{},fireHeatAt:{},knockVelocityX:0,knockVelocityZ:0,velocityX:0,velocityZ:0,traversal:null,lastTraverseSeq:0,ladder:null,lastLadderSeq:0,
   };
   if(resetStats)Object.assign(next,{kills:0,deaths:0,multiKillCount:0,lastKillAt:0});
   return next;
 }
-function makeBot(team, teamIndex, mode='tdm', spawnIndex=teamIndex, spawnOverride=null) {
+
+const BOT_PRIMARY_WEAPONS=['assault','ump','shotgun','semiShotgun','sniper'];
+function makeBot(world,team, teamIndex, mode='tdm', spawnIndex=teamIndex, spawnOverride=null) {
   team = safeTeam(team);
-  const spawn = spawnOverride || spawnForMode(mode, team, spawnIndex),primaryWeapon=PRIMARY_WEAPONS[Math.abs(spawnIndex)%PRIMARY_WEAPONS.length]||'assault';
+  const spawn = spawnOverride || spawnForMode(world,mode, team, spawnIndex),primaryWeapon=BOT_PRIMARY_WEAPONS[Math.abs(spawnIndex)%BOT_PRIMARY_WEAPONS.length]||'assault';
   const label = team === "red" ? "Red" : "Blue",ffa=normalizeGameMode(mode)==='ffa';
   return {
     id: `bot-${team}-${teamIndex + 1}`,
@@ -338,6 +437,8 @@ function makeBot(team, teamIndex, mode='tdm', spawnIndex=teamIndex, spawnOverrid
     yaw: 0,
     hp: 100,
     wastedUntil: 0,
+    spawnProtectedUntil: Math.max(0,finiteNumber(spawn.spawnProtectedUntil,0)),
+    velocityX:0,velocityZ:0,
     nextShotAt: 0,
     ammo: freshAmmo(),
     reloadAt: 0,
@@ -349,20 +450,22 @@ function makeBot(team, teamIndex, mode='tdm', spawnIndex=teamIndex, spawnOverrid
     deaths: 0,
     traversal: null,
     traverseSeq: 0,
+    ladder: null,
+    ladderSeq: 0,
     lastSeenTargetId:'',lastSeenAt:0,lastKnownX:spawn.x,lastKnownZ:spawn.z,patrolX:spawn.x,patrolZ:spawn.z,patrolUntil:0,patrolNodeIndex:-1,
   };
 }
-function makeBots(blueBots, redBots, mode='tdm') {
+function makeBots(world,blueBots, redBots, mode='tdm') {
   blueBots = clamp(Math.floor(finiteNumber(blueBots, 0)), 0, MAX_BOTS);
   redBots = clamp(Math.floor(finiteNumber(redBots, 0)), 0, MAX_BOTS);
   const bots = [];let spawnIndex=0;
-  for (let i = 0; i < blueBots; i += 1) bots.push(makeBot("blue", i, mode, spawnIndex++));
-  for (let i = 0; i < redBots; i += 1) bots.push(makeBot("red", i, mode, spawnIndex++));
+  for (let i = 0; i < blueBots; i += 1) bots.push(makeBot(world,"blue", i, mode, spawnIndex++));
+  for (let i = 0; i < redBots; i += 1) bots.push(makeBot(world,"red", i, mode, spawnIndex++));
   return bots;
 }
-function reconcileBots(existing, blueBots, redBots, mode='tdm') {
+function reconcileBots(world,existing, blueBots, redBots, mode='tdm') {
   const prior = new Map((Array.isArray(existing) ? existing : []).map((bot) => [bot.id, bot]));
-  return makeBots(blueBots, redBots, mode).map((fresh) => {
+  return makeBots(world,blueBots, redBots, mode).map((fresh) => {
     const old = prior.get(fresh.id);
     if (!old) return fresh;
     const primaryWeapon=safePrimaryWeapon(old.primaryWeapon||old.weapon||fresh.primaryWeapon);
@@ -374,7 +477,7 @@ function reconcileBots(existing, blueBots, redBots, mode='tdm') {
       team: fresh.team,
       x: clamp(finiteNumber(old.x, fresh.x), -ARENA_LIMIT, ARENA_LIMIT),
       z: clamp(finiteNumber(old.z, fresh.z), -ARENA_LIMIT, ARENA_LIMIT),
-      y: terrainHeight(clamp(finiteNumber(old.x, fresh.x), -ARENA_LIMIT, ARENA_LIMIT), clamp(finiteNumber(old.z, fresh.z), -ARENA_LIMIT, ARENA_LIMIT)),
+      y: world.geometry.terrainHeight(clamp(finiteNumber(old.x, fresh.x), -ARENA_LIMIT, ARENA_LIMIT), clamp(finiteNumber(old.z, fresh.z), -ARENA_LIMIT, ARENA_LIMIT)),
       ammo: normalizeAmmo(old.ammo),
       weapon: primaryWeapon,
       primaryWeapon,
@@ -385,6 +488,17 @@ function botCountsFromMeta(meta) {
   const blueBots = clamp(Math.floor(finiteNumber(meta?.blueBots, 0)), 0, MAX_BOTS);
   const redBots = clamp(Math.floor(finiteNumber(meta?.redBots, 0)), 0, MAX_BOTS);
   return { blueBots, redBots, botCount: Math.min(MAX_BOTS, blueBots + redBots) };
+}
+function botRosterMatchesConfig(world,existing, blueBots, redBots, mode='tdm') {
+  if (!Array.isArray(existing)) return false;
+  const expected = makeBots(world,blueBots, redBots, mode);
+  if (existing.length !== expected.length) return false;
+  const actual = new Map(existing.map((bot) => [String(bot?.id || ''), bot]));
+  if (actual.size !== expected.length) return false;
+  return expected.every((bot) => {
+    const saved = actual.get(bot.id);
+    return !!saved && String(saved.team || '').toLowerCase() === bot.team;
+  });
 }
 
 async function directoryStub(env) {
@@ -557,6 +671,7 @@ export class WorldDirectory {
         blueBots: clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS),
         redBots: clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS),
         botDifficulty: safeBotDifficulty(body.botDifficulty),
+        mapId: normalizeMapId(body.mapId),
         mode,
         blue: clamp(Math.floor(finiteNumber(body.blue, 0)), 0, MAX_PLAYERS + MAX_BOTS),
         red: clamp(Math.floor(finiteNumber(body.red, 0)), 0, MAX_PLAYERS + MAX_BOTS),
@@ -595,6 +710,7 @@ export class GameRoom {
     this.bots = null;
     this.bullets = new Map();
     this.throwables = new Map();
+    this.smokeClouds = new Map();
     this.lastSimAt = 0;
     this.simAccumulatorMs = 0;
     this.lastBotBroadcastAt = 0;
@@ -606,6 +722,40 @@ export class GameRoom {
     this.matchDirty = false;
     this.recentDeaths = [];
     this.recentSpawns = [];
+    this.recentGunfire = [];
+    this.recentExplosions = [];
+    this.combatHistory = new Map();
+    this.world = worldBundle(DEFAULT_MAP_ID);
+  }
+
+  recordCombatPose(actor, at=Date.now()) {
+    const id=actor?.clientId||actor?.id;if(!id)return;
+    const sample={at:finiteNumber(at,Date.now()),x:finiteNumber(actor.x,0),y:finiteNumber(actor.y,0),z:finiteNumber(actor.z,0),yaw:finiteNumber(actor.yaw,0),crouched:!!actor.crouched};
+    let history=this.combatHistory.get(id);if(!history){history=[];this.combatHistory.set(id,history);}
+    const last=history[history.length-1];
+    if(last&&sample.at<last.at-2)return;
+    if(last&&Math.abs(sample.at-last.at)<1)history[history.length-1]=sample;else history.push(sample);
+    const cutoff=sample.at-COMBAT_HISTORY_WINDOW_MS;while(history.length>2&&history[0].at<cutoff)history.shift();
+    if(history.length>COMBAT_HISTORY_MAX_SAMPLES)history.splice(0,history.length-COMBAT_HISTORY_MAX_SAMPLES);
+  }
+
+  combatPoseAt(actor, at) {
+    const id=actor?.clientId||actor?.id,history=id?this.combatHistory.get(id):null;
+    if(!history?.length)return actor;
+    const targetAt=finiteNumber(at,history[history.length-1].at);
+    if(targetAt<=history[0].at)return{...actor,...history[0]};
+    const last=history[history.length-1];
+    if(targetAt>=last.at){
+      if(history.length<2)return{...actor,...last};
+      const prev=history[history.length-2],sampleDt=Math.max(.008,(last.at-prev.at)/1000),extraMs=Math.min(COMBAT_HISTORY_EXTRAPOLATION_MS,Math.max(0,targetAt-last.at)),extra=extraMs/1000;let vx=(last.x-prev.x)/sampleDt,vz=(last.z-prev.z)/sampleDt,vy=(last.y-prev.y)/sampleDt,planar=Math.hypot(vx,vz);
+      if(planar>16){const scale=16/planar;vx*=scale;vz*=scale;}vy=clamp(vy,-13,9);const yawRate=clamp(normalizeAngle(last.yaw-prev.yaw)/sampleDt,-7,7);
+      return{...actor,...last,at:last.at+extraMs,x:last.x+vx*extra,y:last.y+vy*extra,z:last.z+vz*extra,yaw:last.yaw+yawRate*extra};
+    }
+    for(let i=1;i<history.length;i++){
+      const b=history[i];if(targetAt>b.at)continue;const a=history[i-1],span=Math.max(1,b.at-a.at),t=clamp((targetAt-a.at)/span,0,1),yawDelta=normalizeAngle(b.yaw-a.yaw);
+      return{...actor,x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,z:a.z+(b.z-a.z)*t,yaw:a.yaw+yawDelta*t,crouched:t<.5?a.crouched:b.crouched};
+    }
+    return actor;
   }
 
   async getMeta() {
@@ -615,6 +765,8 @@ export class GameRoom {
       meta.adminClientIds = normalizeAdminIds(meta);
       meta.clientAuthHashes = normalizeClientAuthHashes(meta);
       meta.settings = normalizeWorldSettings(meta.settings);
+      meta.mapId = normalizeMapId(meta.mapId);
+      this.world = worldBundle(meta.mapId);
       const legacyRules=meta.match||{...DEFAULT_MATCH_RULES,mode:normalizeGameMode(meta.mode)};
       meta.match=normalizeMatchState(meta.match,Date.now(),legacyRules);
       delete meta.mode;delete meta.custom;
@@ -625,7 +777,7 @@ export class GameRoom {
 
   async putMeta(meta) {
     meta.adminClientIds = normalizeAdminIds(meta);
-    meta.clientAuthHashes=normalizeClientAuthHashes(meta);delete meta.mode;delete meta.custom;
+    meta.clientAuthHashes=normalizeClientAuthHashes(meta);meta.mapId=normalizeMapId(meta.mapId);this.world=worldBundle(meta.mapId);delete meta.mode;delete meta.custom;
     this.metaCache=meta;
     await this.ctx.storage.put("meta", meta);
   }
@@ -649,8 +801,9 @@ export class GameRoom {
       : type === 'state' ? { rate: 55, burst: 80 }
       : type === 'simTick' ? { rate: 40, burst: 60 }
       : type === 'fire' ? { rate: 24, burst: 30 }
-      : ['throw','reload','weapon','loadout','team','god','startMatch','lobbyMode','adminPlayer','adminSettings','adminMatch','adminBots'].includes(type) ? { rate: 14, burst: 22 }
+      : ['throw','reload','weapon','loadout','team','god','startMatch','returnLobby','lobbyMode','adminPlayer','adminSettings','adminMatch','adminBots','lobbyMap'].includes(type) ? { rate: 14, burst: 22 }
       : type === 'ping' ? { rate: 8, burst: 12 }
+      : type === 'chat' ? { rate: 1.5, burst: 4 }
       : { rate: 30, burst: 45 };
     let state = this.socketRate.get(socket);
     if (!state) {
@@ -704,13 +857,11 @@ export class GameRoom {
 
   async ensureSimulation(meta) {
     if (this.bots) return;
-    const counts = botCountsFromMeta(meta);
+    const counts = botCountsFromMeta(meta), mode = matchMode(meta.match);
     const stored = await this.ctx.storage.get("bots");
-    if (Array.isArray(stored) && stored.length === counts.botCount) this.bots = stored;
-    else {
-      this.bots = makeBots(counts.blueBots, counts.redBots, matchMode(meta.match));
-      await this.ctx.storage.put("bots", this.bots);
-    }
+    const rosterValid = botRosterMatchesConfig(this.world,stored, counts.blueBots, counts.redBots, mode);
+    this.bots = reconcileBots(this.world,stored, counts.blueBots, counts.redBots, mode);
+    if (!rosterValid) await this.ctx.storage.put("bots", this.bots);
     this.lastSimAt = Date.now();
     this.simAccumulatorMs = 0;
   }
@@ -719,6 +870,8 @@ export class GameRoom {
     const cutoff=now-12_000;
     this.recentDeaths=this.recentDeaths.filter(item=>finiteNumber(item?.at,0)>=cutoff).slice(-48);
     this.recentSpawns=this.recentSpawns.filter(item=>finiteNumber(item?.at,0)>=cutoff).slice(-48);
+    this.recentGunfire=this.recentGunfire.filter(item=>finiteNumber(item?.at,0)>=now-4_000).slice(-64);
+    this.recentExplosions=this.recentExplosions.filter(item=>finiteNumber(item?.at,0)>=now-6_000).slice(-32);
   }
 
   noteDeath(actor,now=Date.now()){
@@ -731,22 +884,33 @@ export class GameRoom {
     this.recentSpawns.push({x:finiteNumber(spawn.x,0),z:finiteNumber(spawn.z,0),team:safeTeam(team),id:String(id||''),at:now});
   }
 
+  noteGunfire(shot,now=Date.now()){
+    if(!shot)return;this.pruneSpawnHistory(now);
+    this.recentGunfire.push({x:finiteNumber(shot.x,0),z:finiteNumber(shot.z,0),team:safeTeam(shot.team),id:String(shot.id||''),weapon:safeWeapon(shot.weapon),at:now});
+  }
+
+  noteExplosion(event,now=Date.now()){
+    if(!event)return;this.pruneSpawnHistory(now);
+    this.recentExplosions.push({x:finiteNumber(event.x,0),z:finiteNumber(event.z,0),team:safeTeam(event.team),id:String(event.id||''),kind:String(event.kind||'').slice(0,24),at:now});
+  }
+
   selectSpawn(mode,team,actors=[],index=0,excludeId='',now=Date.now()){
     this.pruneSpawnHistory(now);
-    const result=directedChooseSafeSpawn({
+    const result=this.world.spawns.chooseSafeSpawn({
       mode:normalizeGameMode(mode),team:safeTeam(team),actors,index,excludeId,now,
-      recentDeaths:this.recentDeaths,recentSpawns:this.recentSpawns,
+      recentDeaths:this.recentDeaths,recentSpawns:this.recentSpawns,recentGunfire:this.recentGunfire,recentExplosions:this.recentExplosions,
       projectiles:[...this.bullets.values()],throwables:[...this.throwables.values()],
-      terrainHeight,
-      blockedAt:(x,z,y)=>worldBlockedAt(x,z,y,PLAYER_HEIGHT,PLAYER_RADIUS),
-      lineOfSight:(spawn,actor)=>actorHasLineOfSight(spawn,actor),
+      terrainHeight:this.world.geometry.terrainHeight,
+      blockedAt:(x,z,y)=>this.world.worldCollision.worldBlockedAt(x,z,y,PLAYER_HEIGHT,PLAYER_RADIUS),
+      lineOfSight:(spawn,actor)=>this.actorLineOfSight(spawn,actor,now),
     });
-    const spawn={x:result.x,y:result.y,z:result.z};this.noteSpawn(spawn,team,excludeId,now);return spawn;
+    const protectionMs=result.emergency?Math.max(0,finiteNumber(this.world.spawns.SPAWN_POLICY?.emergencyProtectionMs,0)):0;
+    const spawn={x:result.x,y:result.y,z:result.z,spawnProtectedUntil:protectionMs?now+protectionMs:0};this.noteSpawn(spawn,team,excludeId,now);return spawn;
   }
 
   freezeHumanState(player,now=Date.now()){
-    const support=worldSupportHeight(player.x,player.z,player.y,false);
-    return {...player,y:support,ads:false,crouched:false,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,traversal:null,knockVelocityX:0,knockVelocityZ:0};
+    const support=this.world.geometry.worldSupportHeight(player.x,player.z,player.y,false);
+    return {...player,y:support,ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0,velocityX:0,velocityZ:0};
   }
 
   broadcastMatch(meta,now=Date.now(),extra={}){this.broadcast({t:'match',match:publicMatchState(meta.match,now),custom:this.isCustomMatch(meta),...extra});}
@@ -755,9 +919,9 @@ export class GameRoom {
     const match=meta.match;if(match.status==='ended')return false;
     const result=winner&&typeof winner==='object'?winner:{winner:winner||'draw'};
     Object.assign(match,{status:MATCH_STATUS.ENDED,endedAt:now,restartAt:now+MATCH_END_MS,winner:['blue','red','draw'].includes(result.winner)?result.winner:'',winnerId:safeClientId(result.winnerId||''),winnerName:String(result.winnerName||'').slice(0,24),reason:String(reason||'').slice(0,24),updatedAt:now});
-    this.bullets.clear();this.throwables.clear();
+    this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();
     for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;socket.serializeAttachment(this.freezeHumanState(p,now));}
-    for(const bot of this.bots||[]){bot.traversal=null;bot.reloadAt=0;bot.reloadWeapon='';bot.moveSpeed=0;bot.y=worldSupportHeight(bot.x,bot.z,bot.y,false);}
+    for(const bot of this.bots||[]){bot.traversal=null;bot.reloadAt=0;bot.reloadWeapon='';bot.moveSpeed=0;bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y,false);}
     meta.match=match;this.matchDirty=true;this.broadcastMatch(meta,now);return true;
   }
 
@@ -768,10 +932,10 @@ export class GameRoom {
     rows.sort((a,b)=>(b.kills-a.kills)||(a.deaths-b.deaths)||a.name.localeCompare(b.name));return rows;
   }
 
-  prepareRound(meta,now=Date.now(),{increment=false}={}){
+  prepareRound(meta,now=Date.now()){
     const old=meta.match,mode=matchMode(old);
-    meta.match={...defaultMatchState(now,old),round:Math.max(1,old.round+(increment?1:0)),status:MATCH_STATUS.WARMUP,warmupEndsAt:now+MATCH_WARMUP_MS,mode,scoreLimit:old.scoreLimit,timeLimitMs:old.timeLimitMs,minimapRevealAll:!!old.minimapRevealAll};
-    this.bullets.clear();this.throwables.clear();this.recentDeaths=[];this.recentSpawns=[];const players=[],assigned=[];let index=0;
+    meta.match={...defaultMatchState(now,old),round:1,status:MATCH_STATUS.WARMUP,warmupEndsAt:now+MATCH_WARMUP_MS,mode,scoreLimit:old.scoreLimit,timeLimitMs:old.timeLimitMs,minimapRevealAll:!!old.minimapRevealAll,minimapDirectional:!!old.minimapDirectional};
+    this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.recentDeaths=[];this.recentSpawns=[];this.recentGunfire=[];this.recentExplosions=[];const players=[],assigned=[];let index=0;
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;
       const team=matchUsesTeams(mode)&&p.pendingTeam?safeTeam(p.pendingTeam):safeTeam(p.team),spawn=this.selectSpawn(mode,team,assigned,index++,p.clientId,now);
@@ -780,22 +944,34 @@ export class GameRoom {
     this.bots=[];let botSpawnIndex=index;
     for(const [team,count] of [['blue',meta.blueBots||0],['red',meta.redBots||0]])for(let i=0;i<count;i++){
       const spawn=this.selectSpawn(mode,team,[...assigned,...this.bots],botSpawnIndex,`bot-${team}-${i+1}`,now);
-      this.bots.push(makeBot(team,i,mode,botSpawnIndex++,spawn));
+      this.bots.push(makeBot(this.world,team,i,mode,botSpawnIndex++,spawn));
     }
     this.matchDirty=true;
     this.broadcast({t:'matchReset',match:publicMatchState(meta.match,now),players,bots:this.bots.map(publicBot),custom:this.isCustomMatch(meta)});
     return true;
   }
 
-  resetRound(meta,now=Date.now()){return this.prepareRound(meta,now,{increment:true});}
-
+  returnMatchToLobby(meta,now=Date.now()){
+    const old=meta.match,mode=matchMode(old),players=[];
+    meta.match={...defaultMatchState(now,old),round:1,status:MATCH_STATUS.WAITING,mode,scoreLimit:old.scoreLimit,timeLimitMs:old.timeLimitMs,minimapRevealAll:!!old.minimapRevealAll,minimapDirectional:!!old.minimapDirectional};
+    this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.recentDeaths=[];this.recentSpawns=[];this.recentGunfire=[];this.recentExplosions=[];
+    for(const socket of this.ctx.getWebSockets()){
+      const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;
+      const team=matchUsesTeams(mode)&&p.pendingTeam?safeTeam(p.pendingTeam):safeTeam(p.team),support=this.world.geometry.worldSupportHeight(p.x,p.z,p.y,false);
+      const reset=spawnedPlayerState(p,{x:p.x,y:support,z:p.z},team,now,{resetStats:true});socket.serializeAttachment(reset);players.push(publicPlayer(reset));
+    }
+    this.matchDirty=true;
+    this.broadcast({t:'matchLobby',match:publicMatchState(meta.match,now),players,bots:(this.bots||[]).map(publicBot),custom:this.isCustomMatch(meta)});
+    void this.updateDirectory(this.liveSockets().length,meta).catch(()=>{});
+    return true;
+  }
 
   stepMatch(now,meta){
     const match=meta.match,mode=matchMode(match),spec=gameModeSpec(mode);
     if(match.status===MATCH_STATUS.WAITING)return;
     if(match.status===MATCH_STATUS.WARMUP&&match.warmupEndsAt&&now>=match.warmupEndsAt){
       Object.assign(match,{status:MATCH_STATUS.ACTIVE,startedAt:now,endsAt:spec.timeLimitMs>0?now+match.timeLimitMs:0,warmupEndsAt:0,winner:'',winnerId:'',winnerName:'',reason:'',updatedAt:now});
-      for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;socket.serializeAttachment({...p,lastStateAt:now,lastVerticalAt:now,lastGroundedAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,moveSpeed:0,verticalVelocity:0,serverGrounded:true,knockVelocityX:0,knockVelocityZ:0,traversal:null});}
+      for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;socket.serializeAttachment({...p,lastStateAt:now,lastVerticalAt:now,lastGroundedAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,moveSpeed:0,verticalVelocity:0,serverGrounded:true,knockVelocityX:0,knockVelocityZ:0,traversal:null,ladder:null});}
       this.matchDirty=true;this.broadcastMatch(meta,now);return;
     }
     if(match.status===MATCH_STATUS.ACTIVE&&spec.scoreType!=='none'&&match.endsAt&&now>=match.endsAt){
@@ -807,14 +983,14 @@ export class GameRoom {
       }
       return;
     }
-    if(match.status===MATCH_STATUS.ENDED&&match.restartAt&&now>=match.restartAt)this.resetRound(meta,now);
+    if(match.status===MATCH_STATUS.ENDED&&match.restartAt&&now>=match.restartAt)this.returnMatchToLobby(meta,now);
   }
 
   recordMatchKill(attackerId,victimId,now=Date.now()){
     const meta=this.metaCache;if(!meta)return;const match=meta.match,mode=matchMode(match),spec=gameModeSpec(mode);
     if(!matchAllowsCombat(match)||spec.scoreType==='none'||!attackerId||attackerId===victimId)return;
     const attacker=this.findCombatant(attackerId),victim=this.findCombatant(victimId);
-    if(!attacker?.id||!victim?.id||attacker.godMode||combatantsAreFriendly(mode,attacker.id,attacker.team,victim.id,victim.team))return;
+    if(!attacker?.id||!victim?.id||combatantsAreFriendly(mode,attacker.id,attacker.team,victim.id,victim.team))return;
     match.updatedAt=now;meta.match=match;this.matchDirty=true;
     if(spec.scoreType==='team'){
       if(attacker.team==='red')match.redScore+=1;else match.blueScore+=1;
@@ -861,6 +1037,8 @@ export class GameRoom {
     const name = safeName(body?.name);
     const team = safeTeam(body?.team);
     const primaryWeapon = safePrimaryWeapon(body?.primaryWeapon);
+    const tactical = safeTactical(body?.tactical);
+    const lethal = safeLethal(body?.lethal);
     if (!clientId) return { status: 400, data: { error: "Missing client ID." } };
     if (clientAuth.length < 32) return { status: 401, data: { error: "Missing client credential." } };
     if (!this.allowJoinTicketRequest(clientId, now)) return { status: 429, data: { error: "Too many join attempts. Try again shortly." } };
@@ -869,7 +1047,7 @@ export class GameRoom {
     if (expected && expected !== clientAuthHash) return { status: 403, data: { error: "Client credential rejected." } };
     const tickets = await this.loadJoinTickets(now);
     const ticket = makeJoinTicket();
-    tickets[ticket] = { clientId, clientAuthHash, name, team, primaryWeapon, issuedAt: now, expiresAt: now + JOIN_TICKET_TTL_MS };
+    tickets[ticket] = { clientId, clientAuthHash, name, team, primaryWeapon, tactical, lethal, issuedAt: now, expiresAt: now + JOIN_TICKET_TTL_MS };
     await this.ctx.storage.put("joinTickets", tickets);
     return { status: 201, data: { ticket, expiresInMs: JOIN_TICKET_TTL_MS } };
   }
@@ -917,13 +1095,15 @@ export class GameRoom {
         blueBots,
         redBots,
         botDifficulty,
+        mapId: DEFAULT_MAP_ID,
         settings: normalizeWorldSettings(),
         match,
         createdAt: now,
         expiresAt: now + ROOM_MAX_LIFETIME_MS,
       };
       await this.putMeta(meta);
-      this.bots = makeBots(blueBots, redBots, mode);
+      this.world=worldBundle(meta.mapId);
+      this.bots = makeBots(this.world,blueBots, redBots, mode);
       await this.ctx.storage.put("bots", this.bots);
       await this.scheduleRoomAlarm(meta.expiresAt);
       await this.updateDirectory(0, meta);
@@ -965,6 +1145,8 @@ export class GameRoom {
     const name = safeName(join.name);
     const requestedTeam = safeTeam(join.team);
     const requestedPrimary = safePrimaryWeapon(join.primaryWeapon);
+    const requestedTactical = safeTactical(join.tactical);
+    const requestedLethal = safeLethal(join.lethal);
     const authHashes = meta.clientAuthHashes;
     const expectedAuthHash = authHashes[clientId] || '';
     if (expectedAuthHash && expectedAuthHash !== clientAuthHash) return json(request, this.env, { error: "Client credential rejected." }, 403);
@@ -997,7 +1179,7 @@ export class GameRoom {
     const requestedTeamCount = liveMembers.filter(({attachment:a}) => safeTeam(a.team) === joinTeam).length;
     const spawnActors=[...liveMembers.map(({attachment})=>attachment),...(this.bots||[])];
     const preservePosition=!!preserved&&matchPreservesReconnectPosition(meta.match);
-    const spawn = preservePosition?preserved:(matchAllowsLobbyEdits(meta.match)?spawnForMode(mode,joinTeam,mode==='ffa'?liveMembers.length:requestedTeamCount):this.selectSpawn(mode,joinTeam,spawnActors,liveMembers.length,clientId,fetchNow));
+    const spawn = preservePosition?preserved:(matchAllowsLobbyEdits(meta.match)?spawnForMode(this.world,mode,joinTeam,mode==='ffa'?liveMembers.length:requestedTeamCount):this.selectSpawn(mode,joinTeam,spawnActors,liveMembers.length,clientId,fetchNow));
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -1008,20 +1190,25 @@ export class GameRoom {
       connectedAt: Date.now(),
       replaced: false,
       x: clamp(finiteNumber(spawn.x, 0), -ARENA_LIMIT, ARENA_LIMIT),
-      y: finiteNumber(spawn.y, terrainHeight(spawn.x || 0, spawn.z || 0)),
+      y: finiteNumber(spawn.y, this.world.geometry.terrainHeight(spawn.x || 0, spawn.z || 0)),
       z: clamp(finiteNumber(spawn.z, 0), -ARENA_LIMIT, ARENA_LIMIT),
       yaw: finiteNumber(spawn.yaw, 0),
       pitch: clamp(finiteNumber(spawn.pitch, 0), -1.4, 1.4),
       hp: clamp(Math.floor(finiteNumber(spawn.hp, 100)), 0, 100),
       wastedUntil: finiteNumber(spawn.wastedUntil, 0),
+      spawnProtectedUntil: Math.max(0,finiteNumber(spawn.spawnProtectedUntil,0)),
+      velocityX:0,velocityZ:0,
       fireReadyAt: normalizeFireReady(spawn.fireReadyAt),
       regenAt: finiteNumber(spawn.regenAt, 0),
       primaryWeapon: safePrimaryWeapon(preserved?.primaryWeapon || requestedPrimary),
+      tactical: safeTactical(preserved?.tactical || requestedTactical),
+      lethal: safeLethal(preserved?.lethal || requestedLethal),
+      pendingLoadout: preserved?.pendingLoadout ? normalizeLoadout(preserved.pendingLoadout,{primaryWeapon:preserved.primaryWeapon,tactical:preserved.tactical,lethal:preserved.lethal}) : null,
       weapon: preserved && playerCanEquip({ primaryWeapon: preserved?.primaryWeapon || requestedPrimary }, preserved.weapon)
         ? safeWeapon(preserved.weapon)
         : safePrimaryWeapon(preserved?.primaryWeapon || requestedPrimary),
       ammo: normalizeAmmo(spawn.ammo),
-      equipment: normalizeEquipment(spawn.equipment),
+      equipment: preserved ? normalizeEquipment(spawn.equipment) : freshEquipment(requestedTactical,requestedLethal),
       reloadAt: finiteNumber(spawn.reloadAt, 0),
       reloadWeapon: safeWeapon(spawn.reloadWeapon || spawn.weapon),
       weaponReadyAt: Math.max(0, finiteNumber(spawn.weaponReadyAt, 0)),
@@ -1033,6 +1220,9 @@ export class GameRoom {
       admin: isRoomAdmin(meta, clientId),
       ads: false,
       crouched: !!preserved?.crouched,
+      sprinting: false,
+      sliding: false,
+      slideUntil: 0,
       moveSpeed: 0,
       flashUntil: Math.max(0, finiteNumber(preserved?.flashUntil, 0)),
       flashPower: clamp(finiteNumber(preserved?.flashPower, 0), 0, 1),
@@ -1041,9 +1231,10 @@ export class GameRoom {
       serverGrounded: preserved?.serverGrounded !== false,
       lastGroundedAt: preserved?.serverGrounded !== false ? Date.now() : Math.max(0,finiteNumber(preserved?.lastGroundedAt,0)),
       lastJumpSeq: Math.max(0, Math.floor(finiteNumber(preserved?.lastJumpSeq, 0))),
-      traversal:null,lastTraverseSeq:Math.max(0,Math.floor(finiteNumber(preserved?.lastTraverseSeq,0))),
+      traversal:null,lastTraverseSeq:Math.max(0,Math.floor(finiteNumber(preserved?.lastTraverseSeq,0))),ladder:null,lastLadderSeq:Math.max(0,Math.floor(finiteNumber(preserved?.lastLadderSeq,0))),
       lastVerticalAt: Date.now(),
       lastStateAt: Date.now(),
+      movementClockAt: Date.now(),
       moveBudgetSec: MOVE_BUDGET_INITIAL_SEC,
       knockVelocityX: 0, knockVelocityZ: 0,
     };
@@ -1066,6 +1257,7 @@ export class GameRoom {
       isAdmin: isRoomAdmin(meta, clientId),
       ownerClientId: meta.ownerClientId,
       settings: meta.settings,
+      mapId: normalizeMapId(meta.mapId),
       match: publicMatchState(meta.match, Date.now()),
       custom: this.isCustomMatch(meta),
       serverTime: Date.now(),
@@ -1105,8 +1297,8 @@ export class GameRoom {
     const settings = meta.settings;
 
     me = this.advanceReloadForSocket(socket, me, now, settings);
-    if(matchAllowsMovement(meta.match))me=this.advanceTraversalState(me,now);
-    else if(me.traversal)me={...me,traversal:null,verticalVelocity:0,moveSpeed:0};
+    if(matchAllowsMovement(meta.match)){me=this.advanceTraversalState(me,now);me=this.advanceLadderState(me,now);}
+    else if(me.traversal||me.ladder)me={...me,traversal:null,ladder:null,verticalVelocity:0,moveSpeed:0};
     socket.serializeAttachment(me);
 
     if (payload.t === "state") {
@@ -1114,19 +1306,21 @@ export class GameRoom {
         if (!matchAllowsMovement(meta.match)) {
           const requestedX=clamp(finiteNumber(payload.x,me.x),-ARENA_LIMIT,ARENA_LIMIT),requestedY=finiteNumber(payload.y,me.y),requestedZ=clamp(finiteNumber(payload.z,me.z),-ARENA_LIMIT,ARENA_LIMIT);
           const corrected=Math.hypot(requestedX-me.x,requestedZ-me.z)>.01||Math.abs(requestedY-me.y)>.05||!!payload.crouched||!!payload.ads;
-          const support=worldSupportHeight(me.x,me.z,me.y,false),incomingJumpSeq=Math.max(0,Math.floor(finiteNumber(payload.jumpSeq,me.lastJumpSeq||0)));
-          me={...me,y:support,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,lastJumpSeq:incomingJumpSeq,traversal:null,knockVelocityX:0,knockVelocityZ:0};
+          const support=this.world.geometry.worldSupportHeight(me.x,me.z,me.y,false),incomingJumpSeq=Math.max(0,Math.floor(finiteNumber(payload.jumpSeq,me.lastJumpSeq||0)));
+          me={...me,y:support,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,lastJumpSeq:incomingJumpSeq,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0};
           socket.serializeAttachment(me);
-          this.broadcast({t:'state',id:me.clientId,x:me.x,y:me.y,z:me.z,yaw:me.yaw,pitch:me.pitch,ads:false,crouched:false,traversal:''},socket);
-          if(corrected)sendJson(socket,{t:'correction',x:me.x,y:me.y,z:me.z,vertical:false,verticalVelocity:0,grounded:true,crouched:false});
+          const stateSeq=Math.max(0,Math.floor(finiteNumber(payload.seq,0))),stateAt=Math.min(now,sanitizeCombatTimestamp(payload.at,now));
+          this.broadcast({t:'state',id:me.clientId,at:stateAt,x:me.x,y:me.y,z:me.z,yaw:me.yaw,pitch:me.pitch,ads:false,crouched:false,traversal:'',ladderId:'',ladderPhase:''},socket);
+          if(corrected)sendJson(socket,{t:'correction',seq:stateSeq,x:me.x,y:me.y,z:me.z,vertical:false,verticalVelocity:0,grounded:true,crouched:false});
         } else {
-          const next = this.validateHumanState(me, payload, now, settings);
-          me = next.player;
+          const next = this.validateHumanState(me, payload, now, settings),combatAt=Math.min(now,sanitizeCombatTimestamp(payload.at,now)),stateSeq=Math.max(0,Math.floor(finiteNumber(payload.seq,0)));
+          me = {...next.player,lastCombatStateAt:combatAt};
           socket.serializeAttachment(me);
-          const state = { t: "state", id: me.clientId, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched, traversal:me.traversal?.mode||'' };
+          this.recordCombatPose(me,combatAt);
+          const state = { t: "state", id: me.clientId, at:combatAt, x: me.x, y: me.y, z: me.z, yaw: me.yaw, pitch: me.pitch, ads: !!me.ads, crouched: !!me.crouched, traversal:me.traversal?.mode||'', ladderId:me.ladder?.id||'', ladderPhase:me.ladder?.phase||'' };
           this.broadcast(state, socket);
           if (next.corrected) sendJson(socket,{
-            t:"correction",x:me.x,y:me.y,z:me.z,vertical:next.verticalCorrected,
+            t:"correction",seq:stateSeq,x:me.x,y:me.y,z:me.z,vertical:next.verticalCorrected,
             verticalVelocity:finiteNumber(me.verticalVelocity,0),grounded:me.serverGrounded!==false,crouched:!!me.crouched,
           });
         }
@@ -1136,20 +1330,58 @@ export class GameRoom {
     }
 
 
+    if (payload.t === "ladder") {
+      const action=String(payload.action||''),seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0))),previousSeq=Math.max(0,Math.floor(finiteNumber(me.lastLadderSeq,0)));
+      const reject=()=>sendJson(socket,{t:'ladder',id:me.clientId,seq,accepted:false,action,x:me.x,y:me.y,z:me.z,ladder:publicLadderState(me.ladder)});
+      if(!matchAllowsMovement(meta.match)||me.hp<=0||now<me.wastedUntil||me.traversal){reject();return;}
+      if(action==='attach'){
+        if(seq<=previousSeq||me.ladder){reject();return;}
+        let dirX=clamp(finiteNumber(payload.dirX,0),-1,1),dirZ=clamp(finiteNumber(payload.dirZ,0),-1,1),len=Math.hypot(dirX,dirZ);if(len<.35){reject();return;}dirX/=len;dirZ/=len;
+        const faceX=-Math.sin(me.yaw),faceZ=-Math.cos(me.yaw),entry=findLadderEntry({ladders:this.world.geometry.LADDERS,x:me.x,y:me.y,z:me.z,dirX,dirZ,faceX,faceZ,radius:PLAYER_RADIUS,grounded:me.serverGrounded!==false});
+        if(!entry||String(payload.ladderId||'')!==entry.ladderId){reject();return;}
+        const solidActors=this.solidActors(me.clientId,now);if(this.actorBlocksAt(entry.attachX,entry.attachZ,entry.attachY,me.x,me.z,solidActors,PLAYER_HEIGHT)){reject();return;}
+        const ladder={id:String(entry.ladderId),seq,phase:'climb',entry:entry.entry==='top'?'top':'bottom'};
+        me={...me,x:entry.attachX,y:entry.attachY,z:entry.attachZ,ladder,lastLadderSeq:seq,traversal:null,verticalVelocity:0,serverGrounded:false,ads:false,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,movementClockAt:now,moveBudgetSec:LADDER_BUDGET_INITIAL_SEC};socket.serializeAttachment(me);
+        const event={t:'ladder',id:me.clientId,seq,accepted:true,action:'attach',x:me.x,y:me.y,z:me.z,ladder:publicLadderState(ladder)};sendJson(socket,event);this.broadcast(event,socket);return;
+      }
+      if(action==='dismount'){
+        if(!me.ladder||seq<=previousSeq){reject();return;}const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);if(!ladder){me={...me,ladder:null};socket.serializeAttachment(me);reject();return;}
+        const end=payload.end==='top'?'top':'bottom',nearEnd=end==='top'?me.y>=ladder.topY-.30:me.y<=ladder.bottomY+.20;if(!nearEnd){reject();return;}
+        const target=end==='top'?ladderTopExitPoint(ladder,PLAYER_RADIUS):ladderBottomExitPoint(ladder,PLAYER_RADIUS),solidActors=this.solidActors(me.clientId,now);
+        if(this.world.worldCollision.worldBlockedAt(target.x,target.z,target.y,PLAYER_HEIGHT,PLAYER_RADIUS)||this.actorBlocksAt(target.x,target.z,target.y,me.x,me.z,solidActors,PLAYER_HEIGHT)){reject();return;}
+        me={...me,x:target.x,y:target.y,z:target.z,ladder:null,lastLadderSeq:seq,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,moveSpeed:0,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC};socket.serializeAttachment(me);
+        const event={t:'ladder',id:me.clientId,seq,accepted:true,action:'dismount',end,x:me.x,y:me.y,z:me.z,ladder:null};sendJson(socket,event);this.broadcast(event,socket);return;
+      }
+      if(action==='detach'){
+        if(!me.ladder||seq<=previousSeq){reject();return;}const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);if(!ladder){reject();return;}const cp=ladderClimbPoint(ladder,PLAYER_RADIUS),x=cp.x+Number(ladder.nx)*.24,z=cp.z+Number(ladder.nz)*.24;
+        if(this.world.worldCollision.worldBlockedAt(x,z,me.y,PLAYER_HEIGHT,PLAYER_RADIUS)){reject();return;}
+        me={...me,x,z,ladder:null,lastLadderSeq:seq,verticalVelocity:2.15,serverGrounded:false,lastVerticalAt:now,movementClockAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC};socket.serializeAttachment(me);
+        const event={t:'ladder',id:me.clientId,seq,accepted:true,action:'detach',x:me.x,y:me.y,z:me.z,verticalVelocity:me.verticalVelocity,ladder:null};sendJson(socket,event);this.broadcast(event,socket);return;
+      }
+      reject();return;
+    }
+
     if (payload.t === "traverse") {
       const seq=Math.max(0,Math.floor(finiteNumber(payload.seq,0))),previousSeq=Math.max(0,Math.floor(finiteNumber(me.lastTraverseSeq,0)));
-      if(seq<=previousSeq||me.traversal||!matchAllowsMovement(meta.match)||me.hp<=0||now<me.wastedUntil){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
+      if(seq<=previousSeq||me.traversal||me.ladder||!matchAllowsMovement(meta.match)||me.hp<=0||now<me.wastedUntil){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
       let dirX=clamp(finiteNumber(payload.dirX,0),-1,1),dirZ=clamp(finiteNumber(payload.dirZ,0),-1,1),dirLen=Math.hypot(dirX,dirZ);
       if(dirLen<.35){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}dirX/=dirLen;dirZ/=dirLen;
-      const playerHeight=me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT,candidate=findTraversalCandidate({x:me.x,y:me.y,z:me.z,dirX,dirZ,height:playerHeight,radius:PLAYER_RADIUS,airborne:me.serverGrounded===false});
+      const playerHeight=me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT,candidate=this.world.worldCollision.findTraversalCandidate({x:me.x,y:me.y,z:me.z,dirX,dirZ,height:playerHeight,radius:PLAYER_RADIUS,airborne:me.serverGrounded===false});
       const solidActors=this.solidActors(me.clientId,now);
       if(!candidate||this.actorBlocksAt(candidate.endX,candidate.endZ,candidate.endY,me.x,me.z,solidActors,playerHeight)){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
-      const plan=createTraversalPlan(candidate,me.x,me.y,me.z,now,seq);if(!plan){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
+      const requestedAt=sanitizeCombatTimestamp(payload.at,now),stateAt=finiteNumber(me.lastCombatStateAt,requestedAt),traversalAt=clamp(requestedAt,stateAt-12,Math.min(now,stateAt+40)),plan=createTraversalPlan(candidate,me.x,me.y,me.z,traversalAt,seq);if(!plan){sendJson(socket,{t:'traverse',id:me.clientId,seq,accepted:false,x:me.x,y:me.y,z:me.z});return;}
       me={...me,traversal:plan,lastTraverseSeq:seq,verticalVelocity:0,serverGrounded:false,ads:false,moveSpeed:0};socket.serializeAttachment(me);
       const event={t:'traverse',id:me.clientId,accepted:true,...plan};sendJson(socket,event);this.broadcast(event,socket);return;
     }
 
     if (payload.t === "simTick") { await this.stepSimulation(now, meta); return; }
+
+    if (payload.t === "chat") {
+      const text = safeChatText(payload.text);
+      if (!text) return;
+      this.broadcast({ t:"chat", id:me.clientId, name:safeName(me.name), team:safeTeam(me.team), text, at:now });
+      return;
+    }
 
     if (payload.t === "fire") {
       if(!matchAllowsCombat(meta.match)){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'match_inactive'});return;}
@@ -1165,14 +1397,19 @@ export class GameRoom {
       if(now<readyAt){const retryAfterMs=Math.max(1,Math.ceil(readyAt-now)),reason=switchReadyAt>=shotReadyAt?'weapon_switch':'cooldown';sendLoadout(socket,me,{action:'fire',accepted:false,reason,retryAfterMs});return;}
       if(!unlimited&&me.ammo[weapon]<=0){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'fire',accepted:false,reason:'empty'});this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);return;}
 
-      me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4);
-      const flashPower=activeFlashPower(me,now);let shotYaw=me.yaw,shotPitch=me.pitch;
+      const requestedShotAt=sanitizeCombatTimestamp(payload.shotAt,now),stateAt=finiteNumber(me.lastCombatStateAt,requestedShotAt),shotAt=clamp(requestedShotAt,stateAt-12,Math.min(now,stateAt+40)),shooterPose=this.combatPoseAt(me,shotAt),reticle=safeShotAim(me,payload),flashPower=activeFlashPower(me,now),targetRewindMs=(weapon==='grenadeLauncher'||weapon==='rpg')?0:clamp(finiteNumber(payload.viewDelayMs,0),0,MAX_TARGET_REWIND_MS);let shotYaw=reticle.yaw,shotPitch=reticle.pitch;
       if(flashPower>.02){const flashSpread=.035+flashPower*.22;shotYaw+=(Math.random()-.5)*2*flashSpread;shotPitch=clamp(shotPitch+(Math.random()-.5)*1.5*flashSpread,-1.4,1.4);me.ads=false;}
-      me.fireReadyAt[weapon]=now+spec.cooldownMs;if(!unlimited)me.ammo[weapon]-=1;
+      const preShotHeat=decayedFireHeat(me,weapon,now),adsAmount=me.ads?clamp(finiteNumber(payload.adsAmount,1),0,1):0,airborne=me.serverGrounded===false;
+      me.spawnProtectedUntil=0;
+      me.fireReadyAt[weapon]=now+spec.cooldownMs;if(!unlimited)me.ammo[weapon]-=1;storeFireHeat(me,weapon,now,preShotHeat);
       const autoReloadStarted=!unlimited&&me.ammo[weapon]===0;if(autoReloadStarted){me.reloadAt=now+spec.reloadMs;me.reloadWeapon=weapon;}
       socket.serializeAttachment(me);
-      const spreadRadius=weaponSpreadRadians(weapon,me.moveSpeed,settings.movement.runSpeed,!!me.ads,!!me.crouched),pellets=Math.max(1,Math.floor(WEAPON_SPECS[weapon]?.pellets||1)),eyeHeight=(me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.08;
-      for(let i=0;i<pellets;i++){const a=spreadShotAngles(shotYaw,shotPitch,spreadRadius),cp=Math.cos(a.pitch),sp=Math.sin(a.pitch),sx=-Math.sin(a.yaw)*cp,sy=sp,sz=-Math.cos(a.yaw)*cp;this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage,weapon,lifetimeMs:WEAPON_SPECS[weapon].lifetimeMs,x:me.x+sx*.20,y:me.y+eyeHeight+sy*.05,z:me.z+sz*.20,vx:sx*spec.speed,vy:sy*spec.speed,vz:sz*spec.speed,now,consumeAmmo:i===0&&!unlimited});}
+      const spreadRadius=weaponSpreadRadians(weapon,me.moveSpeed,settings.movement.runSpeed,adsAmount,!!me.crouched,airborne,preShotHeat),pellets=Math.max(1,Math.floor(WEAPON_SPECS[weapon]?.pellets||1)),shotgunPattern=weapon==='shotgun'||weapon==='semiShotgun',patternRotation=Math.random()*Math.PI*2;
+      const launcherPitchOffset=(Number(WEAPON_SPECS[weapon]?.launchPitchDeg)||0)*Math.PI/180,basePitch=clamp(shotPitch+launcherPitchOffset,-1.4,1.4);
+      for(let i=0;i<pellets;i++){
+        const a=shotgunPattern?shotgunPelletAngles(shotYaw,basePitch,spreadRadius,i,pellets,patternRotation):spreadShotAngles(shotYaw,basePitch,spreadRadius),launch=shotLaunchPose(shooterPose,a.yaw,a.pitch,!!shooterPose.crouched,weapon,this.world.serverCollision.segmentFirstWorldHitT),centerScale=i===0?Math.max(1,finiteNumber(WEAPON_SPECS[weapon]?.centerPelletDamageScale,1)):1;
+        this.spawnBullet({ownerId:me.clientId,ownerTeam:safeTeam(me.team),damage:spec.damage*centerScale,weapon,lifetimeMs:WEAPON_SPECS[weapon].lifetimeMs,x:launch.x,y:launch.y,z:launch.z,vx:launch.dx*spec.speed,vy:launch.dy*spec.speed,vz:launch.dz*spec.speed,now,shotAt,targetRewindMs,consumeAmmo:i===0&&!unlimited,primaryShot:i===0});
+      }
       sendLoadout(socket,me,{action:'fire',accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
     }
 
@@ -1180,13 +1417,14 @@ export class GameRoom {
       if(!matchAllowsCombat(meta.match)){sendJson(socket,{t:'throwAck',id:safeClientId(payload.id).slice(0,24),accepted:false,reason:'match_inactive'});return;}
       const kind=safeEquipmentKind(payload.kind),unlimited=!!me.godMode;
       const requestedId=safeClientId(payload.id).slice(0,24),id=requestedId&&!this.throwables.has(requestedId)?requestedId:crypto.randomUUID().replace(/-/g,'').slice(0,16);
-      if(me.hp<=0||now<me.wastedUntil||me.traversal||now<finiteNumber(me.equipmentReadyAt,0)||(!unlimited&&me.equipment[kind]<=0)){sendJson(socket,{t:'throwAck',id:requestedId||id,accepted:false});return;}
+      if(kind!==safeTactical(me.tactical)&&kind!==safeLethal(me.lethal)){sendJson(socket,{t:'throwAck',id:requestedId||id,accepted:false,reason:'loadout'});return;}
+      if(me.hp<=0||now<me.wastedUntil||me.traversal||me.ladder||now<finiteNumber(me.equipmentReadyAt,0)||(!unlimited&&me.equipment[kind]<=0)){sendJson(socket,{t:'throwAck',id:requestedId||id,accepted:false});return;}
       me.yaw=finiteNumber(payload.yaw,me.yaw);me.pitch=clamp(finiteNumber(payload.pitch,me.pitch),-1.25,1.15);
       const flashPower=activeFlashPower(me,now);let throwYaw=me.yaw,throwPitch=me.pitch;
       if(flashPower>.02){const flashSpread=.025+flashPower*.16;throwYaw+=(Math.random()-.5)*2*flashSpread;throwPitch=clamp(throwPitch+(Math.random()-.5)*1.4*flashSpread,-1.25,1.15);me.ads=false;}
       const throwVelocity=tacticalThrowVelocity(throwYaw,throwPitch,TACTICAL_THROW_SPEED,TACTICAL_THROW_LOFT);
-      me.equipmentReadyAt=now+360;if(!unlimited)me.equipment[kind]-=1;socket.serializeAttachment(me);sendJson(socket,{t:'equipment',equipment:me.equipment,unlimited});sendJson(socket,{t:'throwAck',id,accepted:true});
-      const g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+throwVelocity.fx*.82,y:me.y+(me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.22,z:me.z+throwVelocity.fz*.82,vx:throwVelocity.vx,vy:throwVelocity.vy,vz:throwVelocity.vz,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:1650),stuck:false,rolling:false,lastBroadcast:now};
+      me.spawnProtectedUntil=0;me.equipmentReadyAt=now+360;if(!unlimited)me.equipment[kind]-=1;socket.serializeAttachment(me);sendJson(socket,{t:'equipment',equipment:me.equipment,unlimited});sendJson(socket,{t:'throwAck',id,accepted:true});
+      const g={id,kind,ownerId:me.clientId,ownerTeam:safeTeam(me.team),x:me.x+throwVelocity.fx*.82,y:me.y+(me.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT)-.22,z:me.z+throwVelocity.fz*.82,vx:throwVelocity.vx,vy:throwVelocity.vy,vz:throwVelocity.vz,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:kind==='frag'?2300:kind==='smoke'?1300:1650),stuck:false,rolling:false,lastBroadcast:now};
       this.throwables.set(id,g);this.broadcast({t:'throwable',...g,at:now});await this.stepSimulation(now,meta);return;
     }
 
@@ -1195,7 +1433,7 @@ export class GameRoom {
       if(requestedWeapon!==me.weapon){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'weapon_mismatch'});return;}
       const weapon=safeWeapon(me.weapon),spec=settings.weapons[weapon];
       if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'dead'});return;}
-      if(me.traversal){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'traversing'});return;}
+      if(me.traversal||me.ladder){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'traversing'});return;}
       if(me.godMode){sendLoadout(socket,me,{action:'reload',accepted:true,reason:'unlimited',unlimited:true});return;}
       if(me.reloadAt){sendLoadout(socket,me,{action:'reload',accepted:true,reason:'already'});return;}
       if(me.ammo[weapon]>=WEAPON_SPECS[weapon].mag){sendLoadout(socket,me,{action:'reload',accepted:false,reason:'full'});return;}
@@ -1204,7 +1442,7 @@ export class GameRoom {
 
     if (payload.t === "weapon") {
       if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'weapon',accepted:false,reason:'dead'});return;}
-      if(me.traversal){sendLoadout(socket,me,{action:'weapon',accepted:false,reason:'traversing'});return;}
+      if(me.traversal||me.ladder){sendLoadout(socket,me,{action:'weapon',accepted:false,reason:'traversing'});return;}
       const weapon=safeWeapon(payload.weapon);
       if(!playerCanEquip(me,weapon)){sendLoadout(socket,me,{action:'weapon',accepted:false,reason:'loadout'});return;}
       if(weapon!==me.weapon){me.weapon=weapon;me.reloadAt=0;me.reloadWeapon="";me.weaponReadyAt=now+WEAPON_SWITCH_LOCK_MS;socket.serializeAttachment(me);this.broadcast({t:'weapon',id:me.clientId,weapon},socket);}
@@ -1212,9 +1450,15 @@ export class GameRoom {
     }
 
     if(payload.t==='loadout'){
-      if(!matchAllowsLobbyEdits(meta.match)){sendLoadout(socket,me,{action:'loadout',accepted:false,reason:'match_started'});return;}
-      const primary=safePrimaryWeapon(payload.primaryWeapon);me.primaryWeapon=primary;me.weapon=primary;me.ammo=freshAmmo();me.reloadAt=0;me.reloadWeapon='';me.weaponReadyAt=0;
-      if(me.godMode)refreshUnlimitedResources(me);socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me)});return;
+      const next=normalizeLoadout(payload,{primaryWeapon:me.primaryWeapon,tactical:me.tactical,lethal:me.lethal});
+      if(matchAllowsLobbyEdits(meta.match)||me.godMode){
+        me.primaryWeapon=next.primaryWeapon;me.tactical=next.tactical;me.lethal=next.lethal;me.pendingLoadout=null;me.weapon=next.primaryWeapon;me.ammo=freshAmmo();me.equipment=freshEquipment(next.tactical,next.lethal);me.reloadAt=0;me.reloadWeapon='';me.weaponReadyAt=0;
+        if(me.godMode)refreshUnlimitedResources(me);socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:false});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me)});return;
+      }
+      // Standard mid-match class changes preserve the current life exactly.
+      // God Mode returned above because it intentionally supports live loadout edits.
+      // Otherwise the queued class is consumed atomically on the next spawn.
+      me.pendingLoadout=next;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'loadout',accepted:true,pending:true,pendingLoadout:next});return;
     }
 
     if(payload.t==='lobbyMode'){
@@ -1222,21 +1466,53 @@ export class GameRoom {
       if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Game mode can only be changed in the lobby.'});return;}
       const mode=normalizeGameMode(payload.mode),spec=gameModeSpec(mode);meta.match={...meta.match,mode,blueScore:0,redScore:0,scoreLimit:spec.scoreLimit,timeLimitMs:spec.timeLimitMs,winner:'',winnerId:'',winnerName:'',reason:'',updatedAt:now};
       for(const s of this.ctx.getWebSockets()){const p=s.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;p.pendingTeam='';s.serializeAttachment(p);}
-      this.bots=reconcileBots(this.bots,meta.blueBots||0,meta.redBots||0,mode);await this.ctx.storage.put('bots',this.bots);
+      this.bots=reconcileBots(this.world,this.bots,meta.blueBots||0,meta.redBots||0,mode);await this.ctx.storage.put('bots',this.bots);
       await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);this.broadcastMatch(meta,now,{rulesUpdated:true,by:me.clientId});this.broadcast({t:'bots',config:{blueBots:meta.blueBots||0,redBots:meta.redBots||0,difficulty:safeBotDifficulty(meta.botDifficulty)},bots:this.bots.map(publicBot)});return;
     }
 
     if(payload.t==='lobbyMinimap'){
       if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Admin access required.'});return;}
-      if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Minimap visibility can only be changed in the lobby.'});return;}
-      meta.match={...meta.match,minimapRevealAll:!!payload.revealAll,updatedAt:now};
+      if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Minimap settings can only be changed in the lobby.'});return;}
+      const next={...meta.match,updatedAt:now};
+      if(Object.prototype.hasOwnProperty.call(payload,'revealAll'))next.minimapRevealAll=!!payload.revealAll;
+      if(Object.prototype.hasOwnProperty.call(payload,'directional'))next.minimapDirectional=!!payload.directional;
+      meta.match=normalizeMatchState(next,now,next);
       await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);this.broadcastMatch(meta,now,{rulesUpdated:true,by:me.clientId});return;
+    }
+
+    if(payload.t==='lobbyMap'){
+      if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Admin access required.'});return;}
+      if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Map can only be changed in the lobby.'});return;}
+      const nextMap=normalizeMapId(payload.mapId);
+      if(nextMap===normalizeMapId(meta.mapId)){sendJson(socket,{t:'notice',text:`Map already set to ${mapSpec(nextMap).name}.`});return;}
+      meta.mapId=nextMap;this.world=worldBundle(nextMap);
+      this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.recentDeaths=[];this.recentSpawns=[];this.recentGunfire=[];this.recentExplosions=[];
+      const mode=matchMode(meta.match),players=[];let playerIndex=0;
+      for(const s of this.ctx.getWebSockets()){
+        const p=s.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;
+        const team=safeTeam(p.team),spawn=spawnForMode(this.world,mode,team,playerIndex++),reset=spawnedPlayerState(p,spawn,team,now,{resetStats:false});
+        reset.kills=Math.max(0,Math.floor(finiteNumber(p.kills,0)));reset.deaths=Math.max(0,Math.floor(finiteNumber(p.deaths,0)));reset.godMode=!!p.godMode;reset.admin=isRoomAdmin(meta,p.clientId);
+        s.serializeAttachment(reset);players.push(publicPlayer(reset));
+      }
+      this.bots=makeBots(this.world,meta.blueBots||0,meta.redBots||0,mode);
+      await this.ctx.storage.put('bots',this.bots);await this.putMeta(meta);await this.updateDirectory(this.liveSockets().length,meta);
+      this.broadcast({t:'map',mapId:nextMap,players,bots:this.bots.map(publicBot),by:me.clientId,serverTime:now});
+      return;
     }
 
     if(payload.t==='startMatch'){
       if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Only a lobby admin can start the match.'});return;}
       if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'Match has already started.'});return;}
-      this.prepareRound(meta,now,{increment:false});await this.putMeta(meta);await this.ctx.storage.put('bots',this.bots);await this.updateDirectory(this.liveSockets().length,meta);return;
+      this.prepareRound(meta,now);await this.putMeta(meta);await this.ctx.storage.put('bots',this.bots);await this.updateDirectory(this.liveSockets().length,meta);return;
+    }
+
+    if(payload.t==='returnLobby'){
+      // Returning the room to its lobby is a match-wide action. Only an admin
+      // may end everybody's current match; guests leave their own session from
+      // the client instead of being able to interrupt the room for all players.
+      if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'Only a lobby admin can end the current match.'});return;}
+      if(matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',text:'Already in the lobby.'});return;}
+      this.returnMatchToLobby(meta,now);await this.putMeta(meta);await this.ctx.storage.put('bots',this.bots);return;
     }
 
     if (payload.t === "god") {
@@ -1259,8 +1535,16 @@ export class GameRoom {
       const mode=matchMode(meta.match),spec=gameModeSpec(mode),nextTeam=safeTeam(payload.team),currentTeam=safeTeam(me.team);
       if(!spec.teamBased){me.pendingTeam='';socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:false,reason:'free_for_all',pendingTeam:''});sendJson(socket,{t:'notice',text:'Free For All has no teams.'});return;}
       if(matchAllowsLobbyEdits(meta.match)){
-        if(nextTeam!==currentTeam){const sameTeam=this.liveSockets(socket).filter(s=>safeTeam((s.deserializeAttachment()||{}).team)===nextTeam).length;const moved=spawnedPlayerState(me,spawnForTeam(nextTeam,sameTeam),nextTeam,now,{resetStats:false});moved.kills=me.kills;moved.deaths=me.deaths;me=moved;socket.serializeAttachment(me);}
+        if(nextTeam!==currentTeam){const sameTeam=this.liveSockets(socket).filter(s=>safeTeam((s.deserializeAttachment()||{}).team)===nextTeam).length;const moved=spawnedPlayerState(me,spawnForTeam(this.world,nextTeam,sameTeam),nextTeam,now,{resetStats:false});moved.kills=me.kills;moved.deaths=me.deaths;me=moved;socket.serializeAttachment(me);}
         me.pendingTeam='';socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:true,pendingTeam:''});this.broadcast({t:'lobbyPlayer',player:publicPlayer(me)});await this.updateDirectory(this.liveSockets().length,meta);return;
+      }
+      // God Mode is an explicit live-edit state: team changes take effect in place
+      // instead of killing/respawning or waiting for the next life.
+      if(me.godMode){
+        me.team=nextTeam;me.pendingTeam='';socket.serializeAttachment(me);
+        sendLoadout(socket,me,{action:'team',accepted:true,pendingTeam:''});
+        this.broadcast({t:'lobbyPlayer',player:publicPlayer(me)});
+        await this.updateDirectory(this.liveSockets().length,meta);return;
       }
       if(nextTeam===currentTeam){me.pendingTeam='';socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:true,pendingTeam:''});sendJson(socket,{t:'teamQueued',id:me.clientId,team:currentTeam,pendingTeam:''});return;}
       me.pendingTeam=nextTeam;socket.serializeAttachment(me);sendLoadout(socket,me,{action:'team',accepted:true,pendingTeam:nextTeam});sendJson(socket,{t:'teamQueued',id:me.clientId,team:currentTeam,pendingTeam:nextTeam});return;
@@ -1345,7 +1629,7 @@ export class GameRoom {
         sendJson(socket,{t:"notice",tone:"error",text:"Admin access required."});
         return;
       }
-      const rules=normalizeMatchRules({...payload.rules,mode:matchMode(meta.match),minimapRevealAll:!!meta.match.minimapRevealAll});
+      const rules=normalizeMatchRules({...payload.rules,mode:matchMode(meta.match),minimapRevealAll:!!meta.match.minimapRevealAll,minimapDirectional:!!meta.match.minimapDirectional});
       const match=normalizeMatchState(meta.match,now,rules);
       match.scoreLimit=rules.scoreLimit;match.timeLimitMs=rules.timeLimitMs;
       if(matchAllowsCombat(match)&&match.startedAt)match.endsAt=match.timeLimitMs>0?match.startedAt+match.timeLimitMs:0;
@@ -1376,7 +1660,7 @@ export class GameRoom {
       meta.redBots = redBots;
       meta.botDifficulty = safeBotDifficulty(payload.difficulty);
       await this.putMeta(meta);
-      this.bots = reconcileBots(this.bots, blueBots, redBots, matchMode(meta.match));
+      this.bots = reconcileBots(this.world,this.bots, blueBots, redBots, matchMode(meta.match));
       const activeBotIds = new Set(this.bots.map((bot) => bot.id));
       for (const [id, bullet] of [...this.bullets.entries()]) {
         if (String(bullet.ownerId || "").startsWith("bot-") && !activeBotIds.has(bullet.ownerId)) this.endBullet(id, "bot-removed");
@@ -1411,7 +1695,7 @@ export class GameRoom {
 
   actorBlocksAt(x,z,y,fromX,fromZ,actors,playerHeight=PLAYER_HEIGHT) {
     for(const actor of actors||[]){
-      const ax=finiteNumber(actor.x,0),ay=finiteNumber(actor.y,terrainHeight(ax,finiteNumber(actor.z,0))),az=finiteNumber(actor.z,0),actorHeight=actor.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT;
+      const ax=finiteNumber(actor.x,0),ay=finiteNumber(actor.y,this.world.geometry.terrainHeight(ax,finiteNumber(actor.z,0))),az=finiteNumber(actor.z,0),actorHeight=actor.crouched?CROUCH_HEIGHT:PLAYER_HEIGHT;
       if(y+playerHeight-.08<=ay||y>=ay+actorHeight-.08)continue;
       const minDist=PLAYER_RADIUS*2+.02,newDist=Math.hypot(x-ax,z-az),oldDist=Math.hypot(fromX-ax,fromZ-az);
       if(newDist<minDist&&(oldDist>=minDist||newDist<oldDist-.002))return true;
@@ -1423,31 +1707,52 @@ export class GameRoom {
     if(!me?.traversal)return me;
     const pose=traversalPose(me.traversal,now);if(!pose){return {...me,traversal:null};}
     const next={...me,x:pose.x,y:pose.y,z:pose.z,verticalVelocity:0,serverGrounded:false,moveSpeed:0,lastVerticalAt:now};
-    if(pose.done){next.x=me.traversal.endX;next.y=me.traversal.endY;next.z=me.traversal.endZ;next.traversal=null;next.serverGrounded=true;next.lastGroundedAt=now;next.moveBudgetSec=MOVE_BUDGET_INITIAL_SEC;}
+    if(pose.done){const finished=me.traversal;next.x=finished.endX;next.y=finished.endY;next.z=finished.endZ;next.traversal=null;next.serverGrounded=finished.endGrounded!==false;next.verticalVelocity=next.serverGrounded?0:(Number.isFinite(Number(finished.exitVelocityY))?Number(finished.exitVelocityY):-1.15);if(next.serverGrounded)next.lastGroundedAt=now;next.movementClockAt=now;next.moveBudgetSec=LADDER_BUDGET_INITIAL_SEC;}
     return next;
+  }
+
+  advanceLadderState(me, now) {
+    if(!me?.ladder)return me;
+    const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);if(!ladder)return {...me,ladder:null};
+    const cp=ladderClimbPoint(ladder,PLAYER_RADIUS);
+    return {...me,x:cp.x,z:cp.z,y:clamp(finiteNumber(me.y,ladder.bottomY),ladder.bottomY,ladder.topY-.10),verticalVelocity:0,serverGrounded:false,moveSpeed:0,lastVerticalAt:now};
   }
 
   validateHumanState(me, payload, now, settings) {
     const desiredX = clamp(finiteNumber(payload.x, me.x), -ARENA_LIMIT, ARENA_LIMIT);
     const desiredZ = clamp(finiteNumber(payload.z, me.z), -ARENA_LIMIT, ARENA_LIMIT);
+    // Movement credit advances only on the server's monotonic wall clock. Client
+    // timestamps are useful for combat/history alignment, but can never mint
+    // movement time. This preserves a hard long-term speed invariant under
+    // jitter, packet bunching, stale clocks, or deliberately forged timestamps.
+    const previousMovementClock=finiteNumber(me.movementClockAt,finiteNumber(me.lastStateAt,now));
+    const elapsed=clamp((now-previousMovementClock)/1000,0,MAX_STATE_ELAPSED_SEC),movementClockAt=Math.max(previousMovementClock,now);
     if(me.traversal){
       const desiredY=finiteNumber(payload.y,me.y),error=Math.hypot(desiredX-me.x,desiredY-me.y,desiredZ-me.z);
-      return {corrected:error>.18,verticalCorrected:false,player:{...me,lastStateAt:now,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,moveSpeed:0}};
+      return {corrected:error>.18,verticalCorrected:false,player:{...me,lastStateAt:now,movementClockAt,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,moveSpeed:0}};
     }
-    const elapsed = clamp((now - finiteNumber(me.lastStateAt, now)) / 1000, 0, 0.25);
+    if(me.ladder){
+      const ladder=ladderById(this.world.geometry.LADDERS,me.ladder.id);
+      if(!ladder)return {corrected:true,verticalCorrected:true,player:{...me,ladder:null,lastStateAt:now,movementClockAt}};
+      const desiredY=finiteNumber(payload.y,me.y),cp=ladderClimbPoint(ladder,PLAYER_RADIUS);
+      const ladderMove=clamp(finiteNumber(payload.ladderMove,0),-1,1),reportedDeltaY=desiredY-me.y,reportedDistance=Math.abs(reportedDeltaY);
+      // Ladder movement uses the same monotonic server-time token budget as
+      // horizontal movement. The client reports the position it actually
+      // simulated at this packet's sample time; the server accepts only the
+      // portion reachable at LADDER_CLIMB_SPEED. This keeps local prediction
+      // aligned under latency/turns without ever trusting client timestamps to
+      // mint climb time or allowing a forged y-position to increase speed.
+      let moveBudgetSec=clamp(finiteNumber(me.moveBudgetSec,LADDER_BUDGET_INITIAL_SEC)+elapsed,0,MOVE_BUDGET_MAX_SEC);
+      if(Math.abs(ladderMove)<.05&&reportedDistance<.005)moveBudgetSec=Math.min(moveBudgetSec,LADDER_BUDGET_INITIAL_SEC);
+      const maxDistance=LADDER_CLIMB_SPEED*moveBudgetSec,acceptedDistance=Math.min(maxDistance,reportedDistance),acceptedDelta=reportedDistance>1e-7?Math.sign(reportedDeltaY)*acceptedDistance:0;
+      if(LADDER_CLIMB_SPEED>1e-6)moveBudgetSec=Math.max(0,moveBudgetSec-acceptedDistance/LADDER_CLIMB_SPEED);
+      const nextY=clamp(me.y+acceptedDelta,ladder.bottomY,ladder.topY-.10),speedViolation=reportedDistance>maxDistance+.06,horizontalError=Math.hypot(desiredX-cp.x,desiredZ-cp.z);
+      return {corrected:speedViolation||horizontalError>.10,verticalCorrected:speedViolation,player:{...me,x:cp.x,y:nextY,z:cp.z,lastStateAt:now,lastVerticalAt:now,movementClockAt,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,crouched:false,moveSpeed:Math.abs(ladderMove)*LADDER_CLIMB_SPEED,verticalVelocity:0,serverGrounded:false,moveBudgetSec}};
+    }
     const flashPower = activeFlashPower(me, now);
     const ads = flashPower > 0.12 ? false : !!payload.ads;
     let crouched = !!payload.crouched;
-    if (!crouched && me.crouched && worldBlockedAt(me.x, me.z, me.y, PLAYER_HEIGHT, PLAYER_RADIUS)) crouched = true;
-    const playerHeight = crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
-    const baseSpeed = ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
-    const currentAllowedSpeed = baseSpeed * (crouched ? CROUCH_SPEED_MULTIPLIER : 1);
-    const previousBaseSpeed = me.ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
-    const previousAllowedSpeed = previousBaseSpeed * (me.crouched ? CROUCH_SPEED_MULTIPLIER : 1);
-    // A packet that changes ADS/crouch also contains movement from the previous
-    // stance. Validate that interval against the faster of the two legitimate
-    // states so pressing ADS/crouch cannot pull the player backward.
-    const allowedSpeed = Math.max(currentAllowedSpeed, previousAllowedSpeed);
+    if (!crouched && me.crouched && this.world.worldCollision.worldHeightExpansionBlockedAt(me.x, me.z, me.y, CROUCH_HEIGHT, PLAYER_HEIGHT, PLAYER_RADIUS)) crouched = true;
 
     let inputX = clamp(finiteNumber(payload.moveX, 0), -1, 1);
     let inputZ = clamp(finiteNumber(payload.moveZ, 0), -1, 1);
@@ -1455,6 +1760,24 @@ export class GameRoom {
     if (rawInputLength > 1) { inputX /= rawInputLength; inputZ /= rawInputLength; }
     const inputMagnitude = Math.min(1, rawInputLength);
     const nextYaw = finiteNumber(payload.yaw, me.yaw);
+
+    const requestedSprint=!!payload.sprinting&&!ads&&!crouched&&me.serverGrounded!==false&&inputMagnitude>=SPRINT_MIN_INPUT&&inputZ<=-SPRINT_MIN_FORWARD;
+    const requestedSlide=!!payload.sliding&&crouched&&me.serverGrounded!==false;
+    const canStartSlide=requestedSlide&&!me.sliding&&inputMagnitude>=SPRINT_MIN_INPUT&&inputZ<=-SPRINT_MIN_FORWARD&&(!!me.sprinting||finiteNumber(me.moveSpeed,0)>=settings.movement.runSpeed*.72);
+    let slideUntil=Math.max(0,finiteNumber(me.slideUntil,0));if(canStartSlide)slideUntil=now+SLIDE_SERVER_GRACE_MS;
+    const sliding=requestedSlide&&(!!me.sliding||canStartSlide)&&now<=slideUntil;
+    const sprinting=!sliding&&requestedSprint;
+    if(!sliding)slideUntil=0;
+
+    const playerHeight = crouched ? CROUCH_HEIGHT : PLAYER_HEIGHT;
+    const baseSpeed = ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
+    const currentAllowedSpeed = sliding ? settings.movement.runSpeed*SLIDE_START_SPEED_MULTIPLIER : baseSpeed * (sprinting?SPRINT_SPEED_MULTIPLIER:1) * (crouched ? CROUCH_SPEED_MULTIPLIER : 1);
+    const previousBaseSpeed = me.ads ? settings.movement.walkSpeed : settings.movement.runSpeed;
+    const previousAllowedSpeed = me.sliding ? settings.movement.runSpeed*SLIDE_START_SPEED_MULTIPLIER : previousBaseSpeed * (me.sprinting?SPRINT_SPEED_MULTIPLIER:1) * (me.crouched ? CROUCH_SPEED_MULTIPLIER : 1);
+    // A packet that changes stance/movement mode also contains movement from
+    // the previous state. Validate that interval against the faster legitimate
+    // state so sprint/slide transitions do not cause correction snaps.
+    const allowedSpeed = Math.max(currentAllowedSpeed, previousAllowedSpeed);
 
     const knock = advanceKnockback(finiteNumber(me.knockVelocityX, 0), finiteNumber(me.knockVelocityZ, 0), elapsed);
     const knockDx = knock.dx;
@@ -1493,7 +1816,7 @@ export class GameRoom {
     const dz = moveDz + knockDz;
     const speedViolation = reportedUserDistance > maxUserDistance + 0.08;
 
-    const startSupport = worldSupportHeight(me.x, me.z, me.y);
+    const startSupport = this.world.geometry.worldSupportHeight(me.x, me.z, me.y);
     const currentVerticalVelocity = finiteNumber(me.verticalVelocity, 0);
     let serverGrounded = me.serverGrounded !== false && Math.abs(me.y - startSupport) <= 0.28;
     if (!serverGrounded && currentVerticalVelocity <= 0 && Math.abs(me.y - startSupport) <= 0.08) serverGrounded = true;
@@ -1501,8 +1824,9 @@ export class GameRoom {
     const solidActors = this.solidActors(me.clientId, now);
     const horizontal = sweepHorizontalMovement({
       x:me.x,y:me.y,z:me.z,dx,dz,grounded:serverGrounded,arenaLimit:ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,
-      supportHeight:(x,z,y)=>worldSupportHeight(x,z,y,crouched),
-      blockedAt:(x,z,y,fromX,fromZ)=>worldMoveBlockedAt(x,z,y,fromX,fromZ,playerHeight,PLAYER_RADIUS)||this.actorBlocksAt(x,z,y,fromX,fromZ,solidActors,playerHeight),
+      supportHeight:(x,z,y)=>this.world.geometry.worldSupportHeight(x,z,y,crouched),
+      stepUpHeight:(x,z,y,maxStep)=>this.world.geometry.worldStepUpHeight(x,z,y,maxStep,PLAYER_RADIUS),maxStepHeight:MAX_STEP_HEIGHT,
+      blockedAt:(x,z,y,fromX,fromZ)=>this.world.worldCollision.worldMoveBlockedAt(x,z,y,fromX,fromZ,playerHeight,PLAYER_RADIUS)||this.actorBlocksAt(x,z,y,fromX,fromZ,solidActors,playerHeight),
     });
     let x=horizontal.x,z=horizontal.z,walkY=horizontal.y,followsSupport=horizontal.grounded;
 
@@ -1530,12 +1854,12 @@ export class GameRoom {
       serverGrounded = false;
       let verticalRemaining=clamp((now-finiteNumber(me.lastVerticalAt,now))/1000,0,SERVER_VERTICAL_MAX_CATCHUP_SEC);
       while(verticalRemaining>1e-6&&!serverGrounded){
-        const step=Math.min(1/60,verticalRemaining),verticalStep=advanceVerticalMotion(y,verticalVelocity,gravity,step),ceiling=resolveCeilingCollision(y,verticalStep.y,x,z,playerHeight);
+        const step=Math.min(1/60,verticalRemaining),verticalStep=advanceVerticalMotion(y,verticalVelocity,gravity,step),ceiling=this.world.geometry.resolveCeilingCollision(y,verticalStep.y,x,z,playerHeight);
         y=ceiling.y;ceilingHit=ceilingHit||ceiling.hit;verticalVelocity=ceiling.hit&&verticalStep.velocity>0?0:verticalStep.velocity;verticalRemaining-=step;
-        const support=worldSupportHeight(x,z,y);if(y<=support+.025&&verticalVelocity<=0){y=support;verticalVelocity=0;serverGrounded=true;lastGroundedAt=now;break;}
+        const support=this.world.geometry.worldSupportHeight(x,z,y);if(y<=support+.025&&verticalVelocity<=0){y=support;verticalVelocity=0;serverGrounded=true;lastGroundedAt=now;break;}
       }
       if(!serverGrounded){
-        const ground=worldSupportHeight(x,z,y),clientGrounded=payload.grounded===true,closeEnoughToLand=clientGrounded&&verticalVelocity<=0&&rawRequestedY<=ground+.14&&y-ground<=GROUND_FOLLOW_DROP;
+        const ground=this.world.geometry.worldSupportHeight(x,z,y),clientGrounded=payload.grounded===true,closeEnoughToLand=clientGrounded&&verticalVelocity<=0&&rawRequestedY<=ground+.14&&y-ground<=GROUND_FOLLOW_DROP;
         if(closeEnoughToLand){y=ground;verticalVelocity=0;serverGrounded=true;lastGroundedAt=now;}
       }
     }
@@ -1546,7 +1870,7 @@ export class GameRoom {
     // Do not emit a correction merely because an internal sweep touched a wall.
     // If the client independently stopped at the same surface there is nothing
     // to reconcile. Only real position divergence is sent back.
-    const corrected = speedViolation || verticalCorrected || horizontalError > 0.10;
+    const corrected = verticalCorrected || horizontalError > 0.10 || (speedViolation && horizontalError > 0.10);
     const actualTravel = Math.hypot(x - me.x, z - me.z);
 
     return {
@@ -1559,7 +1883,12 @@ export class GameRoom {
         z,
         ads,
         crouched,
+        sprinting,
+        sliding,
+        slideUntil,
         moveSpeed: elapsed > 0 ? actualTravel / elapsed : 0,
+        velocityX: elapsed > 0 ? (x-me.x)/elapsed : 0,
+        velocityZ: elapsed > 0 ? (z-me.z)/elapsed : 0,
         moveBudgetSec,
         serverGrounded,
         lastGroundedAt,
@@ -1569,6 +1898,7 @@ export class GameRoom {
         lastVerticalAt: now,
         lastJumpSeq: Math.max(previousJumpSeq, incomingJumpSeq),
         lastStateAt: now,
+        movementClockAt,
         yaw: nextYaw,
         pitch: clamp(finiteNumber(payload.pitch, me.pitch), -1.4, 1.4),
       },
@@ -1605,18 +1935,20 @@ export class GameRoom {
     }
   }
 
-  spawnBullet({ ownerId, ownerTeam, damage, weapon, lifetimeMs, x, y, z, vx, vy, vz, now, consumeAmmo=true }) {
+  spawnBullet({ ownerId, ownerTeam, damage, weapon, lifetimeMs, x, y, z, vx, vy, vz, now, shotAt=now, targetRewindMs=0, consumeAmmo=true, primaryShot=consumeAmmo }) {
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-    const safe = safeWeapon(weapon);
-    const bullet = {
+    const safe = safeWeapon(weapon),bornAt=Math.min(now,sanitizeCombatTimestamp(shotAt,now));
+    const weaponSpec=WEAPON_SPECS[safe],bullet = {
       id, ownerId, ownerTeam: safeTeam(ownerTeam), damage, weapon: safe,
-      penetrationPower: safe === "sniper" ? Math.max(1, damage) : 0,
-      hitTargets: new Set(),
-      traveledDistance: 0,
-      lifetimeMs: lifetimeMs || WEAPON_SPECS[safe].lifetimeMs, x, y, z, vx, vy, vz, born: now, lastAt: now,
+      penetrationEnergy:1,targetRewindMs:clamp(finiteNumber(targetRewindMs,0),0,MAX_TARGET_REWIND_MS),
+      gravity:Math.max(0,finiteNumber(weaponSpec.projectileGravity,0)),explosionRadius:Math.max(0,finiteNumber(weaponSpec.explosionRadius,0)),explosionDamage:Math.max(0,finiteNumber(weaponSpec.explosionDamage,0)),
+      hitTargets: new Set(),traveledDistance: 0,
+      lifetimeMs: lifetimeMs || weaponSpec.lifetimeMs, x, y, z, vx, vy, vz, born: bornAt, lastAt: bornAt, lastBroadcast: now,
+      rpgBaseSpeed:safe==='rpg'?Math.max(1,Math.hypot(vx,vy,vz)):0,rpgBaseYaw:safe==='rpg'?Math.atan2(-vx,-vz):0,rpgBasePitch:safe==='rpg'?Math.asin(clamp(vy/Math.max(1,Math.hypot(vx,vy,vz)),-1,1)):0,rpgWanderPhase:safe==='rpg'?Math.random()*Math.PI*2:0,
     };
     this.bullets.set(id, bullet);
-    this.broadcast({ t: "shot", id, ownerId, ownerTeam: bullet.ownerTeam, damage, weapon: safe, lifetimeMs: bullet.lifetimeMs, x, y, z, vx, vy, vz, consumeAmmo, at: now });
+    if(primaryShot)this.noteGunfire({x,y,z,team:bullet.ownerTeam,id:ownerId,weapon:safe},now);
+    this.broadcast({ t: "shot", id, ownerId, ownerTeam: bullet.ownerTeam, damage, weapon: safe, lifetimeMs: bullet.lifetimeMs, gravity:bullet.gravity, x, y, z, vx, vy, vz, consumeAmmo, primaryShot:!!primaryShot, at: bornAt });
   }
 
   async stepSimulation(now, meta) {
@@ -1660,7 +1992,7 @@ export class GameRoom {
 
     if (now - this.lastBotBroadcastAt >= 50) {
       this.lastBotBroadcastAt = now;
-      if (this.bots.length) this.broadcast({ t: "botState", bots: this.bots.map(publicBot) });
+      if (this.bots.length) this.broadcast({ t: "botState", at:now, bots: this.bots.map(publicBot) });
     }
     if (now - this.lastPersistAt >= BOT_PERSIST_INTERVAL_MS) {
       this.lastPersistAt = now;
@@ -1685,9 +2017,9 @@ export class GameRoom {
 
       const team = player.pendingTeam ? safeTeam(player.pendingTeam) : safeTeam(player.team),mode=matchMode(this.metaCache?.match);
       const actors=[...this.ctx.getWebSockets().map(s=>s.deserializeAttachment()||{}),...(this.bots||[])];
-      const spawn=this.selectSpawn(mode,team,actors,Math.floor(Math.random()*spawnPointCount(mode,team)),player.clientId,now);
+      const spawn=this.selectSpawn(mode,team,actors,Math.floor(Math.random()*this.world.spawns.spawnPointCount(mode,team)),player.clientId,now);
       const respawned=spawnedPlayerState(player,spawn,team,now);
-      socket.serializeAttachment(respawned);
+      socket.serializeAttachment(respawned);this.recordCombatPose(respawned,now);
       this.broadcast({ t: "respawn", player: publicPlayer(respawned) });
     }
   }
@@ -1725,10 +2057,11 @@ export class GameRoom {
 
     for (let i = 0; i < this.bots.length; i += 1) {
       const bot = this.bots[i];
+      bot.velocityX=0;bot.velocityZ=0;
       if (bot.hp <= 0) {
         if (now >= bot.wastedUntil) {
-          const mode=matchMode(meta.match),actors=[...humans.map(({target})=>target),...this.bots],spawn=this.selectSpawn(mode,bot.team,actors,i+Math.floor(Math.random()*spawnPointCount(mode,bot.team)),bot.id,now),primary=safePrimaryWeapon(bot.primaryWeapon||bot.weapon);
-          Object.assign(bot,spawn,{hp:100,wastedUntil:0,regenAt:0,weapon:primary,primaryWeapon:primary,ammo:freshAmmo(),reloadAt:0,reloadWeapon:'',flashUntil:0,flashSpin:0,traversal:null,lastSeenTargetId:'',lastSeenAt:0,lastKnownX:spawn.x,lastKnownZ:spawn.z,patrolX:spawn.x,patrolZ:spawn.z,patrolUntil:0,patrolNodeIndex:-1});
+          const mode=matchMode(meta.match),actors=[...humans.map(({target})=>target),...this.bots],spawn=this.selectSpawn(mode,bot.team,actors,i+Math.floor(Math.random()*this.world.spawns.spawnPointCount(mode,bot.team)),bot.id,now),primary=safePrimaryWeapon(bot.primaryWeapon||bot.weapon);
+          Object.assign(bot,spawn,{hp:100,wastedUntil:0,regenAt:0,velocityX:0,velocityZ:0,weapon:primary,primaryWeapon:primary,ammo:freshAmmo(),reloadAt:0,reloadWeapon:'',flashUntil:0,flashSpin:0,traversal:null,ladder:null,lastSeenTargetId:'',lastSeenAt:0,lastKnownX:spawn.x,lastKnownZ:spawn.z,patrolX:spawn.x,patrolZ:spawn.z,patrolUntil:0,patrolNodeIndex:-1});
           this.broadcast({t:'respawn',player:publicBot(bot)});
         }
         continue;
@@ -1737,6 +2070,17 @@ export class GameRoom {
         const pose=traversalPose(bot.traversal,now);
         if(pose){bot.x=pose.x;bot.y=pose.y;bot.z=pose.z;if(pose.done){bot.x=bot.traversal.endX;bot.y=bot.traversal.endY;bot.z=bot.traversal.endZ;bot.traversal=null;}else continue;}
         else bot.traversal=null;
+      }
+
+      if(bot.ladder){
+        const ladder=ladderById(this.world.geometry.LADDERS,bot.ladder.id);
+        if(!ladder)bot.ladder=null;
+        else{
+          const cp=ladderClimbPoint(ladder,.34),dir=Number(bot.ladder.climbDir)||1;bot.x=cp.x;bot.z=cp.z;bot.y=ladderClimbStep(ladder,bot.y,dir,dt);bot.moveSpeed=LADDER_CLIMB_SPEED;
+          if(dir>0&&bot.y>=ladder.topY-.105){const target=ladderTopExitPoint(ladder,.34),seq=++bot.ladderSeq;bot.x=target.x;bot.y=target.y;bot.z=target.z;bot.ladder=null;bot.moveSpeed=0;this.broadcast({t:'ladder',id:bot.id,seq,accepted:true,action:'dismount',end:'top',x:bot.x,y:bot.y,z:bot.z,ladder:null});}
+          else if(dir<0&&bot.y<=ladder.bottomY+.005){const target=ladderBottomExitPoint(ladder,.34),seq=++bot.ladderSeq;bot.x=target.x;bot.y=target.y;bot.z=target.z;bot.ladder=null;bot.moveSpeed=0;this.broadcast({t:'ladder',id:bot.id,seq,accepted:true,action:'dismount',end:'bottom',x:bot.x,y:bot.y,z:bot.z,ladder:null});}
+          if(bot.ladder)continue;
+        }
       }
 
       const botWeapon=safePrimaryWeapon(bot.primaryWeapon||bot.weapon);bot.primaryWeapon=botWeapon;bot.weapon=botWeapon;
@@ -1750,23 +2094,33 @@ export class GameRoom {
       if(now<finiteNumber(bot.flashUntil,0)){
         bot.yaw+=dt*(bot.flashSpin||2.2);
         const step=settings.movement.walkSpeed*.22*dt,dx=Math.sin(bot.yaw)*step,dz=Math.cos(bot.yaw)*step;
-        if(!worldBlockedAt(bot.x+dx,bot.z+dz,bot.y,PLAYER_HEIGHT,.34)){bot.x+=dx;bot.z+=dz;bot.y=worldSupportHeight(bot.x,bot.z,bot.y);}
+        if(!this.world.worldCollision.worldBlockedAt(bot.x+dx,bot.z+dz,bot.y,PLAYER_HEIGHT,.34)){bot.x+=dx;bot.z+=dz;bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y);}
         continue;
       }
 
       const solidActors=this.solidActors(bot.id,now);
       const tryTraverse=(ax,az)=>{
-        const len=Math.hypot(ax,az);if(len<.2||bot.traversal)return false;
-        const dirX=ax/len,dirZ=az/len,candidate=findTraversalCandidate({x:bot.x,y:bot.y,z:bot.z,dirX,dirZ,height:PLAYER_HEIGHT,radius:PLAYER_RADIUS,airborne:false});
-        if(!candidate||this.actorBlocksAt(candidate.endX,candidate.endZ,candidate.endY,bot.x,bot.z,solidActors,PLAYER_HEIGHT))return false;
+        const len=Math.hypot(ax,az);if(len<.2||bot.traversal||bot.ladder)return false;
+        const dirX=ax/len,dirZ=az/len,ladderEntry=findLadderEntry({ladders:this.world.geometry.LADDERS,x:bot.x,y:bot.y,z:bot.z,dirX,dirZ,radius:.34,grounded:true});
+        if(ladderEntry&&!this.actorBlocksAt(ladderEntry.attachX,ladderEntry.attachZ,ladderEntry.attachY,bot.x,bot.z,solidActors,PLAYER_HEIGHT)){
+          const seq=++bot.ladderSeq;bot.x=ladderEntry.attachX;bot.y=ladderEntry.attachY;bot.z=ladderEntry.attachZ;bot.ladder={id:String(ladderEntry.ladderId),seq,phase:'climb',entry:ladderEntry.entry==='top'?'top':'bottom',climbDir:ladderEntry.entry==='top'?-1:1};this.broadcast({t:'ladder',id:bot.id,seq,accepted:true,action:'attach',x:bot.x,y:bot.y,z:bot.z,ladder:publicLadderState(bot.ladder)});return true;
+        }
+        const candidate=this.world.worldCollision.findTraversalCandidate({x:bot.x,y:bot.y,z:bot.z,dirX,dirZ,height:PLAYER_HEIGHT,radius:PLAYER_RADIUS,airborne:false});
+        if(!candidate||candidate.endGrounded===false||this.actorBlocksAt(candidate.endX,candidate.endZ,candidate.endY,bot.x,bot.z,solidActors,PLAYER_HEIGHT))return false;
         const plan=createTraversalPlan(candidate,bot.x,bot.y,bot.z,now,++bot.traverseSeq);if(!plan)return false;
         bot.traversal=plan;this.broadcast({t:'traverse',id:bot.id,accepted:true,...plan});return true;
       };
       const tryMove=(ax,az,step)=>{
-        const fromX=bot.x,fromZ=bot.z,nx=bot.x+ax*step,nz=bot.z+az*step;
-        if(!worldBlockedAt(nx,bot.z,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(nx,bot.z,bot.y,fromX,fromZ,solidActors)&&!worldBlockedAt(nx,nz,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(nx,nz,bot.y,fromX,fromZ,solidActors)){bot.x=nx;bot.z=nz;return true;}
-        if(!worldBlockedAt(bot.x,nz,bot.y,PLAYER_HEIGHT,.34)&&!this.actorBlocksAt(bot.x,nz,bot.y,fromX,fromZ,solidActors)){bot.z=nz;return true;}
-        return false;
+        const fromX=bot.x,fromZ=bot.z;
+        const out=sweepHorizontalMovement({
+          x:bot.x,y:bot.y,z:bot.z,dx:ax*step,dz:az*step,grounded:true,arenaLimit:ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,
+          supportHeight:(x,z,y)=>this.world.geometry.worldSupportHeight(x,z,y,false,.34),
+          stepUpHeight:(x,z,y,maxStep)=>this.world.geometry.worldStepUpHeight(x,z,y,maxStep,.34),maxStepHeight:MAX_STEP_HEIGHT,
+          blockedAt:(x,z,y,fx,fz)=>this.world.worldCollision.worldMoveBlockedAt(x,z,y,fx,fz,PLAYER_HEIGHT,.34)||this.actorBlocksAt(x,z,y,fx,fz,solidActors,PLAYER_HEIGHT),
+        });
+        const moved=Math.hypot(out.x-fromX,out.z-fromZ)>.005;bot.x=out.x;bot.y=out.y;bot.z=out.z;
+        if(dt>1e-6){bot.velocityX=(out.x-fromX)/dt;bot.velocityZ=(out.z-fromZ)/dt;bot.moveSpeed=Math.hypot(bot.velocityX,bot.velocityZ);}else{bot.velocityX=0;bot.velocityZ=0;bot.moveSpeed=0;}
+        return moved;
       };
 
       const targetCandidates=[];
@@ -1777,29 +2131,29 @@ export class GameRoom {
       for(const h of humans)consider('human',h.target,h.socket);
       for(const other of this.bots){if(other===bot||now<(other.wastedUntil||0))continue;consider('bot',other,null);}
       targetCandidates.sort((a,b)=>a.d2-b.d2);
-      let nearest=null;for(const candidate of targetCandidates){if(actorHasLineOfSight(bot,candidate.target)){nearest=candidate;break;}}
+      let nearest=null;for(const candidate of targetCandidates){if(this.actorLineOfSight(bot,candidate.target,now)){nearest=candidate;break;}}
 
       if(!nearest){
         const memoryActive=bot.lastSeenAt&&now-bot.lastSeenAt<=BOT_TARGET_MEMORY_MS;
         if(!memoryActive&&(now>=finiteNumber(bot.patrolUntil,0)||Math.hypot(bot.patrolX-bot.x,bot.patrolZ-bot.z)<1.2)){
           let picked=false,bestNode=null;
-          for(let nodeIndex=0;nodeIndex<COMBAT_FLOW_NODES.length;nodeIndex++){
+          for(let nodeIndex=0;nodeIndex<this.world.geometry.COMBAT_FLOW_NODES.length;nodeIndex++){
             if(nodeIndex===bot.patrolNodeIndex)continue;
-            const node=COMBAT_FLOW_NODES[nodeIndex],px=node.x,pz=node.z,py=worldSupportHeight(px,pz,bot.y),distance=Math.hypot(px-bot.x,pz-bot.z);
-            if(distance<11||distance>62||worldBlockedAt(px,pz,py,PLAYER_HEIGHT,.34))continue;
-            const visible=actorHasLineOfSight(bot,{x:px,y:py,z:pz});if(!visible)continue;
+            const node=this.world.geometry.COMBAT_FLOW_NODES[nodeIndex],px=node.x,pz=node.z,py=this.world.geometry.worldSupportHeight(px,pz,bot.y),distance=Math.hypot(px-bot.x,pz-bot.z);
+            if(distance<11||distance>62||this.world.worldCollision.worldBlockedAt(px,pz,py,PLAYER_HEIGHT,.34))continue;
+            const visible=this.actorLineOfSight(bot,{x:px,y:py,z:pz},now);if(!visible)continue;
             const idealPenalty=Math.abs(distance-34),score=idealPenalty+Math.random()*5;
             if(!bestNode||score<bestNode.score)bestNode={score,nodeIndex,px,pz};
           }
           if(bestNode){bot.patrolX=bestNode.px;bot.patrolZ=bestNode.pz;bot.patrolNodeIndex=bestNode.nodeIndex;picked=true;}
           for(let attempt=0;attempt<8&&!picked;attempt++){
-            const angle=Math.random()*Math.PI*2,distance=12+Math.random()*26,px=clamp(bot.x+Math.cos(angle)*distance,-ARENA_LIMIT+2,ARENA_LIMIT-2),pz=clamp(bot.z+Math.sin(angle)*distance,-ARENA_LIMIT+2,ARENA_LIMIT-2),py=worldSupportHeight(px,pz,bot.y);
-            if(!worldBlockedAt(px,pz,py,PLAYER_HEIGHT,.34)){bot.patrolX=px;bot.patrolZ=pz;bot.patrolNodeIndex=-1;picked=true;}
+            const angle=Math.random()*Math.PI*2,distance=12+Math.random()*26,px=clamp(bot.x+Math.cos(angle)*distance,-ARENA_LIMIT+2,ARENA_LIMIT-2),pz=clamp(bot.z+Math.sin(angle)*distance,-ARENA_LIMIT+2,ARENA_LIMIT-2),py=this.world.geometry.worldSupportHeight(px,pz,bot.y);
+            if(!this.world.worldCollision.worldBlockedAt(px,pz,py,PLAYER_HEIGHT,.34)){bot.patrolX=px;bot.patrolZ=pz;bot.patrolNodeIndex=-1;picked=true;}
           }
           bot.patrolUntil=now+BOT_PATROL_MIN_MS+Math.random()*(BOT_PATROL_MAX_MS-BOT_PATROL_MIN_MS);
         }
         const goalX=memoryActive?finiteNumber(bot.lastKnownX,bot.x):finiteNumber(bot.patrolX,bot.x),goalZ=memoryActive?finiteNumber(bot.lastKnownZ,bot.z):finiteNumber(bot.patrolZ,bot.z),dx=goalX-bot.x,dz=goalZ-bot.z,d=Math.hypot(dx,dz);
-        if(d>.65){const ux=dx/d,uz=dz/d,speed=(memoryActive?settings.movement.runSpeed*.66:settings.movement.walkSpeed*.62)*profile.moveWalk,step=Math.min(d,speed*dt);bot.yaw=Math.atan2(-dx,-dz);if(!tryMove(ux,uz,step)&&!tryTraverse(ux,uz))tryMove(-uz,ux,step*.72)||tryMove(uz,-ux,step*.72);bot.y=worldSupportHeight(bot.x,bot.z,bot.y);}
+        if(d>.65){const ux=dx/d,uz=dz/d,speed=(memoryActive?settings.movement.runSpeed*.66:settings.movement.walkSpeed*.62)*profile.moveWalk,step=Math.min(d,speed*dt);bot.yaw=Math.atan2(-dx,-dz);if(!tryMove(ux,uz,step)&&!tryTraverse(ux,uz))tryMove(-uz,ux,step*.72)||tryMove(uz,-ux,step*.72);bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y);}
         else if(memoryActive){bot.lastSeenAt=0;bot.lastSeenTargetId='';}
         continue;
       }
@@ -1807,7 +2161,7 @@ export class GameRoom {
       const d=Math.sqrt(nearest.d2)||.001,target=nearest.target,targetId=String(target.clientId||target.id||'');bot.lastSeenTargetId=targetId;bot.lastSeenAt=now;bot.lastKnownX=finiteNumber(target.x,bot.x);bot.lastKnownZ=finiteNumber(target.z,bot.z);bot.yaw=Math.atan2(-nearest.dx,-nearest.dz);
       const ux=nearest.dx/d,uz=nearest.dz/d;
       let preferredRange=profile.preferredRange,engageRange=profile.range;
-      if(botWeapon==='shotgun'){preferredRange=Math.min(preferredRange,5.2);engageRange=Math.min(18,engageRange);}
+      if(botWeapon==='shotgun'||botWeapon==='semiShotgun'){preferredRange=Math.min(preferredRange,botWeapon==='shotgun'?5.2:6.2);engageRange=Math.min(botWeapon==='shotgun'?18:21,engageRange);}
       else if(botWeapon==='sniper'){preferredRange=Math.max(14,preferredRange*1.8);engageRange=Math.max(36,engageRange*1.18);}
       if(d>preferredRange){
         const speed=d>16?settings.movement.runSpeed*profile.moveRun:settings.movement.walkSpeed*profile.moveWalk,step=Math.min(d-preferredRange,speed*dt);
@@ -1817,36 +2171,50 @@ export class GameRoom {
         const sx=-uz*(bot.strafeDir||1),sz=ux*(bot.strafeDir||1),step=settings.movement.walkSpeed*profile.strafe*dt;
         if(!tryMove(sx,sz,step)){bot.strafeDir=-(bot.strafeDir||1);tryMove(-sx,-sz,step);}
       }
-      bot.y=worldSupportHeight(bot.x,bot.z,bot.y);
+      bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y);
 
-      const weaponSettings=settings.weapons[botWeapon],fireScale=botWeapon==='sniper'?1.12:botWeapon==='shotgun'?.96:1,botFireDelay=Math.max(weaponSettings.cooldownMs*profile.fireScale*fireScale,70);
+      const weaponSettings=settings.weapons[botWeapon],fireScale=botWeapon==='sniper'?1.12:(botWeapon==='shotgun'||botWeapon==='semiShotgun')?.96:1,botFireDelay=Math.max(weaponSettings.cooldownMs*profile.fireScale*fireScale,70);
       if(d<=engageRange&&now>=finiteNumber(bot.nextShotAt,0)){
         if((bot.ammo[botWeapon]||0)<=0){if(!bot.reloadAt){bot.reloadAt=now+weaponSettings.reloadMs;bot.reloadWeapon=botWeapon;}continue;}
-        bot.nextShotAt=now+botFireDelay+profile.reactionBase+Math.floor(Math.random()*profile.reactionJitter);bot.ammo[botWeapon]-=1;if(bot.ammo[botWeapon]===0){bot.reloadAt=now+weaponSettings.reloadMs;bot.reloadWeapon=botWeapon;}
-        const tx=finiteNumber(target.x,0)-bot.x,ty=(finiteNumber(target.y,terrainHeight(target.x||0,target.z||0))+1.05)-(bot.y+1.28),tz=finiteNumber(target.z,0)-bot.z,dist=Math.hypot(tx,ty,tz)||1;
-        const baseSpread=profile.spreadBase+Math.min(.09,d*profile.spreadDistance),spread=botWeapon==='shotgun'?Math.max(.052,baseSpread*2.15):botWeapon==='sniper'?baseSpread*.55:baseSpread,pellets=Math.max(1,Math.floor(WEAPON_SPECS[botWeapon]?.pellets||1));
+        bot.spawnProtectedUntil=0;bot.nextShotAt=now+botFireDelay+profile.reactionBase+Math.floor(Math.random()*profile.reactionJitter);bot.ammo[botWeapon]-=1;if(bot.ammo[botWeapon]===0){bot.reloadAt=now+weaponSettings.reloadMs;bot.reloadWeapon=botWeapon;}
+        const tx=finiteNumber(target.x,0)-bot.x,ty=(finiteNumber(target.y,this.world.geometry.terrainHeight(target.x||0,target.z||0))+1.05)-(bot.y+1.28),tz=finiteNumber(target.z,0)-bot.z,dist=Math.hypot(tx,ty,tz)||1;
+        const baseSpread=profile.spreadBase+Math.min(.09,d*profile.spreadDistance),spread=(botWeapon==='shotgun'||botWeapon==='semiShotgun')?Math.max(.052,baseSpread*2.15):botWeapon==='sniper'?baseSpread*.55:baseSpread,pellets=Math.max(1,Math.floor(WEAPON_SPECS[botWeapon]?.pellets||1)),shotgunPattern=botWeapon==='shotgun'||botWeapon==='semiShotgun',patternRotation=Math.random()*Math.PI*2,baseYaw=Math.atan2(-tx,-tz),basePitch=Math.asin(clamp(ty/dist,-1,1));
         for(let pellet=0;pellet<pellets;pellet++){
-          const fx=tx/dist+(Math.random()-.5)*spread,fy=ty/dist+(Math.random()-.5)*spread*.65,fz=tz/dist+(Math.random()-.5)*spread,norm=Math.hypot(fx,fy,fz)||1;
-          this.spawnBullet({ownerId:bot.id,ownerTeam:safeTeam(bot.team),damage:weaponSettings.damage,weapon:botWeapon,lifetimeMs:WEAPON_SPECS[botWeapon].lifetimeMs,x:bot.x+(fx/norm)*.55,y:bot.y+1.25,z:bot.z+(fz/norm)*.55,vx:(fx/norm)*weaponSettings.speed,vy:(fy/norm)*weaponSettings.speed,vz:(fz/norm)*weaponSettings.speed,now,consumeAmmo:pellet===0});
+          let fx,fy,fz;if(shotgunPattern){const a=shotgunPelletAngles(baseYaw,basePitch,spread,pellet,pellets,patternRotation),v=shotVector(a.yaw,a.pitch);fx=v.x;fy=v.y;fz=v.z;}else{fx=tx/dist+(Math.random()-.5)*spread;fy=ty/dist+(Math.random()-.5)*spread*.65;fz=tz/dist+(Math.random()-.5)*spread;}
+          const norm=Math.hypot(fx,fy,fz)||1,centerScale=pellet===0?Math.max(1,finiteNumber(WEAPON_SPECS[botWeapon]?.centerPelletDamageScale,1)):1;
+          this.spawnBullet({ownerId:bot.id,ownerTeam:safeTeam(bot.team),damage:weaponSettings.damage*centerScale,weapon:botWeapon,lifetimeMs:WEAPON_SPECS[botWeapon].lifetimeMs,x:bot.x+(fx/norm)*.55,y:bot.y+1.25,z:bot.z+(fz/norm)*.55,vx:(fx/norm)*weaponSettings.speed,vy:(fy/norm)*weaponSettings.speed,vz:(fz/norm)*weaponSettings.speed,now,consumeAmmo:pellet===0});
         }
       }
     }
+    for(const bot of this.bots||[])this.recordCombatPose(bot,now);
   }
 
+
+  smokeBlocksSegment(a,b,now){
+    for(const cloud of this.smokeClouds.values()){
+      if(now>=cloud.expiresAt)continue;const ax=finiteNumber(a.x,0),ay=finiteNumber(a.y,0)+1.05,az=finiteNumber(a.z,0),bx=finiteNumber(b.x,0),by=finiteNumber(b.y,0)+1.05,bz=finiteNumber(b.z,0),vx=bx-ax,vy=by-ay,vz=bz-az,wx=cloud.x-ax,wy=cloud.y-ay,wz=cloud.z-az,len2=vx*vx+vy*vy+vz*vz||1,t=clamp((wx*vx+wy*vy+wz*vz)/len2,0,1),dx=ax+vx*t-cloud.x,dy=ay+vy*t-cloud.y,dz=az+vz*t-cloud.z;if(Math.hypot(dx,dy,dz)<=cloud.radius*.88)return true;
+    }return false;
+  }
+  actorLineOfSight(a,b,now){return this.world.serverCollision.actorHasLineOfSight(a,b)&&!this.smokeBlocksSegment(a,b,now);}
+
   stepThrowables(now,settings){
+    for(const [id,cloud] of this.smokeClouds)if(now>=cloud.expiresAt)this.smokeClouds.delete(id);
     for(const [id,g] of this.throwables){
       if(g.stuckTo){const a=this.findActorState(g.stuckTo);if(a){g.x=a.x;g.y=a.y+1.0;g.z=a.z;}else g.stuckTo='';}
       if(!g.stuck){
         // Tactical physics stay intentionally lightweight: the server owns the
         // path, collision and fuse, while flashbangs retain believable carry,
         // bounce and ground roll. Stickies remain sticky on first contact.
-        const integrationEnd=Math.min(now,g.fuseAt),elapsed=Math.max(0,(integrationEnd-g.lastAt)/1000);g.lastAt=integrationEnd;const steps=Math.max(1,Math.ceil(elapsed/.012)),st=elapsed/steps;
+        const integrationStart=g.lastAt,integrationEnd=Math.min(now,g.fuseAt),elapsed=Math.max(0,(integrationEnd-integrationStart)/1000);g.lastAt=integrationEnd;const steps=Math.max(1,Math.ceil(elapsed/.012)),st=elapsed/steps;
         for(let i=0;i<steps&&!g.stuck;i++){
-          const px=g.x,py=g.y,pz=g.z;
-          if(g.kind==='flash'&&g.rolling){
-            const nx=px+g.vx*st,nz=pz+g.vz*st,ny=terrainHeight(nx,nz)+.10,hitObj=segmentHitsObstacle(px,py,pz,nx,ny,nz);
+          const stepAt=integrationStart+(i+1)*st*1000,px=g.x,py=g.y,pz=g.z;
+          if(g.kind!=='sticky'&&g.rolling){
+            const nx=px+g.vx*st,nz=pz+g.vz*st,ny=this.world.geometry.terrainHeight(nx,nz)+.10;
+            const actorHit=this.findThrowableActorHit(g,px,py,pz,nx,ny,nz,stepAt),worldT=this.world.serverCollision.segmentFirstWorldHitT(px,py,pz,nx,ny,nz);
+            if(actorHit&&(worldT==null||actorHit.t<worldT-.0001)){this.resolveThrowableActorHit(g,actorHit,px,py,pz,nx,ny,nz,stepAt);continue;}
+            const hitObj=this.world.serverCollision.segmentHitsObstacle(px,py,pz,nx,ny,nz);
             if(hitObj){
-              const hitX=segmentHitsObstacle(px,py,pz,nx,py,pz),hitZ=segmentHitsObstacle(px,py,pz,px,py,nz),ambiguous=!hitX&&!hitZ;
+              const hitX=this.world.serverCollision.segmentHitsObstacle(px,py,pz,nx,py,pz),hitZ=this.world.serverCollision.segmentHitsObstacle(px,py,pz,px,py,nz),ambiguous=!hitX&&!hitZ;
               if(hitX||ambiguous)g.vx=-g.vx*.34;
               if(hitZ||ambiguous)g.vz=-g.vz*.34;
               g.vx*=.82;g.vz*=.82;
@@ -1859,25 +2227,26 @@ export class GameRoom {
 
           g.vy-=TACTICAL_GRAVITY*st;
           const nx=px+g.vx*st,ny=py+g.vy*st,nz=pz+g.vz*st;
+          const actorHit=this.findThrowableActorHit(g,px,py,pz,nx,ny,nz,stepAt),worldT=this.world.serverCollision.segmentFirstWorldHitT(px,py,pz,nx,ny,nz);
+          if(actorHit&&(worldT==null||actorHit.t<worldT-.0001)){this.resolveThrowableActorHit(g,actorHit,px,py,pz,nx,ny,nz,stepAt);continue;}
           g.x=nx;g.y=ny;g.z=nz;
-          const actor=this.findStickyTarget(g);if(g.kind==='sticky'&&actor){g.stuck=true;g.stuckTo=actor;g.vx=g.vy=g.vz=0;break;}
-          const groundY=terrainHeight(nx,nz)+.08,hitGround=ny<=groundY,hitObj=!hitGround&&segmentHitsObstacle(px,py,pz,nx,ny,nz);
+          const groundY=this.world.geometry.terrainHeight(nx,nz)+.08,hitGround=ny<=groundY,hitObj=!hitGround&&this.world.serverCollision.segmentHitsObstacle(px,py,pz,nx,ny,nz);
           if(!hitGround&&!hitObj)continue;
 
           if(g.kind==='sticky'){
-            g.x=px;g.y=Math.max(py,terrainHeight(px,pz)+.10);g.z=pz;g.vx=g.vy=g.vz=0;g.stuck=true;g.rolling=false;
+            g.x=px;g.y=Math.max(py,this.world.geometry.terrainHeight(px,pz)+.10);g.z=pz;g.vx=g.vy=g.vz=0;g.stuck=true;g.rolling=false;
           }else if(hitGround){
             // Preserve horizontal direction on a ground contact. High-energy
             // impacts bounce; low-energy impacts transition naturally to roll.
             const impact=Math.abs(g.vy),horizontal=Math.hypot(g.vx,g.vz);
-            g.x=nx;g.y=terrainHeight(nx,nz)+.10;g.z=nz;g.vx*=.76;g.vz*=.76;
+            g.x=nx;g.y=this.world.geometry.terrainHeight(nx,nz)+.10;g.z=nz;g.vx*=.76;g.vz*=.76;
             if(impact>2.15){g.vy=impact*.29;g.rolling=false;}
             else{g.vy=0;g.rolling=horizontal>.24;if(!g.rolling){g.vx=g.vz=0;g.stuck=true;}}
           }else{
             // Reflect only the component that met a wall/solid rather than
             // reversing the entire throw direction on every contact.
             g.x=px;g.y=py;g.z=pz;
-            const hitX=segmentHitsObstacle(px,py,pz,nx,ny,pz),hitZ=segmentHitsObstacle(px,py,pz,px,ny,nz),ambiguous=!hitX&&!hitZ;
+            const hitX=this.world.serverCollision.segmentHitsObstacle(px,py,pz,nx,ny,pz),hitZ=this.world.serverCollision.segmentHitsObstacle(px,py,pz,px,ny,nz),ambiguous=!hitX&&!hitZ;
             if(hitX||ambiguous)g.vx=-g.vx*.38;
             if(hitZ||ambiguous)g.vz=-g.vz*.38;
             g.vy*=.58;
@@ -1887,17 +2256,47 @@ export class GameRoom {
         }
       }
       if(now-g.lastBroadcast>=THROWABLE_BROADCAST_MS){g.lastBroadcast=now;this.broadcast({t:'throwableState',id:g.id,x:g.x,y:g.y,z:g.z,vx:g.vx,vy:g.vy,vz:g.vz,stuck:g.stuck,rolling:!!g.rolling,at:now});}
-      if(now>=g.fuseAt){if(g.kind==='flash')this.detonateFlash(g,now);else this.explodeSticky(g,now,settings);this.throwables.delete(id);this.broadcast({t:'throwableEnd',id:g.id});}
+      if(now>=g.fuseAt){if(g.kind==='flash')this.detonateFlash(g,now);else if(g.kind==='smoke')this.detonateSmoke(g,now);else this.explodeThrowable(g,now,settings);this.throwables.delete(id);this.broadcast({t:'throwableEnd',id:g.id});}
     }
   }
   findActorState(id){for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(p.clientId===id&&!p.replaced)return p;}return this.bots.find(b=>b.id===id)||null;}
-  findStickyTarget(g){for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.clientId===g.ownerId||p.hp<=0||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,p.clientId,p.team))continue;if(Math.hypot(p.x-g.x,p.y+1-g.y,p.z-g.z)<.62)return p.clientId;}for(const b of this.bots){if(b.id===g.ownerId||b.hp<=0||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,b.id,b.team))continue;if(Math.hypot(b.x-g.x,b.y+1-g.y,b.z-g.z)<.62)return b.id;}return '';}
+  findThrowableActorHit(g,x1,y1,z1,x2,y2,z2,at){
+    let best=null;
+    const consider=(actor,id,team)=>{
+      if(!id||actor?.hp<=0)return;
+      // Ignore the thrower only while the equipment is leaving the hand/body.
+      // It may collide with the owner normally if it bounces back later.
+      if(id===g.ownerId&&at-g.born<260)return;
+      if(id===g.lastActorHitId&&at-g.lastActorHitAt<85)return;
+      const hit=this.world.serverCollision.projectileSegmentHitZone(actor,x1,y1,z1,x2,y2,z2);
+      if(hit&&(best==null||hit.t<best.t))best={actor,id,team,t:hit.t};
+    };
+    for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;consider(p,p.clientId,p.team);}
+    for(const b of this.bots)consider(b,b.id,b.team);
+    return best;
+  }
+  resolveThrowableActorHit(g,hit,x1,y1,z1,x2,y2,z2,at){
+    const t=clamp(finiteNumber(hit?.t,0),0,1),cx=x1+(x2-x1)*t,cy=y1+(y2-y1)*t,cz=z1+(z2-z1)*t;
+    const friendly=combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,hit.id,hit.team);
+    if(g.kind==='sticky'&&hit.id!==g.ownerId&&!friendly){
+      g.stuck=true;g.stuckTo=hit.id;g.x=hit.actor.x;g.y=hit.actor.y+1.0;g.z=hit.actor.z;g.vx=g.vy=g.vz=0;g.rolling=false;
+    }else{
+      const centerY=finiteNumber(hit.actor?.y,0)+(hit.actor?.crouched?CROUCH_HEIGHT*.52:PLAYER_HEIGHT*.52);
+      let nx=cx-finiteNumber(hit.actor?.x,0),ny=cy-centerY,nz=cz-finiteNumber(hit.actor?.z,0),nl=Math.hypot(nx,ny,nz);
+      if(nl<.001){const vl=Math.hypot(g.vx,g.vy,g.vz)||1;nx=-g.vx/vl;ny=-g.vy/vl;nz=-g.vz/vl;nl=1;}else{nx/=nl;ny/=nl;nz/=nl;}
+      const dot=g.vx*nx+g.vy*ny+g.vz*nz,restitution=.34;
+      if(dot<0){g.vx-=(1+restitution)*dot*nx;g.vy-=(1+restitution)*dot*ny;g.vz-=(1+restitution)*dot*nz;}
+      g.vx*=.76;g.vy*=.76;g.vz*=.76;g.x=cx+nx*.07;g.y=cy+ny*.07;g.z=cz+nz*.07;g.rolling=false;
+    }
+    g.lastActorHitId=hit.id;g.lastActorHitAt=at;
+    this.broadcast({t:'throwableImpact',id:g.id,kind:g.kind,x:g.x,y:g.y,z:g.z,vx:g.vx,vy:g.vy,vz:g.vz,stuck:g.stuck,rolling:!!g.rolling,at});
+  }
   detonateFlash(g,now){
     const radius=FLASH_RADIUS;this.broadcast({t:'flashDetonate',id:g.id,x:g.x,y:g.y,z:g.z,radius});
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;
       const ex=p.x,ey=p.y+PLAYER_HEIGHT*.75,ez=p.z,dx=g.x-ex,dy=g.y-ey,dz=g.z-ez,dist=Math.hypot(dx,dy,dz);if(dist>radius)continue;
-      if(segmentFirstWorldOcclusionT(g.x,g.y,g.z,ex,ey,ez)!=null)continue;
+      if(!this.world.serverCollision.blastHasLineOfSight(g.x,g.y,g.z,ex,ey,ez))continue;
       const cp=Math.cos(p.pitch||0),fx=-Math.sin(p.yaw||0)*cp,fy=Math.sin(p.pitch||0),fz=-Math.cos(p.yaw||0)*cp,n=dist||1,dot=(fx*dx+fy*dy+fz*dz)/n,front=.12+.88*Math.max(0,(dot+1)/2),power=clamp((1-dist/radius)*front,0,1);if(power<.035)continue;
       const durationMs=Math.round(650+power*2850),existingPower=activeFlashPower(p,now);
       if(power>=existingPower){p.flashPower=power;p.flashDurationMs=durationMs;p.flashUntil=now+durationMs;}
@@ -1905,17 +2304,49 @@ export class GameRoom {
       p.ads=false;socket.serializeAttachment(p);
       sendJson(socket,{t:'flashEffect',power,durationMs});
     }
-    for(const b of this.bots){if(b.hp<=0)continue;const dx=b.x-g.x,dy=b.y+1.05-g.y,dz=b.z-g.z,dist=Math.hypot(dx,dy,dz);if(dist>radius||segmentFirstWorldOcclusionT(g.x,g.y,g.z,b.x,b.y+1.05,b.z)!=null)continue;const power=clamp(1-dist/radius,0,1);if(power<.05)continue;b.flashUntil=Math.max(finiteNumber(b.flashUntil,0),now+550+power*2600);b.flashSpin=(Math.random()<.5?-1:1)*(1.5+Math.random()*2.5);}
+    for(const b of this.bots){if(b.hp<=0)continue;const dx=b.x-g.x,dy=b.y+1.05-g.y,dz=b.z-g.z,dist=Math.hypot(dx,dy,dz);if(dist>radius||!this.world.serverCollision.blastHasLineOfSight(g.x,g.y,g.z,b.x,b.y+1.05,b.z))continue;const power=clamp(1-dist/radius,0,1);if(power<.05)continue;b.flashUntil=Math.max(finiteNumber(b.flashUntil,0),now+550+power*2600);b.flashSpin=(Math.random()<.5?-1:1)*(1.5+Math.random()*2.5);}
   }
-  explodeSticky(g,now,settings){
-    const radius=STICKY_RADIUS,maxDamage=STICKY_MAX_DAMAGE;
+  detonateSmoke(g,now){
+    const cloud={id:g.id,x:g.x,y:g.y+.65,z:g.z,radius:SMOKE_RADIUS,expiresAt:now+SMOKE_DURATION_MS};this.smokeClouds.set(g.id,cloud);this.broadcast({t:'smokeDetonate',...cloud});
+  }
+  blastDamage(maxDamage,distance,radius,edgeScale=.18,innerScale=.30){
+    const max=Math.max(1,finiteNumber(maxDamage,1)),r=Math.max(.1,finiteNumber(radius,.1)),d=Math.max(0,finiteNumber(distance,0));
+    if(d>=r)return Math.max(1,Math.round(max*Math.max(.05,edgeScale)));
+    const inner=r*Math.max(0,Math.min(.8,innerScale));if(d<=inner)return Math.round(max);
+    const t=clamp((d-inner)/Math.max(.001,r-inner),0,1),scale=1-(1-Math.max(.05,edgeScale))*t;
+    return Math.max(1,Math.round(max*scale));
+  }
+
+  explodeThrowable(g,now,settings){
+    const frag=g.kind==='frag',radius=frag?FRAG_RADIUS:STICKY_RADIUS,maxDamage=frag?FRAG_MAX_DAMAGE:STICKY_MAX_DAMAGE,weapon=frag?'frag':'sticky';
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;const self=p.clientId===g.ownerId;if(!self&&combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,p.clientId,p.team))continue;
-      const dx=p.x-g.x,dz=p.z-g.z,d=Math.hypot(dx,p.y+1-g.y,dz);if(d>radius||segmentFirstWorldOcclusionT(g.x,g.y,g.z,p.x,p.y+1,p.z)!=null)continue;
-      let damage=Math.max(12,Math.round(maxDamage*(1-d/radius)));if(self)damage=Math.round(damage*.72);const n=Math.hypot(dx,dz)||1;this.damageHuman(socket,p,g.ownerId,damage,'sticky',{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});
+      const dx=p.x-g.x,dz=p.z-g.z,d=Math.hypot(dx,p.y+1-g.y,dz);if(d>radius||!this.world.serverCollision.blastHasLineOfSight(g.x,g.y,g.z,p.x,p.y+1,p.z))continue;
+      let damage=this.blastDamage(maxDamage,d,radius,frag?.20:.18,frag?.30:.32);if(self)damage=Math.round(damage*(frag?.68:.72));const n=Math.hypot(dx,dz)||1;this.damageHuman(socket,p,g.ownerId,damage,weapon,{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});
     }
-    for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,b.id,b.team))continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius||segmentFirstWorldOcclusionT(g.x,g.y,g.z,b.x,b.y+1,b.z)!=null)continue;const damage=Math.max(12,Math.round(maxDamage*(1-d/radius))),n=Math.hypot(dx,dz)||1;this.damageBot(b,g.ownerId,damage,'sticky',{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});}
-    this.broadcast({t:'explosion',id:g.id,x:g.x,y:g.y,z:g.z,kind:'sticky',radius});
+    for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,b.id,b.team))continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius||!this.world.serverCollision.blastHasLineOfSight(g.x,g.y,g.z,b.x,b.y+1,b.z))continue;const damage=this.blastDamage(maxDamage,d,radius,frag?.20:.18,frag?.30:.32),n=Math.hypot(dx,dz)||1;this.damageBot(b,g.ownerId,damage,weapon,{x:dx/n*5.4,z:dz/n*5.4,y:3.5},now,g.id,settings,{distance:d});}
+    this.noteExplosion({x:g.x,z:g.z,team:g.ownerTeam,id:g.id,kind:weapon},now);
+    this.broadcast({t:'explosion',id:g.id,x:g.x,y:g.y,z:g.z,kind:weapon,radius});
+  }
+
+
+  explodeProjectile(bullet,now,settings){
+    const radius=Math.max(.1,finiteNumber(bullet.explosionRadius,0)),maxDamage=Math.max(1,finiteNumber(bullet.explosionDamage,0));if(radius<=.1)return;
+    const apply=(target,socket=null,isBot=false)=>{if(!target||target.hp<=0)return;const targetId=target.clientId||target.id,self=targetId===bullet.ownerId;if(!self&&combatantsAreFriendly(matchMode(this.metaCache?.match),bullet.ownerId,bullet.ownerTeam,targetId,target.team))return;const tx=target.x,ty=target.y+1,tz=target.z,dx=tx-bullet.x,dy=ty-bullet.y,dz=tz-bullet.z,d=Math.hypot(dx,dy,dz);if(d>radius||!this.world.serverCollision.blastHasLineOfSight(bullet.x,bullet.y,bullet.z,tx,ty,tz))return;let damage=this.blastDamage(maxDamage,d,radius,bullet.weapon==='rpg'?.22:.20,bullet.weapon==='rpg'?.34:.30);if(self)damage=Math.round(damage*.65);const horizontal=Math.hypot(dx,dz)||1,knockback={x:dx/horizontal*6.2,z:dz/horizontal*6.2,y:3.8};if(isBot)this.damageBot(target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d});else this.damageHuman(socket,target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d});};
+    for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;apply(p,socket,false);}for(const bot of this.bots)apply(bot,null,true);
+    this.noteExplosion({x:bullet.x,z:bullet.z,team:bullet.ownerTeam,id:bullet.id,kind:bullet.weapon},now);
+    this.broadcast({t:'explosion',id:bullet.id,x:bullet.x,y:bullet.y,z:bullet.z,kind:bullet.weapon,radius});
+  }
+
+  applyRpgWander(bullet,at){
+    if(bullet?.weapon!=='rpg'||!(bullet.rpgBaseSpeed>0))return;
+    const age=Math.max(0,(at-bullet.born)/1000),ramp=clamp((age-.08)/.32,0,1),phase=finiteNumber(bullet.rpgWanderPhase,0);
+    // Very small motor/fin wander, intentionally below the weapon's accuracy
+    // cone. The rocket visibly hunts a little in flight without turning into
+    // random bloom or disconnecting the reticle from the shot.
+    const yawOffset=ramp*(Math.sin(age*5.7+phase)*.0062+Math.sin(age*2.4+phase*1.61)*.0023),pitchOffset=ramp*(Math.sin(age*4.4+phase*.73)*.0027);
+    const yaw=finiteNumber(bullet.rpgBaseYaw,0)+yawOffset,pitch=clamp(finiteNumber(bullet.rpgBasePitch,0)+pitchOffset,-1.35,1.35),cp=Math.cos(pitch),speed=bullet.rpgBaseSpeed;
+    bullet.vx=-Math.sin(yaw)*cp*speed;bullet.vy=Math.sin(pitch)*speed;bullet.vz=-Math.cos(yaw)*cp*speed;
   }
 
   stepBullets(now, settings) {
@@ -1937,8 +2368,10 @@ export class GameRoom {
       while (remaining > 1e-8 && !ended) {
         const step = Math.min(maxStepSeconds, remaining);
         remaining -= step;
+        const segmentAt=targetAt-remaining*1000;this.applyRpgWander(bullet,segmentAt);
+        const gravity=Math.max(0,finiteNumber(bullet.gravity,0));
         const segmentEndX = bullet.x + bullet.vx * step;
-        const segmentEndY = bullet.y + bullet.vy * step;
+        const segmentEndY = bullet.y + bullet.vy * step - .5*gravity*step*step;
         const segmentEndZ = bullet.z + bullet.vz * step;
 
         // Swept collision means the server no longer needs the legacy 24 cm
@@ -1955,10 +2388,10 @@ export class GameRoom {
             this.endBullet(id, "world"); ended = true; break;
           }
 
-          const worldT = segmentFirstWorldHitT(previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
+          const worldT = this.world.serverCollision.segmentFirstWorldHitT(previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
           let nearest = null;
           const consider = (kind, target, socket = null) => {
-            const hit = projectileSegmentHitZone(target,previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
+            const collisionTarget=this.combatPoseAt(target,segmentAt-finiteNumber(bullet.targetRewindMs,0)),hit=this.world.serverCollision.projectileSegmentHitZone(collisionTarget,previousX,previousY,previousZ,segmentEndX,segmentEndY,segmentEndZ);
             if (!hit || bullet.hitTargets.has(target.clientId || target.id)) return;
             if (!nearest || hit.t < nearest.hit.t) nearest = { kind, target, socket, hit };
           };
@@ -1975,8 +2408,8 @@ export class GameRoom {
           const targetFirst = nearest && (worldT == null || nearest.hit.t < worldT - 1e-6);
           if (!targetFirst) {
             if (worldT != null) {
-              bullet.x=previousX+(segmentEndX-previousX)*worldT;bullet.y=previousY+(segmentEndY-previousY)*worldT;bullet.z=previousZ+(segmentEndZ-previousZ)*worldT;
-              bullet.traveledDistance+=segmentDistance*worldT;
+              bullet.x=previousX+(segmentEndX-previousX)*worldT;bullet.y=previousY+(segmentEndY-previousY)*worldT;bullet.z=previousZ+(segmentEndZ-previousZ)*worldT;bullet.traveledDistance+=segmentDistance*worldT;
+              if(bullet.explosionRadius>0)this.explodeProjectile(bullet,now,settings);
               this.endBullet(id, "world"); ended = true; break;
             }
             bullet.x=segmentEndX;bullet.y=segmentEndY;bullet.z=segmentEndZ;bullet.traveledDistance+=segmentDistance;
@@ -1988,22 +2421,29 @@ export class GameRoom {
           bullet.x=previousX+(segmentEndX-previousX)*impactT;bullet.y=previousY+(segmentEndY-previousY)*impactT;bullet.z=previousZ+(segmentEndZ-previousZ)*impactT;
           bullet.traveledDistance+=segmentDistance*impactT;
           const target=nearest.target,targetId=target.clientId||target.id;
-          bullet.hitTargets.add(targetId);
-          const horizontal = Math.hypot(bullet.vx, bullet.vz) || 1;
-          const targetHpBefore = Math.max(1, finiteNumber(target.hp, 100));
-          const baseDamage = bullet.weapon === "sniper" ? Math.max(1, bullet.penetrationPower) : bullet.damage;
-          const headshot = nearest.hit.zone === "head";
-          const hitDamage = weaponDamageAtDistance(bullet.weapon,baseDamage,bullet.traveledDistance,headshot);
-          const knockback={x:bullet.vx/horizontal*2.4,z:bullet.vz/horizontal*2.4,y:headshot?1.45:1.1};
-          let applied=true;
-          if(nearest.kind==='human')applied=this.damageHuman(nearest.socket,target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,distance:bullet.traveledDistance});
-          else this.damageBot(target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,distance:bullet.traveledDistance});
-
-          if(!applied || bullet.weapon !== 'sniper'){
-            this.endBullet(id,applied?'hit':'blocked');ended=true;break;
+          if(bullet.explosionRadius>0){
+            // Launchers retain a small direct-impact component, then resolve the
+            // authoritative splash at the exact contact point. This keeps the
+            // admin Damage control meaningful without turning splash into a
+            // client-side special case.
+            const horizontal=Math.hypot(bullet.vx,bullet.vz)||1,directDamage=Math.max(0,finiteNumber(bullet.damage,0));
+            if(directDamage>0){const knockback={x:bullet.vx/horizontal*2.2,z:bullet.vz/horizontal*2.2,y:1.4};if(nearest.kind==='human')this.damageHuman(nearest.socket,target,bullet.ownerId,directDamage,bullet.weapon,knockback,now,bullet.id,settings,{distance:bullet.traveledDistance,directImpact:true});else this.damageBot(target,bullet.ownerId,directDamage,bullet.weapon,knockback,now,bullet.id,settings,{distance:bullet.traveledDistance,directImpact:true});}
+            this.explodeProjectile(bullet,now,settings);this.endBullet(id,'hit');ended=true;break;
           }
-          bullet.penetrationPower=Math.max(0,bullet.penetrationPower-targetHpBefore);
-          if(bullet.penetrationPower<=0){this.endBullet(id,'spent');ended=true;break;}
+          bullet.hitTargets.add(targetId);
+          const horizontal = Math.hypot(bullet.vx, bullet.vz) || 1,energy=clamp(finiteNumber(bullet.penetrationEnergy,1),0,1),hitZone=String(nearest.hit.zone||'upper');
+          const zoneScale=weaponZoneDamageScale(bullet.weapon,hitZone),baseDamage=Math.max(0,finiteNumber(bullet.damage,0))*energy*zoneScale,headshot=hitZone === 'head',hitDamage=weaponDamageAtDistance(bullet.weapon,baseDamage,bullet.traveledDistance,headshot);
+          const knockback={x:bullet.vx/horizontal*2.4*energy,z:bullet.vz/horizontal*2.4*energy,y:(headshot?1.45:1.1)*Math.max(.35,energy)};
+          if(nearest.kind==='human')this.damageHuman(nearest.socket,target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy});
+          else this.damageBot(target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy});
+
+          // Every firearm uses the same player-penetration model. Energy loss is
+          // determined by the weapon, never by the victim's remaining HP. World
+          // geometry still hard-stops projectiles; material penetration is a
+          // separate feature and intentionally remains disabled here.
+          const retention=clamp(finiteNumber(WEAPON_SPECS[bullet.weapon]?.playerPenetrationRetention,0),0,1);
+          bullet.penetrationEnergy=energy*retention;
+          if(retention<=0||bullet.penetrationEnergy<MIN_PLAYER_PENETRATION_ENERGY){this.endBullet(id,'spent');ended=true;break;}
 
           // Advance a couple of millimeters beyond the actor surface before
           // looking for the next target/world hit in this same coarse segment.
@@ -2013,8 +2453,12 @@ export class GameRoom {
           bullet.traveledDistance+=epsilonDistance;
           if(epsilonT>=1)segmentDone=true;
         }
+        if(!ended&&gravity>0)bullet.vy-=gravity*step;
       }
 
+      if(!ended&&bullet.explosionRadius>0&&now-bullet.lastBroadcast>=EXPLOSIVE_PROJECTILE_BROADCAST_MS){
+        bullet.lastBroadcast=now;this.broadcast({t:'projectileState',id:bullet.id,weapon:bullet.weapon,x:bullet.x,y:bullet.y,z:bullet.z,vx:bullet.vx,vy:bullet.vy,vz:bullet.vz,gravity:bullet.gravity,at:now});
+      }
       if (!ended && now >= lifeEnd) this.endBullet(id, "expired");
     }
   }
@@ -2047,6 +2491,7 @@ export class GameRoom {
   }
 
   damageHuman(socket, target, attackerId, damage, weapon, knockback, now, bulletId = "", settings = DEFAULT_WORLD_SETTINGS, hitMeta = {}) {
+    if(attackerId!==target.clientId&&now<finiteNumber(target.spawnProtectedUntil,0))return false;
     if (target.godMode) {
       this.broadcast({ t: "blocked", attacker: attackerId, target: target.clientId, weapon, bulletId, godMode: true });
       return false;
@@ -2065,10 +2510,15 @@ export class GameRoom {
     if (wasted) {
       this.noteDeath(target,now);
       target.traversal = null;
+      target.spawnProtectedUntil=0;
       target.wastedUntil = now + settings.combat.respawnMs;
       target.deaths = Math.max(0, Math.floor(finiteNumber(target.deaths, 0))) + 1;
       target.multiKillCount = 0;
       target.lastKillAt = 0;
+      // Publish the victim's authoritative death count before awardKill builds
+      // the kill event snapshot. This keeps the scoreboard/KD state in sync
+      // during the death screen instead of correcting only after respawn.
+      socket.serializeAttachment(target);
       multiKill = this.awardKill(attackerId, target.clientId, now);
     }
     const headshot = !!hitMeta.headshot;
@@ -2084,6 +2534,7 @@ export class GameRoom {
   }
 
   damageBot(bot, attackerId, damage, weapon, knockback, now, bulletId = "", settings = DEFAULT_WORLD_SETTINGS, hitMeta = {}) {
+    if(attackerId!==bot.id&&now<finiteNumber(bot.spawnProtectedUntil,0))return false;
     bot.hp = Math.max(0, bot.hp - damage);
     bot.regenAt = now + settings.combat.regenDelayMs;
     const wasted = bot.hp <= 0;
@@ -2091,6 +2542,7 @@ export class GameRoom {
     if (wasted) {
       this.noteDeath(bot,now);
       bot.traversal = null;
+      bot.spawnProtectedUntil=0;
       bot.wastedUntil = now + settings.combat.respawnMs;
       bot.deaths = Math.max(0, Math.floor(finiteNumber(bot.deaths, 0))) + 1;
       bot.multiKillCount = 0;
@@ -2129,7 +2581,7 @@ export class GameRoom {
     const attacker = this.findCombatant(attackerId);
     const victim = this.findCombatant(victimId);
     return {
-      t: "kill", at: now, weapon: weapon === "sticky" ? "sticky" : safeWeapon(weapon), attacker, victim,
+      t: "kill", at: now, weapon: (weapon === "sticky" || weapon === "frag") ? weapon : safeWeapon(weapon), attacker, victim,
       headshot: !!meta.headshot, distance: Math.max(0, finiteNumber(meta.distance, 0)),
       multiKill: Math.max(0, Math.floor(finiteNumber(meta.multiKill, 0))),
     };
@@ -2275,6 +2727,7 @@ export class GameRoom {
           blueBots: (this.bots || []).filter((bot) => safeTeam(bot.team) === "blue").length,
           redBots: (this.bots || []).filter((bot) => safeTeam(bot.team) === "red").length,
           botDifficulty: safeBotDifficulty(meta.botDifficulty),
+          mapId: normalizeMapId(meta.mapId),
           mode: matchMode(match),
           blue,
           red,
