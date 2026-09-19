@@ -11,24 +11,15 @@ export const STATIC_BOXES = [
   // turning the arena into corridors or sealing off flanking routes.
   {x:-86,z:-6,w:3,d:8,h:1.85},{x:-42,z:-84,w:8,d:3,h:1.70},{x:0,z:-88,w:3,d:8,h:1.85},{x:44,z:-80,w:8,d:3,h:1.70},
   {x:86,z:8,w:3,d:8,h:1.85},{x:42,z:84,w:8,d:3,h:1.70},{x:0,z:88,w:3,d:8,h:1.85},{x:-44,z:80,w:8,d:3,h:1.70},
-  {x:-34,z:8,w:6,d:2.6,h:1.60},{x:34,z:-8,w:6,d:2.6,h:1.60},
-  // Authored combat-space props. Their box footprints are authoritative for movement/projectiles;
-  // the client renders richer compound models for recognizable silhouettes.
-  {x:-18,z:66,w:4.4,d:2.0,h:1.35,kind:'burntCar'},
-  {x:74,z:-64,w:2.5,d:10.5,h:2.95,kind:'burntBus'},
-  {x:20,z:12,w:8.0,d:.70,h:2.15,kind:'brokenWall'},
-  {x:56,z:58,w:6.5,d:1.10,h:1.20,kind:'sandbag'},
-  {x:-76,z:-6,w:3.4,d:2.2,h:1.45,kind:'dumpster'},
-  {x:5,z:70,w:4.6,d:3.2,h:2.45,kind:'checkpoint'}
-
+  {x:-34,z:8,w:6,d:2.6,h:1.60},{x:34,z:-8,w:6,d:2.6,h:1.60}
 ];
 
 export const BUILDINGS = [
-  {x:-8,z:28,w:18,d:14,floorH:3.25,balcony:4.2,levels:2,style:'plaster'},
-  {x:63,z:-54,w:16,d:12,floorH:3.15,balcony:3.8,levels:2,style:'brick'},
-  {x:-70,z:42,w:14,d:11,floorH:3.05,balcony:3.4,levels:2,style:'stone'},
-  {x:68,z:38,w:20,d:16,floorH:3.15,balcony:4.0,levels:4,tall:true,style:'office'},
-  {x:-62,z:-38,w:18,d:14,floorH:3.10,balcony:3.8,levels:5,tall:true,style:'industrial'}
+  {x:-8,z:28,w:18,d:14,floorH:3.25,balcony:4.2,levels:2},
+  {x:63,z:-54,w:16,d:12,floorH:3.15,balcony:3.8,levels:2},
+  {x:-70,z:42,w:14,d:11,floorH:3.05,balcony:3.4,levels:2},
+  {x:68,z:38,w:20,d:16,floorH:3.15,balcony:4.0,levels:4,tall:true},
+  {x:-62,z:-38,w:18,d:14,floorH:3.10,balcony:3.8,levels:5,tall:true}
 ];
 
 export const PYRAMIDS = [
@@ -126,10 +117,6 @@ export function terrainHeight(x,z){
   if(fx+fz<=1)return a+fx*(b-a)+fz*(c-a);
   return d+(1-fx)*(c-d)+(1-fz)*(b-d);
 }
-
-// Standalone ladder anchors. Ladders are non-solid interaction volumes; the wall/roof
-// remains authoritative collision, while ladder mount/climb/dismount is validated separately.
-export const LADDERS = Object.freeze([Object.freeze({id:'highlands-west-roof',x:-17.08,z:28,nx:-1,nz:0,tx:0,tz:1,width:1.20,bottomY:terrainHeight(-18.0,28),topY:terrainHeight(-8,28)+6.50})]);
 
 export function terrainMinAround(x,z,r){
   let min=terrainHeight(x,z);
@@ -253,7 +240,7 @@ export function makeBuildingGeometry(b){
     const openings=buildingWallOpenings(b,level,side);
     for(const cell of splitWall(b.w,b.floorH,openings)){
       const x=b.x+cell.u,bottomY=base+level*b.floorH+cell.y,topY=bottomY+cell.h+.015;
-      addBox(parts,'wall',x,z,cell.w+.015,t,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep,traversal:cell.crouchStep?'vault':'mantle'});
+      addBox(parts,'wall',x,z,cell.w+.015,t,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep,traversal:cell.crouchStep?'vault':''});
       if(cell.crouchStep)supports.push({type:'rect',x,z,w:cell.w+.015,d:t,y:topY,role:'windowSill',crouchStep:true});
     }
     for(const opening of openings)addFrameX(parts,b,z+(side==='front'?-.012:.012),base,level,opening);
@@ -262,7 +249,7 @@ export function makeBuildingGeometry(b){
     const openings=buildingWallOpenings(b,level,side);
     for(const cell of splitWall(b.d,b.floorH,openings)){
       const z=b.z+cell.u,bottomY=base+level*b.floorH+cell.y,topY=bottomY+cell.h+.015;
-      addBox(parts,'wall',x,z,t,cell.w+.015,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep,traversal:cell.crouchStep?'vault':'mantle'});
+      addBox(parts,'wall',x,z,t,cell.w+.015,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep,traversal:cell.crouchStep?'vault':''});
       if(cell.crouchStep)supports.push({type:'rect',x,z,w:t,d:cell.w+.015,y:topY,role:'windowSill',crouchStep:true});
     }
     for(const opening of openings)addFrameZ(parts,b,x+(side==='left'?-.012:.012),base,level,opening);
@@ -337,29 +324,6 @@ export const BUILDING_HORIZONTAL_SOLIDS = BUILDING_GEOMETRY.flatMap(g=>g.horizon
 export const BUILDING_PLAYER_RAMPS = BUILDING_GEOMETRY.flatMap(g=>g.playerRamps);
 export const BUILDING_PARTS = BUILDING_GEOMETRY.flatMap(g=>g.parts);
 
-export const BUILDING_WINDOW_PORTALS = Object.freeze(BUILDINGS.flatMap((b,buildingIndex)=>{
-  const base=terrainHeight(b.x,b.z),plan=buildingPlan(b),levels=Math.max(2,Math.min(6,Math.floor(b.levels||2))),portals=[];
-  const sides=[
-    {side:'front',nx:0,nz:-1,tx:1,tz:0,x:b.x,z:b.z-b.d/2+plan.wallT/2},
-    {side:'back',nx:0,nz:1,tx:1,tz:0,x:b.x,z:b.z+b.d/2-plan.wallT/2},
-    {side:'left',nx:-1,nz:0,tx:0,tz:1,x:b.x-b.w/2+plan.wallT/2,z:b.z},
-    {side:'right',nx:1,nz:0,tx:0,tz:1,x:b.x+b.w/2-plan.wallT/2,z:b.z},
-  ];
-  for(let level=0;level<levels;level++)for(const face of sides){
-    for(const opening of buildingWallOpenings(b,level,face.side)){
-      if(opening.kind!=='window')continue;
-      const cx=face.x+face.tx*opening.u,cz=face.z+face.tz*opening.u,floorY=base+level*b.floorH;
-      portals.push(Object.freeze({
-        id:`b${buildingIndex}-l${level}-${face.side}-${Math.round(opening.u*1000)}`,
-        buildingIndex,level,side:face.side,cx,cz,nx:face.nx,nz:face.nz,tx:face.tx,tz:face.tz,
-        width:opening.w,halfWidth:opening.w/2,wallThickness:plan.wallT,floorY,
-        bottomY:floorY+opening.bottom,topY:floorY+opening.top,
-      }));
-    }
-  }
-  return portals;
-}));
-
 export const STATIC_SUPPORTS = STATIC_BOXES.map(o=>({type:'rect',x:o.x,z:o.z,w:o.w,d:o.d,y:terrainHeight(o.x,o.z)+o.h}));
 
 
@@ -399,8 +363,8 @@ function circleTouchesRect(x,z,r,minX,maxX,minZ,maxZ){
   return dx*dx+dz*dz<=r*r;
 }
 
-function surfaceHeightAt(surface,x,z,radius=PLAYER_RADIUS,contactRadius=SUPPORT_CONTACT_RADIUS){
-  const r=Math.max(0,Number(radius)||0),contact=Math.min(r,Math.max(0,Number(contactRadius)||0));
+function surfaceHeightAt(surface,x,z,radius=PLAYER_RADIUS){
+  const r=Math.max(0,Number(radius)||0),contact=Math.min(r,SUPPORT_CONTACT_RADIUS);
   if(surface.type==='rect'){
     const minX=surface.x-surface.w/2,maxX=surface.x+surface.w/2,minZ=surface.z-surface.d/2,maxZ=surface.z+surface.d/2;
     // Feet need meaningful contact with a flat surface. Using the whole player
@@ -412,13 +376,7 @@ function surfaceHeightAt(surface,x,z,radius=PLAYER_RADIUS,contactRadius=SUPPORT_
   if(surface.type==='round')return Math.hypot(x-surface.x,z-surface.z)<=Math.max(0,surface.r-r)?surface.y:null;
   if(surface.type==='ramp'){
     const lo=Math.min(surface.x1,surface.x2),hi=Math.max(surface.x1,surface.x2),minZ=surface.z-surface.w/2,maxZ=surface.z+surface.w/2;
-    // Ramps are walkable collision proxies for stairs/slopes. Their blocker uses
-    // the full capsule footprint, so support must use that same footprint too.
-    // Using the tiny flat-floor contact radius here created an invisible lip at
-    // ramp sides: the capsule touched the ramp before its feet were considered
-    // supported, allowing brief penetration/stickiness near stair edges.
-    const rampContact=Math.max(contact,r);
-    if(!circleTouchesRect(x,z,rampContact,lo,hi,minZ,maxZ))return null;
+    if(!circleTouchesRect(x,z,contact,lo,hi,minZ,maxZ))return null;
     const sx=clamp(x,lo,hi),span=surface.x2-surface.x1,t=Math.abs(span)>1e-9?(sx-surface.x1)/span:0;
     return surface.y0+(surface.y1-surface.y0)*t;
   }
@@ -438,25 +396,6 @@ export function worldSupportHeight(x,z,currentY=terrainHeight(x,z),allowCrouchSt
     const surfaceLimit=currentY+(surface.crouchStep&&allowCrouchStep?CROUCH_WINDOW_STEP_HEIGHT:MAX_STEP_HEIGHT);
     if(y<=surfaceLimit&&y>best)best=y;
   }
-  return best;
-}
-
-// Support query used only after horizontal collision. Unlike ordinary ground
-// support, this uses most of the capsule radius so a walkable landing is found
-// before its vertical edge catches the body. It never raises the player by more
-// than maxStepHeight and therefore cannot auto-climb window sills, rails or walls.
-export function worldStepUpHeight(x,z,currentY,maxStepHeight=MAX_STEP_HEIGHT,playerRadius=PLAYER_RADIUS){
-  const py=Number(currentY),limit=py+Math.max(0,Number(maxStepHeight)||0),contact=Math.max(SUPPORT_CONTACT_RADIUS,Math.max(0,Number(playerRadius)||PLAYER_RADIUS));
-  if(!Number.isFinite(py))return null;
-  let best=null;
-  const consider=(surface,allow=false)=>{
-    const y=surfaceHeightAt(surface,x,z,playerRadius,contact);if(y==null||y<=py+.015||y>limit+.001)return;
-    if(surface.crouchStep&&!allow)return;
-    if(best==null||y>best)best=y;
-  };
-  for(const surface of STATIC_SUPPORTS)consider(surface);
-  for(const surface of NATURAL_SUPPORTS)consider(surface);
-  for(const surface of BUILDING_SUPPORTS)consider(surface,false);
   return best;
 }
 

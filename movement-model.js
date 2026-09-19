@@ -32,8 +32,7 @@ export function advanceKnockback(xVelocity, zVelocity, dt) {
 }
 
 export function sweepHorizontalMovement({
-  x, y, z, dx, dz, grounded, arenaLimit, followDrop, supportHeight, blockedAt,
-  stepUpHeight, maxStepHeight = 0.62, stepDistance = 0.12,
+  x, y, z, dx, dz, grounded, arenaLimit, followDrop, supportHeight, blockedAt, stepDistance = 0.16,
 }) {
   let px = Number.isFinite(Number(x)) ? Number(x) : 0;
   let py = Number.isFinite(Number(y)) ? Number(y) : 0;
@@ -41,86 +40,49 @@ export function sweepHorizontalMovement({
   let followsSupport = !!grounded;
   const limit = Math.max(0, Number(arenaLimit) || 0);
   const drop = Math.max(0, Number(followDrop) || 0);
-  const climb = Math.max(0, Number(maxStepHeight) || 0);
-  const maxStep = Math.max(0.02, Number(stepDistance) || 0.12);
+  const maxStep = Math.max(0.01, Number(stepDistance) || 0.16);
   const sxTotal = Number.isFinite(Number(dx)) ? Number(dx) : 0;
   const szTotal = Number.isFinite(Number(dz)) ? Number(dz) : 0;
   const support = typeof supportHeight === 'function' ? supportHeight : (() => py);
   const blocked = typeof blockedAt === 'function' ? blockedAt : (() => false);
-  const stepUp = typeof stepUpHeight === 'function' ? stepUpHeight : null;
 
   const followGround = () => {
     if (!followsSupport) return;
     const next = support(px, pz, py);
-    if (!Number.isFinite(next)) return;
-    if (next >= py - drop && next <= py + climb + 0.001) py = next;
-    else if (next < py - drop) followsSupport = false;
+    if (next >= py - drop) py = next;
+    else followsSupport = false;
   };
-
-  const supportYFor = (nextX, nextZ) => {
+  const stepY = (nextX, nextZ) => {
     if (!followsSupport) return py;
     const next = support(nextX, nextZ, py);
-    if (!Number.isFinite(next)) return py;
-    // Validate the pose at the height it will actually occupy. Previously small
-    // downhill changes were applied only after horizontal collision succeeded,
-    // so the follow-ground snap could lower the capsule into a bush, rail or
-    // other low blocker without that final pose ever being tested.
-    if (next >= py - drop && next <= py + climb + 0.001) return next > py ? Math.min(next, py + climb) : next;
-    return py;
-  };
-
-  // Conventional FPS character-controller step-up. A floor/landing can touch the
-  // capsule before the feet-center reaches its support polygon. If the obstacle
-  // top is within step height, test the same horizontal move at the elevated feet
-  // position instead of treating the landing's vertical edge as an impassable wall.
-  const tryStepUp = (nextX, nextZ, fromX, fromZ) => {
-    if (!followsSupport || !stepUp || climb <= 0) return null;
-    const candidate = Number(stepUp(nextX, nextZ, py, climb));
-    if (!Number.isFinite(candidate) || candidate <= py + 0.015 || candidate > py + climb + 0.001) return null;
-    if (blocked(nextX, nextZ, candidate, fromX, fromZ, py)) return null;
-    return candidate;
-  };
-
-  const attempt = (nextX, nextZ, fromX, fromZ) => {
-    nextX = Math.max(-limit, Math.min(limit, nextX));
-    nextZ = Math.max(-limit, Math.min(limit, nextZ));
-    let targetY = supportYFor(nextX, nextZ);
-    if (blocked(nextX, nextZ, targetY, fromX, fromZ, py)) {
-      const steppedY = tryStepUp(nextX, nextZ, fromX, fromZ);
-      if (steppedY == null) return false;
-      targetY = steppedY;
-    }
-    px = nextX; pz = nextZ; py = targetY;
-    followGround();
-    return true;
+    return next > py ? next : py;
   };
 
   const distance = Math.hypot(sxTotal, szTotal);
   const steps = Math.max(1, Math.ceil(distance / maxStep));
   const sx = sxTotal / steps, sz = szTotal / steps;
   let blockedAny = false;
-
   for (let i = 0; i < steps; i += 1) {
-    const fromX = px, fromZ = pz;
-    // Try the intended vector first. If a corner blocks it, fall back to axis
-    // slides so the capsule glides along walls instead of catching on corners.
-    if (attempt(px + sx, pz + sz, fromX, fromZ)) continue;
-
-    blockedAny = true;
-    const xFirst = Math.abs(sx) >= Math.abs(sz);
-    let moved = false;
-    if (xFirst) {
-      if (Math.abs(sx) > 1e-9) moved = attempt(px + sx, pz, px, pz) || moved;
-      if (Math.abs(sz) > 1e-9) moved = attempt(px, pz + sz, px, pz) || moved;
-    } else {
-      if (Math.abs(sz) > 1e-9) moved = attempt(px, pz + sz, px, pz) || moved;
-      if (Math.abs(sx) > 1e-9) moved = attempt(px + sx, pz, px, pz) || moved;
+    if(Math.abs(sx)>1e-9){
+      const fromX = px, fromZ = pz;
+      const nextX = Math.max(-limit, Math.min(limit, px + sx));
+      const nextXY = stepY(nextX, pz);
+      if (!blocked(nextX, pz, nextXY, fromX, fromZ)) { px = nextX; py = nextXY; } else blockedAny = true;
+      followGround();
     }
-    if (!moved) followGround();
+
+    if(Math.abs(sz)>1e-9){
+      const beforeZx = px, beforeZz = pz;
+      const nextZ = Math.max(-limit, Math.min(limit, pz + sz));
+      const nextZY = stepY(px, nextZ);
+      if (!blocked(px, nextZ, nextZY, beforeZx, beforeZz)) { pz = nextZ; py = nextZY; } else blockedAny = true;
+      followGround();
+    }
   }
 
   return { x:px, y:py, z:pz, grounded:followsSupport, blocked:blockedAny };
 }
+
 
 
 export function createTraversalPlan(candidate, startX, startY, startZ, startedAt, seq=0) {
@@ -132,11 +94,9 @@ export function createTraversalPlan(candidate, startX, startY, startZ, startedAt
   const distance=Math.hypot(ex-sx,ez-sz),rise=Math.max(0,ey-sy);
   const durationMs=mode==='vault'?Math.round(Math.max(300,Math.min(430,300+distance*34))):Math.round(Math.max(380,Math.min(540,390+rise*72+distance*24)));
   return {
-    seq:Math.max(0,Math.floor(Number(seq)||0)),mode,role:String(candidate.role||''),portalId:String(candidate.portalId||''),
+    seq:Math.max(0,Math.floor(Number(seq)||0)),mode,role:String(candidate.role||''),
     startX:sx,startY:sy,startZ:sz,endX:ex,endY:ey,endZ:ez,
     peakY:Math.max(Number(candidate.peakY)||ey,ey+.08),startedAt:Number(startedAt)||0,durationMs,
-    endGrounded:candidate.endGrounded!==false,exitVelocityY:Number.isFinite(Number(candidate.exitVelocityY))?Number(candidate.exitVelocityY):0,
-    viewMaxY:candidate.viewMaxY!=null&&Number.isFinite(Number(candidate.viewMaxY))?Number(candidate.viewMaxY):null,
   };
 }
 
@@ -147,11 +107,7 @@ export function traversalPose(plan, now) {
   const duration=Math.max(1,Number(plan.durationMs)||1),raw=(Number(now)-Number(plan.startedAt))/duration,p=Math.max(0,Math.min(1,raw));
   const eased=smooth01(p),sx=Number(plan.startX)||0,sy=Number(plan.startY)||0,sz=Number(plan.startZ)||0,ex=Number(plan.endX)||0,ey=Number(plan.endY)||0,ez=Number(plan.endZ)||0;
   let x,z,y;
-  if(plan.mode==='vault'&&plan.role==='window'){
-    const lift=smooth01(Math.min(1,p/.34)),cross=smooth01(Math.max(0,Math.min(1,(p-.18)/.64))),settle=smooth01(Math.max(0,(p-.72)/.28));
-    const clearanceY=Math.max(Number(plan.peakY)||sy,sy,ey);
-    x=sx+(ex-sx)*cross;z=sz+(ez-sz)*cross;y=sy+(clearanceY-sy)*lift+(ey-clearanceY)*settle;
-  }else if(plan.mode==='vault'){
+  if(plan.mode==='vault'){
     x=sx+(ex-sx)*eased;z=sz+(ez-sz)*eased;
     const base=sy+(ey-sy)*eased,peak=Math.max(Number(plan.peakY)||base,sy,ey);
     y=base+Math.sin(Math.PI*p)*Math.max(0,peak-(sy+ey)*.5);
@@ -174,41 +130,4 @@ export function tacticalThrowVelocity(yaw, pitch, speed, loft) {
   const fx = -Math.sin(throwYaw) * cp;
   const fz = -Math.cos(throwYaw) * cp;
   return { yaw:throwYaw, pitch:throwPitch, fx, fz, vx:fx*throwSpeed, vy:Math.sin(throwPitch)*throwSpeed+throwLoft, vz:fz*throwSpeed };
-}
-
-
-export const LADDER_CLIMB_SPEED = 3.15;
-export const LADDER_ATTACH_MIN_NORMAL = 0.16;
-export const LADDER_ATTACH_MAX_NORMAL = 0.88;
-export const LADDER_TOP_ATTACH_MAX_NORMAL = 0.92;
-
-export function ladderById(ladders,id){return (Array.isArray(ladders)?ladders:[]).find(ladder=>String(ladder?.id||'')===String(id||''))||null;}
-export function ladderClimbPoint(ladder,radius=0.34){const r=Math.max(.05,Number(radius)||.34);return{x:Number(ladder.x)+Number(ladder.nx)*(r+.08),z:Number(ladder.z)+Number(ladder.nz)*(r+.08)};}
-export function ladderBottomExitPoint(ladder,radius=0.34){const r=Math.max(.05,Number(radius)||.34);return{x:Number(ladder.x)+Number(ladder.nx)*(r+.34),y:Number(ladder.bottomY),z:Number(ladder.z)+Number(ladder.nz)*(r+.34)};}
-export function ladderTopExitPoint(ladder,radius=0.34){const r=Math.max(.05,Number(radius)||.34);return{x:Number(ladder.x)-Number(ladder.nx)*(r+.32),y:Number(ladder.topY),z:Number(ladder.z)-Number(ladder.nz)*(r+.32)};}
-export function findLadderEntry({ladders,x,y,z,dirX,dirZ,faceX=null,faceZ=null,radius=.34,grounded=true}={}){
-  if(!grounded||!Array.isArray(ladders)||!ladders.length)return null;
-  const px=Number(x),py=Number(y),pz=Number(z),r=Math.max(.05,Number(radius)||.34);let dx=Number(dirX)||0,dz=Number(dirZ)||0;const len=Math.hypot(dx,dz);
-  if(!Number.isFinite(px)||!Number.isFinite(py)||!Number.isFinite(pz)||len<.25)return null;dx/=len;dz/=len;
-  let fx=Number(faceX),fz=Number(faceZ),faceLen=Math.hypot(fx,fz),hasFacing=Number.isFinite(fx)&&Number.isFinite(fz)&&faceLen>.20;if(hasFacing){fx/=faceLen;fz/=faceLen;}
-  let best=null;
-  for(const ladder of ladders){
-    const nx=Number(ladder.nx)||0,nz=Number(ladder.nz)||0,tx=Number(ladder.tx)||0,tz=Number(ladder.tz)||0,width=Math.max(.5,Number(ladder.width)||1),bottomY=Number(ladder.bottomY),topY=Number(ladder.topY);
-    if(!Number.isFinite(bottomY)||!Number.isFinite(topY)||topY<=bottomY+.5)continue;
-    const relX=px-Number(ladder.x),relZ=pz-Number(ladder.z),normal=relX*nx+relZ*nz,lateral=relX*tx+relZ*tz,approach=dx*nx+dz*nz,faceNormal=hasFacing?fx*nx+fz*nz:0;
-    if(Math.abs(lateral)>width/2+r*.14)continue;
-    if(Math.abs(py-bottomY)<=.42&&normal>=LADDER_ATTACH_MIN_NORMAL&&normal<=LADDER_ATTACH_MAX_NORMAL&&approach<-.38&&(!hasFacing||faceNormal<-.18)){
-      const cp=ladderClimbPoint(ladder,r),score=Math.abs(normal-(r+.08))+Math.abs(lateral)*.35;
-      const candidate={ladderId:String(ladder.id),entry:'bottom',attachX:cp.x,attachY:bottomY,attachZ:cp.z,score};if(!best||score<best.score)best=candidate;
-    }
-    if(Math.abs(py-topY)<=.42&&normal<=-.10&&normal>=-LADDER_TOP_ATTACH_MAX_NORMAL&&approach>.38&&(!hasFacing||faceNormal>.18)){
-      const cp=ladderClimbPoint(ladder,r),score=Math.abs(normal+.35)+Math.abs(lateral)*.35;
-      const candidate={ladderId:String(ladder.id),entry:'top',attachX:cp.x,attachY:topY-.10,attachZ:cp.z,score};if(!best||score<best.score)best=candidate;
-    }
-  }
-  return best;
-}
-export function ladderClimbStep(ladder,y,input,dt){
-  const low=Number(ladder?.bottomY),high=Number(ladder?.topY)-.10,current=Number(y);if(!Number.isFinite(low)||!Number.isFinite(high)||!Number.isFinite(current))return current;
-  const step=Math.max(0,Math.min(.15,Number(dt)||0)),amount=Math.max(-1,Math.min(1,Number(input)||0));return Math.max(low,Math.min(high,current+amount*LADDER_CLIMB_SPEED*step));
 }
