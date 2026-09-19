@@ -60,7 +60,13 @@ export function sweepHorizontalMovement({
   const supportYFor = (nextX, nextZ) => {
     if (!followsSupport) return py;
     const next = support(nextX, nextZ, py);
-    return Number.isFinite(next) && next > py ? Math.min(next, py + climb) : py;
+    if (!Number.isFinite(next)) return py;
+    // Validate the pose at the height it will actually occupy. Previously small
+    // downhill changes were applied only after horizontal collision succeeded,
+    // so the follow-ground snap could lower the capsule into a bush, rail or
+    // other low blocker without that final pose ever being tested.
+    if (next >= py - drop && next <= py + climb + 0.001) return next > py ? Math.min(next, py + climb) : next;
+    return py;
   };
 
   // Conventional FPS character-controller step-up. A floor/landing can touch the
@@ -71,7 +77,7 @@ export function sweepHorizontalMovement({
     if (!followsSupport || !stepUp || climb <= 0) return null;
     const candidate = Number(stepUp(nextX, nextZ, py, climb));
     if (!Number.isFinite(candidate) || candidate <= py + 0.015 || candidate > py + climb + 0.001) return null;
-    if (blocked(nextX, nextZ, candidate, fromX, fromZ)) return null;
+    if (blocked(nextX, nextZ, candidate, fromX, fromZ, py)) return null;
     return candidate;
   };
 
@@ -79,7 +85,7 @@ export function sweepHorizontalMovement({
     nextX = Math.max(-limit, Math.min(limit, nextX));
     nextZ = Math.max(-limit, Math.min(limit, nextZ));
     let targetY = supportYFor(nextX, nextZ);
-    if (blocked(nextX, nextZ, targetY, fromX, fromZ)) {
+    if (blocked(nextX, nextZ, targetY, fromX, fromZ, py)) {
       const steppedY = tryStepUp(nextX, nextZ, fromX, fromZ);
       if (steppedY == null) return false;
       targetY = steppedY;

@@ -412,7 +412,13 @@ function surfaceHeightAt(surface,x,z,radius=PLAYER_RADIUS,contactRadius=SUPPORT_
   if(surface.type==='round')return Math.hypot(x-surface.x,z-surface.z)<=Math.max(0,surface.r-r)?surface.y:null;
   if(surface.type==='ramp'){
     const lo=Math.min(surface.x1,surface.x2),hi=Math.max(surface.x1,surface.x2),minZ=surface.z-surface.w/2,maxZ=surface.z+surface.w/2;
-    if(!circleTouchesRect(x,z,contact,lo,hi,minZ,maxZ))return null;
+    // Ramps are walkable collision proxies for stairs/slopes. Their blocker uses
+    // the full capsule footprint, so support must use that same footprint too.
+    // Using the tiny flat-floor contact radius here created an invisible lip at
+    // ramp sides: the capsule touched the ramp before its feet were considered
+    // supported, allowing brief penetration/stickiness near stair edges.
+    const rampContact=Math.max(contact,r);
+    if(!circleTouchesRect(x,z,rampContact,lo,hi,minZ,maxZ))return null;
     const sx=clamp(x,lo,hi),span=surface.x2-surface.x1,t=Math.abs(span)>1e-9?(sx-surface.x1)/span:0;
     return surface.y0+(surface.y1-surface.y0)*t;
   }
