@@ -24,14 +24,24 @@ import * as DepotWorldCollision from './world-collision-depot.js';
 import * as YardWorldCollision from './world-collision-yard.js';
 import * as RigWorldCollision from './world-collision-rig.js';
 import { BOT_WEAPONS, BOT_DIFFICULTIES, safeBotDifficulty, approachAngle as botApproachAngle, approachValue as botApproachValue, botWeaponRole, chooseVisibleBotTarget, botReactionDelay, botBurstSize, botBurstPause, botEquipmentDelay, botAimNoiseRadians, botAimToleranceRadians } from './bot-ai.js';
+import { CUSTOM_MAP_DEFINITION } from './authored-map-custom.js';
+import { createAuthoredWorldGeometry } from './authored-world-geometry.js';
+import { createAuthoredWorldCollision } from './authored-world-collision.js';
+import { createAuthoredServerCollision } from './authored-server-collision.js';
+import { createAuthoredSpawnDirector } from './authored-spawn-director.js';
 
 const GAME_VERSION = APP_VERSION;
+const CustomGeometry=createAuthoredWorldGeometry(CUSTOM_MAP_DEFINITION);
+const CustomWorldCollision=createAuthoredWorldCollision(CustomGeometry);
+const CustomServerCollision=createAuthoredServerCollision(CustomGeometry);
+const CustomSpawns=createAuthoredSpawnDirector(CUSTOM_MAP_DEFINITION);
 
 const WORLD_BUNDLES = Object.freeze({
   highlands:Object.freeze({id:'highlands',geometry:HighlandsGeometry,spawns:HighlandsSpawns,worldCollision:HighlandsWorldCollision,serverCollision:HighlandsServerCollision}),
   depot:Object.freeze({id:'depot',geometry:DepotGeometry,spawns:DepotSpawns,worldCollision:DepotWorldCollision,serverCollision:DepotServerCollision}),
   yard:Object.freeze({id:'yard',geometry:YardGeometry,spawns:YardSpawns,worldCollision:YardWorldCollision,serverCollision:YardServerCollision}),
   rig:Object.freeze({id:'rig',geometry:RigGeometry,spawns:RigSpawns,worldCollision:RigWorldCollision,serverCollision:RigServerCollision}),
+  'custom-map':Object.freeze({id:'custom-map',geometry:CustomGeometry,spawns:CustomSpawns,worldCollision:CustomWorldCollision,serverCollision:CustomServerCollision}),
 });
 function worldBundle(value){return WORLD_BUNDLES[normalizeMapId(value)]||WORLD_BUNDLES[DEFAULT_MAP_ID];}
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";

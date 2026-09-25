@@ -1,6 +1,6 @@
-export const APP_VERSION = '1.46.0';
-export const BUILD_ID = '20260919T190000Z';
-export const PROTOCOL_VERSION = 92;
+export const APP_VERSION = '1.47.0';
+export const BUILD_ID = '20260922T152700Z';
+export const PROTOCOL_VERSION = 93;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -23,13 +23,14 @@ export function normalizeKillstreakSelection(value,{fill=true}={}){
   return KILLSTREAK_ORDER.filter(id=>picked.includes(id)).slice(0,KILLSTREAK_SELECTION_COUNT);
 }
 
-export const MAP_ORDER = ['highlands','depot','yard','rig'];
+export const MAP_ORDER = ['highlands','depot','yard','rig','custom-map'];
 export const DEFAULT_MAP_ID = 'highlands';
 export const MAPS = Object.freeze({
   highlands:Object.freeze({id:'highlands',name:'HIGHLANDS',short:'HIGHLANDS'}),
   depot:Object.freeze({id:'depot',name:'FREIGHT DEPOT',short:'DEPOT'}),
   yard:Object.freeze({id:'yard',name:'CONTAINER YARD',short:'YARD'}),
   rig:Object.freeze({id:'rig',name:'DUST RIG',short:'RIG'}),
+  'custom-map':Object.freeze({id:'custom-map',name:'NEW MAP',short:'NEW MAP'}),
 });
 export function normalizeMapId(value){const id=String(value||'').toLowerCase();return MAPS[id]?id:DEFAULT_MAP_ID;}
 export function mapSpec(value){return MAPS[normalizeMapId(value)];}
