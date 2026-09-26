@@ -9,7 +9,11 @@ function sanitizeStaticBoxes(list){return (Array.isArray(list)?list:[]).map(o=>(
 function sanitizeRoads(list){const kinds=new Set(['street','alley','service','dirt','sidewalk','crosswalk']);return (Array.isArray(list)?list:[]).map(o=>{let w=clampNumber(o?.w,2,300,20),d=clampNumber(o?.d,2,300,8),rot=normalizeRot(o?.rot);if(o?.rot==null&&d>w){[w,d]=[d,w];rot=90;}return{kind:kinds.has(String(o?.kind))?String(o.kind):'street',x:finite(o?.x),z:finite(o?.z),w,d,rot};});}
 function sanitizeBuildings(list){return (Array.isArray(list)?list:[]).map(b=>{let balcony=finite(b?.balcony,4);if(balcony<1.8||balcony>8)balcony=4;const levels=Math.max(2,Math.min(6,Math.round(finite(b?.levels,2))));return{x:finite(b?.x),z:finite(b?.z),w:clampNumber(b?.w,10,60,18),d:clampNumber(b?.d,9,50,14),floorH:clampNumber(b?.floorH,2.7,4.2,3.1),balcony,levels,rot:normalizeRot(b?.rot),yOffset:clampNumber(b?.yOffset,-20,40,0),...((b?.tall||levels>=4)?{tall:true}:{}),style:String(b?.style||'industrial')};});}
 function sanitizeTerrainModifiers(list){const kinds=new Set(['hill','valley','plateau','pit']);return (Array.isArray(list)?list:[]).map(o=>({kind:kinds.has(String(o?.kind))?String(o.kind):'hill',x:finite(o?.x),z:finite(o?.z),radius:clampNumber(o?.radius,3,100,16),height:clampNumber(o?.height,-24,30,(o?.kind==='valley'||o?.kind==='pit')?-3:3)}));}
-function sanitizeElevation(list){const kinds=new Set(['platform','ramp','stairs','overpass']);return (Array.isArray(list)?list:[]).map(o=>({kind:kinds.has(String(o?.kind))?String(o.kind):'platform',x:finite(o?.x),z:finite(o?.z),w:clampNumber(o?.w,2,80,8),d:clampNumber(o?.d,2,100,10),rise:clampNumber(o?.rise,.5,24,3),rot:normalizeRot(o?.rot)}));}
+function sanitizeAuthoredHeightfield(raw,arena){if(!raw||typeof raw!=='object')return null;const size=Math.max(9,Math.min(129,Math.round(finite(raw.size,0)))),extent=clampNumber(raw.extent,20,arena,arena),values=Array.isArray(raw.values)?raw.values:null;if(!values||values.length!==size*size)return null;return Object.freeze({size,extent,values:Object.freeze(values.map(v=>clampNumber(v,-30,30,0)))});}
+function sampleAuthoredHeightfield(hf,x,z){if(!hf)return 0;const n=hf.size,e=hf.extent,u=clamp((finite(x)+e)/(e*2)*(n-1),0,n-1),v=clamp((finite(z)+e)/(e*2)*(n-1),0,n-1),x0=Math.floor(u),z0=Math.floor(v),x1=Math.min(n-1,x0+1),z1=Math.min(n-1,z0+1),tx=u-x0,tz=v-z0,a=hf.values[z0*n+x0],b=hf.values[z0*n+x1],c=hf.values[z1*n+x0],d=hf.values[z1*n+x1];return(a*(1-tx)+b*tx)*(1-tz)+(c*(1-tx)+d*tx)*tz;}
+function sanitizeAuthoredMaterials(raw,arena){if(!raw||typeof raw!=='object')return null;const size=Math.max(9,Math.min(129,Math.round(finite(raw.size,0)))),extent=clampNumber(raw.extent,20,arena,arena),values=Array.isArray(raw.values)?raw.values:null;if(!values||values.length!==size*size)return null;return Object.freeze({size,extent,values:Object.freeze(values.map(v=>Math.max(0,Math.min(8,Math.round(finite(v,0))))))});}
+function sampleAuthoredMaterial(surface,x,z){if(!surface)return 0;const n=surface.size,e=surface.extent,u=clamp((finite(x)+e)/(e*2)*(n-1),0,n-1),v=clamp((finite(z)+e)/(e*2)*(n-1),0,n-1),ix=Math.max(0,Math.min(n-1,Math.round(u))),iz=Math.max(0,Math.min(n-1,Math.round(v)));return surface.values[iz*n+ix]||0;}
+function sanitizeElevation(list){const kinds=new Set(['platform','ramp','stairs','overpass']);return (Array.isArray(list)?list:[]).map(o=>({kind:kinds.has(String(o?.kind))?String(o.kind):'platform',x:finite(o?.x),z:finite(o?.z),w:clampNumber(o?.w,2,80,8),d:clampNumber(o?.d,2,100,10),rise:clampNumber(o?.rise,.5,24,3),rot:normalizeRot(o?.rot),yOffset:clampNumber(o?.yOffset,-20,40,0)}));}
 function sanitizePyramids(list){return (Array.isArray(list)?list:[]).map(p=>({x:finite(p?.x),z:finite(p?.z),base:clampNumber(p?.base,2,80,8),h:clampNumber(p?.h,.5,40,4)}));}
 function sanitizeNatural(list){return (Array.isArray(list)?list:[]).map(o=>({type:['tree','bush','rock'].includes(String(o?.type))?String(o.type):'rock',x:finite(o?.x),z:finite(o?.z),r:clampNumber(o?.r,.2,20,1),h:clampNumber(o?.h,.2,40,1)}));}
 function sanitizeFlow(list){return (Array.isArray(list)?list:[]).map(p=>({x:finite(p?.x),z:finite(p?.z)}));}
@@ -31,6 +35,9 @@ export function createAuthoredWorldGeometry(def={}){
   const STATIC_BOXES = sanitizeStaticBoxes(def?.staticBoxes);
   
   const BUILDINGS = sanitizeBuildings(def?.buildings);
+  const AUTHORED_HEIGHTFIELD = sanitizeAuthoredHeightfield(def?.terrain?.heightfield||def?.heightfield,ARENA_LIMIT);
+  const AUTHORED_MATERIAL_SURFACE = sanitizeAuthoredMaterials(def?.terrain?.materials||def?.materials,ARENA_LIMIT);
+  const AUTHORED_ENVIRONMENT = Object.freeze({...((def?.environment&&typeof def.environment==='object')?def.environment:{})});
   const TERRAIN_MODIFIERS = Object.freeze(sanitizeTerrainModifiers(def?.terrain?.modifiers||def?.terrainModifiers).map(o=>Object.freeze(o)));
   const ELEVATION_OBJECTS = Object.freeze(sanitizeElevation(def?.elevationObjects||def?.elevation).map(o=>Object.freeze(o)));
   
@@ -44,13 +51,15 @@ export function createAuthoredWorldGeometry(def={}){
   const CEILING_HEAD_RADIUS = 0.22;
   
   function terrainStampWeight(m,x,z){const r=Math.max(2,m.radius),d=Math.hypot(x-m.x,z-m.z),t=clamp(d/r,0,1);if(t>=1)return 0;if(m.kind==='plateau'){if(t<=.55)return 1;const q=(t-.55)/.45;return 1-(q*q*(3-2*q));}const q=1-t;return q*q*(3-2*q);}
-  function rawTerrainHeight(x,z){let h=terrainPresetHeight(def?.terrain?.preset||def?.theme||'flat',x,z);for(const m of TERRAIN_MODIFIERS)h+=m.height*terrainStampWeight(m,x,z);return clamp(h,-18,28);}
+  function rawTerrainHeight(x,z){let h=terrainPresetHeight(def?.terrain?.preset||def?.theme||'flat',x,z)+sampleAuthoredHeightfield(AUTHORED_HEIGHTFIELD,x,z);for(const m of TERRAIN_MODIFIERS)h+=m.height*terrainStampWeight(m,x,z);return clamp(h,-30,36);}
+  function groundMaterialCode(x,z){return sampleAuthoredMaterial(AUTHORED_MATERIAL_SURFACE,x,z);}
   
-  const foundations = [
-    ...PYRAMIDS.map(p=>({x:p.x,z:p.z,halfX:p.base/2+.45,halfZ:p.base/2+.45,blend:4.0})),
-    ...STATIC_BOXES.filter(o=>Math.abs(o.yOffset)<.05).map(o=>({x:o.x,z:o.z,halfX:Math.max(o.w,o.d)/2+.45,halfZ:Math.max(o.w,o.d)/2+.45,blend:4.0})),
-    ...BUILDINGS.filter(b=>Math.abs(b.yOffset)<.05).map(b=>({x:b.x,z:b.z,halfX:Math.max(b.w,b.d)/2+.55,halfZ:Math.max(b.w,b.d)/2+.55,blend:4.5}))
-  ];
+  function localPoint(o,x,z){const a=-normalizeRot(o.rot)*Math.PI/180,c=Math.cos(a),ss=Math.sin(a),dx=x-o.x,dz=z-o.z;return{x:dx*c-dz*ss,z:dx*ss+dz*c};}
+  function worldPoint(o,lx,lz){const a=normalizeRot(o.rot)*Math.PI/180,c=Math.cos(a),ss=Math.sin(a);return{x:o.x+lx*c-lz*ss,z:o.z+lx*ss+lz*c};}
+  function median(values){const a=[...values].sort((x,y)=>x-y),m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2;}
+  function supportProfile(o,isBuilding=false){const pts=[[0,0],[-.5,-.5],[.5,-.5],[.5,.5],[-.5,.5],[0,-.5],[.5,0],[0,.5],[-.5,0]].map(([u,v])=>worldPoint(o,u*o.w,v*o.d)),hs=pts.map(p=>rawTerrainHeight(p.x,p.z)),level=median(hs),blend=isBuilding?clamp(Math.max(o.w,o.d)*.18,2.5,6):clamp(Math.max(o.w,o.d)*.14,1.25,3.5);return{o,level,blend,active:Math.abs(o.yOffset)<.05};}
+  function roadProfile(o){const a=worldPoint(o,-o.w/2,0),b=worldPoint(o,o.w/2,0);return{o,h0:rawTerrainHeight(a.x,a.z),h1:rawTerrainHeight(b.x,b.z),shoulder:clamp(o.d*.28,1.2,3),endBlend:clamp(o.d*.2,.8,2)};}
+  const supportProfiles=[...STATIC_BOXES.map(o=>supportProfile(o,false)),...BUILDINGS.map(o=>supportProfile(o,true))],roadProfiles=ROADS.map(roadProfile);
   
   const TERRAIN_SIZE = Math.max(244,ARENA_LIMIT*2+4);
   const TERRAIN_SEGMENTS = 128;
@@ -58,16 +67,11 @@ export function createAuthoredWorldGeometry(def={}){
   const TERRAIN_STEP = TERRAIN_SIZE / TERRAIN_SEGMENTS;
   
   function sourceTerrainHeight(x,z){
-    let h=rawTerrainHeight(x,z);
-    for(const f of foundations){
-      const ox=Math.max(Math.abs(x-f.x)-f.halfX,0),oz=Math.max(Math.abs(z-f.z)-f.halfZ,0),d=Math.hypot(ox,oz);
-      if(d>=f.blend)continue;
-      const center=rawTerrainHeight(f.x,f.z);
-      if(d<=1e-6){h=center;continue;}
-      const t=clamp(d/f.blend,0,1),s=t*t*(3-2*t);
-      h=center*(1-s)+h*s;
-    }
-    return h;
+    const raw=rawTerrainHeight(x,z);let ground=raw,roadWeight=0,roadSum=0,maxRoadWeight=0;
+    for(const p of roadProfiles){const q=localPoint(p.o,x,z),ox=Math.max(Math.abs(q.x)-p.o.w/2,0),oz=Math.max(Math.abs(q.z)-p.o.d/2,0);if(ox>=p.endBlend||oz>=p.shoulder)continue;const tx=ox<=0?1:1-clamp(ox/p.endBlend,0,1),tz=oz<=0?1:1-clamp(oz/p.shoulder,0,1),wx=tx*tx*(3-2*tx),wz=tz*tz*(3-2*tz),w=wx*wz;if(w<=0)continue;const t=clamp(q.x/p.o.w+.5,0,1),target=p.h0+(p.h1-p.h0)*t;roadSum+=target*w;roadWeight+=w;maxRoadWeight=Math.max(maxRoadWeight,w);}
+    if(roadWeight>0)ground=raw+(roadSum/roadWeight-raw)*clamp(maxRoadWeight,0,1);
+    let best=null,bestWeight=0;for(const p of supportProfiles){if(!p.active)continue;const q=localPoint(p.o,x,z),ox=Math.max(Math.abs(q.x)-p.o.w/2,0),oz=Math.max(Math.abs(q.z)-p.o.d/2,0),dist=Math.hypot(ox,oz);if(dist>=p.blend)continue;const t=clamp(dist/p.blend,0,1),w=1-(t*t*(3-2*t));if(w>bestWeight){bestWeight=w;best=p;}}
+    return best?ground+(best.level-ground)*bestWeight:ground;
   }
   
   // The rendered terrain mesh is the physical terrain. Heights are sampled once
@@ -304,7 +308,7 @@ export function createAuthoredWorldGeometry(def={}){
   function transformRamp(r,b){const a=rotatePoint(r.x1,r.z1??r.z,b.x,b.z,b.rot),c=rotatePoint(r.x2,r.z2??r.z,b.x,b.z,b.rot);return{...r,x1:a.x,z1:a.z,x2:c.x,z2:c.z,rot:normalizeRot((r.rot||0)+b.rot)};}
   function transformBuildingGeometry(g,b){if(!b.rot)return{...g,parts:g.parts.map(p=>({...p,rot:0})),supports:g.supports.map(s=>s.type==='ramp'?transformRamp(s,b):({...s,rot:0})),horizontalSolids:g.horizontalSolids.map(s=>({...s,rot:0})),playerRamps:g.playerRamps.map(r=>transformRamp(r,b))};return{...g,parts:g.parts.map(p=>transformRect(p,b)),supports:g.supports.map(s=>s.type==='ramp'?transformRamp(s,b):transformRect(s,b)),horizontalSolids:g.horizontalSolids.map(s=>transformRect(s,b)),playerRamps:g.playerRamps.map(r=>transformRamp(r,b))};}
   function makeAllBuildingGeometry(){return BUILDINGS.map(b=>transformBuildingGeometry(makeBuildingGeometry(b),b));}
-  function makeElevationGeometry(o){const base=terrainHeight(o.x,o.z),parts=[],supports=[],horizontalSolids=[],playerRamps=[],toWorld=(lx,lz)=>rotatePoint(o.x+lx,o.z+lz,o.x,o.z,o.rot),addRect=(role,lx,lz,w,d,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({role,x:p.x,z:p.z,w,d,bottomY,topY,rot:o.rot,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:false,traversal:flags.traversal||'',decorative:false});};
+  function makeElevationGeometry(o){const base=terrainHeight(o.x,o.z)+o.yOffset,parts=[],supports=[],horizontalSolids=[],playerRamps=[],toWorld=(lx,lz)=>rotatePoint(o.x+lx,o.z+lz,o.x,o.z,o.rot),addRect=(role,lx,lz,w,d,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({role,x:p.x,z:p.z,w,d,bottomY,topY,rot:o.rot,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:false,traversal:flags.traversal||'',decorative:false});};
     if(o.kind==='platform'||o.kind==='overpass'){const thick=o.kind==='overpass'?.7:.5,top=base+o.rise;addRect(o.kind,0,0,o.w,o.d,top-thick,top,{supportTop:true,traversal:'mantle'});supports.push({type:'rect',x:o.x,z:o.z,w:o.w,d:o.d,y:top,rot:o.rot,role:o.kind});horizontalSolids.push({x:o.x,z:o.z,w:o.w,d:o.d,bottomY:top-thick,topY:top,rot:o.rot});if(o.kind==='overpass')for(const side of [-1,1])addRect('overpassSupport',side*(o.w/2-.45),0,.7,o.d*.94,base,top-thick,{supportTop:false});}
     else {const steps=Math.max(4,Math.ceil(o.rise/(o.kind==='stairs'?.34:.45))),stepD=o.d/steps;for(let i=0;i<steps;i++){const h=o.rise*(i+1)/steps,lz=-o.d/2+stepD*(i+.5);addRect(o.kind==='stairs'?'stairStep':'rampStep',0,lz,o.w,stepD+.04,base,base+h,{playerSolid:false,projectileSolid:true});}const low=toWorld(0,-o.d/2),high=toWorld(0,o.d/2),ramp={type:'ramp',x1:low.x,z1:low.z,x2:high.x,z2:high.z,w:o.w,bottomY:base,y0:base,y1:base+o.rise,role:o.kind==='stairs'?'stairRamp':'ramp',supportTop:true,traversal:''};supports.push(ramp);playerRamps.push(ramp);}
     return{parts,supports,horizontalSolids,playerRamps};}
@@ -431,5 +435,5 @@ export function createAuthoredWorldGeometry(def={}){
     }
     return{y:resolved,hit};
   }
-  return {PLAYER_HEIGHT,PLAYER_RADIUS,ARENA_LIMIT,MAX_STEP_HEIGHT,CROUCH_WINDOW_STEP_HEIGHT,ROADS,STATIC_BOXES,BUILDINGS,TERRAIN_MODIFIERS,ELEVATION_OBJECTS,PYRAMIDS,NATURAL_OBSTACLES,COMBAT_FLOW_NODES,rawTerrainHeight,TERRAIN_SIZE,TERRAIN_SEGMENTS,terrainVertexHeight,terrainHeight,LADDERS,terrainMinAround,naturalGroundBase,buildingWallOpenings,splitWall,buildingPlan,makeBuildingGeometry,makeAllBuildingGeometry,BUILDING_GEOMETRY,BUILDING_SUPPORTS,BUILDING_HORIZONTAL_SOLIDS,BUILDING_PLAYER_RAMPS,BUILDING_PARTS,BUILDING_WINDOW_PORTALS,STATIC_SUPPORTS,STATIC_PLAYER_COLLIDERS,NATURAL_PLAYER_COLLIDERS,NATURAL_SUPPORTS,BUILDING_PLAYER_COLLIDERS,WORLD_PLAYER_COLLIDERS,worldSupportHeight,worldStepUpHeight,resolveCeilingCollision,MINIMAP_LIMIT};
+  return {PLAYER_HEIGHT,PLAYER_RADIUS,ARENA_LIMIT,MAX_STEP_HEIGHT,CROUCH_WINDOW_STEP_HEIGHT,ROADS,STATIC_BOXES,BUILDINGS,AUTHORED_HEIGHTFIELD,AUTHORED_MATERIAL_SURFACE,AUTHORED_ENVIRONMENT,groundMaterialCode,TERRAIN_MODIFIERS,ELEVATION_OBJECTS,PYRAMIDS,NATURAL_OBSTACLES,COMBAT_FLOW_NODES,rawTerrainHeight,TERRAIN_SIZE,TERRAIN_SEGMENTS,terrainVertexHeight,terrainHeight,LADDERS,terrainMinAround,naturalGroundBase,buildingWallOpenings,splitWall,buildingPlan,makeBuildingGeometry,makeAllBuildingGeometry,BUILDING_GEOMETRY,BUILDING_SUPPORTS,BUILDING_HORIZONTAL_SOLIDS,BUILDING_PLAYER_RAMPS,BUILDING_PARTS,BUILDING_WINDOW_PORTALS,STATIC_SUPPORTS,STATIC_PLAYER_COLLIDERS,NATURAL_PLAYER_COLLIDERS,NATURAL_SUPPORTS,BUILDING_PLAYER_COLLIDERS,WORLD_PLAYER_COLLIDERS,worldSupportHeight,worldStepUpHeight,resolveCeilingCollision,MINIMAP_LIMIT};
 }

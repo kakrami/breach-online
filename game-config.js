@@ -1,6 +1,6 @@
-export const APP_VERSION = '1.49.0';
-export const BUILD_ID = '20260925T184554Z';
-export const PROTOCOL_VERSION = 93;
+export const APP_VERSION = '1.50.0';
+export const BUILD_ID = '20260926T060000Z';
+export const PROTOCOL_VERSION = 94;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
@@ -30,7 +30,7 @@ export const MAPS = Object.freeze({
   depot:Object.freeze({id:'depot',name:'FREIGHT DEPOT',short:'DEPOT'}),
   yard:Object.freeze({id:'yard',name:'CONTAINER YARD',short:'YARD'}),
   rig:Object.freeze({id:'rig',name:'DUST RIG',short:'RIG'}),
-  'custom-map':Object.freeze({id:'custom-map',name:'NEW MAP',short:'NEW MAP'}),
+  'custom-map':Object.freeze({id:'custom-map',name:'CUSTOM MAP',short:'CUSTOM'}),
 });
 export function normalizeMapId(value){const id=String(value||'').toLowerCase();return MAPS[id]?id:DEFAULT_MAP_ID;}
 export function mapSpec(value){return MAPS[normalizeMapId(value)];}

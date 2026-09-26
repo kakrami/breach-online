@@ -29,23 +29,29 @@ import { createAuthoredWorldGeometry } from './authored-world-geometry.js';
 import { createAuthoredWorldCollision } from './authored-world-collision.js';
 import { createAuthoredServerCollision } from './authored-server-collision.js';
 import { createAuthoredSpawnDirector } from './authored-spawn-director.js';
+import { sanitizeUploadedMapDefinition, customMapSerializedSize, customMapFingerprint, customMapSummary } from './uploaded-map.js';
 
 const GAME_VERSION = APP_VERSION;
-const CustomGeometry=createAuthoredWorldGeometry(CUSTOM_MAP_DEFINITION);
-const CustomWorldCollision=createAuthoredWorldCollision(CustomGeometry);
-const CustomServerCollision=createAuthoredServerCollision(CustomGeometry);
-const CustomSpawns=createAuthoredSpawnDirector(CUSTOM_MAP_DEFINITION);
-
+const FALLBACK_CUSTOM_MAP_DEFINITION=sanitizeUploadedMapDefinition(CUSTOM_MAP_DEFINITION);
+function compileCustomWorld(definitionInput){
+  const definition=sanitizeUploadedMapDefinition(definitionRaw(definitionInput));
+  const geometry=createAuthoredWorldGeometry(definition);
+  return Object.freeze({id:'custom-map',geometry,spawns:createAuthoredSpawnDirector(definition),worldCollision:createAuthoredWorldCollision(geometry),serverCollision:createAuthoredServerCollision(geometry),definition});
+}
+function definitionRaw(value){return value&&typeof value==='object'?value:FALLBACK_CUSTOM_MAP_DEFINITION;}
+const FallbackCustomWorld=compileCustomWorld(FALLBACK_CUSTOM_MAP_DEFINITION);
 const WORLD_BUNDLES = Object.freeze({
   highlands:Object.freeze({id:'highlands',geometry:HighlandsGeometry,spawns:HighlandsSpawns,worldCollision:HighlandsWorldCollision,serverCollision:HighlandsServerCollision}),
   depot:Object.freeze({id:'depot',geometry:DepotGeometry,spawns:DepotSpawns,worldCollision:DepotWorldCollision,serverCollision:DepotServerCollision}),
   yard:Object.freeze({id:'yard',geometry:YardGeometry,spawns:YardSpawns,worldCollision:YardWorldCollision,serverCollision:YardServerCollision}),
   rig:Object.freeze({id:'rig',geometry:RigGeometry,spawns:RigSpawns,worldCollision:RigWorldCollision,serverCollision:RigServerCollision}),
-  'custom-map':Object.freeze({id:'custom-map',geometry:CustomGeometry,spawns:CustomSpawns,worldCollision:CustomWorldCollision,serverCollision:CustomServerCollision}),
+  'custom-map':FallbackCustomWorld,
 });
-function worldBundle(value){return WORLD_BUNDLES[normalizeMapId(value)]||WORLD_BUNDLES[DEFAULT_MAP_ID];}
+function worldBundle(value,customDefinition=null){const id=normalizeMapId(value);if(id==='custom-map'&&customDefinition)return compileCustomWorld(customDefinition);return WORLD_BUNDLES[id]||WORLD_BUNDLES[DEFAULT_MAP_ID];}
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAX_MESSAGE_BYTES = 24 * 1024;
+const MAX_CUSTOM_MAP_MESSAGE_BYTES = 1024 * 1024;
+const CUSTOM_MAP_STORAGE_CHUNK_CHARS = 48000;
 const ROOM_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
 const EMPTY_ROOM_GRACE_MS = 10 * 60 * 1000;
 const ALARM_MIN_FUTURE_MS = 5 * 1000;
@@ -716,6 +722,7 @@ export class WorldDirectory {
         redBots: clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS),
         botDifficulty: safeBotDifficulty(body.botDifficulty),
         mapId: normalizeMapId(body.mapId),
+        mapName: String(body.mapName||'').replace(/[\u0000-\u001f\u007f]/g,'').slice(0,64),
         mode,
         blue: clamp(Math.floor(finiteNumber(body.blue, 0)), 0, MAX_PLAYERS + MAX_BOTS),
         red: clamp(Math.floor(finiteNumber(body.red, 0)), 0, MAX_PLAYERS + MAX_BOTS),
@@ -762,6 +769,7 @@ export class GameRoom {
     this.lastPersistAt = 0;
     this.lastDirectoryHeartbeatAt = 0;
     this.metaCache = null;
+    this.customMapDefinition = null;
     this.socketRate = new WeakMap();
     this.joinTicketRate = { windowAt:0, total:0, clients:new Map() };
     this.matchDirty = false;
@@ -803,6 +811,25 @@ export class GameRoom {
     return actor;
   }
 
+  async loadStoredCustomMap(meta){
+    if(this.customMapDefinition)return this.customMapDefinition;
+    const chunks=Math.max(0,Math.min(32,Math.floor(Number(meta?.customMap?.chunks)||0)));
+    if(!chunks)return null;
+    let json='';
+    for(let i=0;i<chunks;i++){const part=await this.ctx.storage.get(`customMap:${i}`);if(typeof part!=='string')return null;json+=part;}
+    try{const def=sanitizeUploadedMapDefinition(JSON.parse(json));if(meta?.customMap?.fingerprint&&customMapFingerprint(def)!==meta.customMap.fingerprint)return null;this.customMapDefinition=def;return def;}catch{return null;}
+  }
+
+  async storeCustomMap(definition,meta){
+    const def=sanitizeUploadedMapDefinition(definition),json=JSON.stringify(def),fingerprint=customMapFingerprint(def),oldChunks=Math.max(0,Math.min(32,Math.floor(Number(meta?.customMap?.chunks)||0))),parts=[];
+    for(let i=0;i<json.length;i+=CUSTOM_MAP_STORAGE_CHUNK_CHARS)parts.push(json.slice(i,i+CUSTOM_MAP_STORAGE_CHUNK_CHARS));
+    for(let i=0;i<parts.length;i++)await this.ctx.storage.put(`customMap:${i}`,parts[i]);
+    for(let i=parts.length;i<oldChunks;i++)await this.ctx.storage.delete(`customMap:${i}`);
+    const summary=customMapSummary(def);meta.customMap={name:summary.name,fingerprint,bytes:customMapSerializedSize(def),chunks:parts.length,schemaVersion:def.schemaVersion};this.customMapDefinition=def;return def;
+  }
+
+  roomCustomMapPayload(meta){return normalizeMapId(meta?.mapId)==='custom-map'&&this.customMapDefinition?this.customMapDefinition:undefined;}
+
   async getMeta() {
     if (this.metaCache) return this.metaCache;
     const meta = await this.ctx.storage.get("meta");
@@ -811,7 +838,8 @@ export class GameRoom {
       meta.clientAuthHashes = normalizeClientAuthHashes(meta);
       meta.settings = normalizeWorldSettings(meta.settings);
       meta.mapId = normalizeMapId(meta.mapId);
-      this.world = worldBundle(meta.mapId);
+      if(meta.mapId==='custom-map')this.customMapDefinition=await this.loadStoredCustomMap(meta);
+      this.world = worldBundle(meta.mapId,this.customMapDefinition);
       const legacyRules=meta.match||{...DEFAULT_MATCH_RULES,mode:normalizeGameMode(meta.mode)};
       meta.match=normalizeMatchState(meta.match,Date.now(),legacyRules);
       delete meta.mode;delete meta.custom;
@@ -822,7 +850,7 @@ export class GameRoom {
 
   async putMeta(meta) {
     meta.adminClientIds = normalizeAdminIds(meta);
-    meta.clientAuthHashes=normalizeClientAuthHashes(meta);meta.mapId=normalizeMapId(meta.mapId);this.world=worldBundle(meta.mapId);delete meta.mode;delete meta.custom;
+    meta.clientAuthHashes=normalizeClientAuthHashes(meta);meta.mapId=normalizeMapId(meta.mapId);if(this.world?.id!==meta.mapId)this.world=worldBundle(meta.mapId,this.customMapDefinition);delete meta.mode;delete meta.custom;
     this.metaCache=meta;
     await this.ctx.storage.put("meta", meta);
   }
@@ -1004,7 +1032,7 @@ export class GameRoom {
       this.bots.push(makeBot(this.world,team,i,mode,botSpawnIndex++,spawn));
     }
     this.matchDirty=true;
-    this.broadcast({t:'matchReset',match:publicMatchState(meta.match,now),players,bots:this.bots.map(publicBot),mapId:meta.mapId,settings:normalizeWorldSettings(meta.settings),botConfig:{blueBots:meta.blueBots||0,redBots:meta.redBots||0,difficulty:safeBotDifficulty(meta.botDifficulty)},custom:this.isCustomMatch(meta)});
+    this.broadcast({t:'matchReset',match:publicMatchState(meta.match,now),players,bots:this.bots.map(publicBot),mapId:meta.mapId,customMapDefinition:this.roomCustomMapPayload(meta),customMapName:meta.customMap?.name||undefined,settings:normalizeWorldSettings(meta.settings),botConfig:{blueBots:meta.blueBots||0,redBots:meta.redBots||0,difficulty:safeBotDifficulty(meta.botDifficulty)},custom:this.isCustomMatch(meta)});
     return true;
   }
 
@@ -1019,7 +1047,7 @@ export class GameRoom {
     }
     if(gameModeSpec(mode).cooperative){this.bots=[];this.broadcast({t:'bots',bots:[],config:{blueBots:0,redBots:0,difficulty:safeBotDifficulty(meta.botDifficulty)}});}
     this.matchDirty=true;
-    this.broadcast({t:'matchLobby',match:publicMatchState(meta.match,now),players,bots:(this.bots||[]).map(publicBot),custom:this.isCustomMatch(meta)});
+    this.broadcast({t:'matchLobby',match:publicMatchState(meta.match,now),players,bots:(this.bots||[]).map(publicBot),mapId:meta.mapId,customMapDefinition:this.roomCustomMapPayload(meta),customMapName:meta.customMap?.name||undefined,custom:this.isCustomMatch(meta)});
     void this.updateDirectory(this.liveSockets().length,meta).catch(()=>{});
     return true;
   }
@@ -1368,6 +1396,8 @@ export class GameRoom {
       ownerClientId: meta.ownerClientId,
       settings: meta.settings,
       mapId: normalizeMapId(meta.mapId),
+      customMapDefinition: this.roomCustomMapPayload(meta),
+      customMapName: meta.customMap?.name||undefined,
       match: publicMatchState(meta.match, Date.now()),
       custom: this.isCustomMatch(meta),
       serverTime: Date.now(),
@@ -1389,13 +1419,11 @@ export class GameRoom {
       socket.close(1003, "Text messages only");
       return;
     }
-    if (new TextEncoder().encode(message).byteLength > MAX_MESSAGE_BYTES) {
-      socket.close(1009, "Message too large");
-      return;
-    }
-
+    const messageBytes=new TextEncoder().encode(message).byteLength;
+    if(messageBytes>MAX_CUSTOM_MAP_MESSAGE_BYTES){socket.close(1009,"Message too large");return;}
     const payload = parseJson(message);
     if (!payload) return;
+    if(messageBytes>MAX_MESSAGE_BYTES&&String(payload.t||'')!=='startMatch'){socket.close(1009,"Message too large");return;}
     const messageType = String(payload.t || '');
     if (!this.allowSocketMessage(socket, messageType, receivedAt)) return;
     const meta = await this.getMeta();
@@ -1621,7 +1649,11 @@ export class GameRoom {
       const mode=normalizeGameMode(setup.mode),rules=normalizeMatchRules({mode,scoreLimit:setup.rules.scoreLimit,timeLimitMs:setup.rules.timeLimitMs,minimapRevealAll:!!setup.minimap.revealAll,minimapDirectional:!!setup.minimap.directional});
       const blueBots=clamp(Math.floor(finiteNumber(setup.bots.blueBots,0)),0,MAX_BOTS),redBots=clamp(Math.floor(finiteNumber(setup.bots.redBots,0)),0,MAX_BOTS);
       if(blueBots+redBots>MAX_BOTS){sendJson(socket,{t:'notice',tone:'error',text:`Maximum ${MAX_BOTS} bots per match.`});return;}
-      meta.mapId=normalizeMapId(setup.mapId);this.world=worldBundle(meta.mapId);meta.settings=normalizeWorldSettings(setup.settings);meta.blueBots=gameModeSpec(mode).cooperative?0:blueBots;meta.redBots=gameModeSpec(mode).cooperative?0:redBots;meta.botDifficulty=safeBotDifficulty(setup.bots.difficulty);meta.match=defaultMatchState(now,rules);
+      meta.mapId=normalizeMapId(setup.mapId);
+      if(meta.mapId==='custom-map'){
+        try{const incoming=setup.customMapDefinition||this.customMapDefinition||await this.loadStoredCustomMap(meta)||FALLBACK_CUSTOM_MAP_DEFINITION;await this.storeCustomMap(incoming,meta);this.world=worldBundle(meta.mapId,this.customMapDefinition);}catch(error){sendJson(socket,{t:'notice',tone:'error',text:`CUSTOM MAP REJECTED · ${String(error?.message||'invalid map').slice(0,120)}`});return;}
+      }else this.world=worldBundle(meta.mapId);
+      meta.settings=normalizeWorldSettings(setup.settings);meta.blueBots=gameModeSpec(mode).cooperative?0:blueBots;meta.redBots=gameModeSpec(mode).cooperative?0:redBots;meta.botDifficulty=safeBotDifficulty(setup.bots.difficulty);meta.match=defaultMatchState(now,rules);
       if(setup.loadout&&typeof setup.loadout==='object'){const base=normalizeLoadout(me),classes=normalizeLoadoutClasses(setup.loadoutClasses??me.loadoutClasses,base),classId=normalizeLoadoutClassId(setup.classId??me.activeClassId),next=normalizeLoadout(setup.loadout,loadoutClassById(classes,classId,base)),idx=classes.findIndex(item=>item.id===classId);if(idx>=0)classes[idx]={...classes[idx],...next};me.loadoutClasses=classes;me.pendingClassId=classId;me.pendingLoadout=next;}me.killstreakSelection=normalizeKillstreakSelection(setup.killstreakSelection??me.killstreakSelection);socket.serializeAttachment(me);
       this.prepareRound(meta,now);await this.putMeta(meta);await this.ctx.storage.put('bots',this.bots);await this.updateDirectory(this.liveSockets().length,meta);return;
     }
@@ -3050,6 +3082,7 @@ export class GameRoom {
           redBots: (this.bots || []).filter((bot) => safeTeam(bot.team) === "red").length,
           botDifficulty: safeBotDifficulty(meta.botDifficulty),
           mapId: normalizeMapId(meta.mapId),
+          mapName: normalizeMapId(meta.mapId)==='custom-map'?(meta.customMap?.name||'CUSTOM MAP'):'',
           mode: matchMode(match),
           blue,
           red,
