@@ -21,6 +21,7 @@ export function createAuthoredWorldCollision(world){
   function boundsFor(collider){
     if(collider.type==='box'){const a=boxAabb(collider);return {...a,minY:collider.minY,maxY:collider.maxY};}
     if(collider.type==='round') return {minX:collider.x-collider.r,maxX:collider.x+collider.r,minZ:collider.z-collider.r,maxZ:collider.z+collider.r,minY:collider.minY,maxY:collider.maxY};
+    if(collider.type==='pyramid'){const half=collider.base/2;return{minX:collider.x-half,maxX:collider.x+half,minZ:collider.z-half,maxZ:collider.z+half,minY:collider.minY,maxY:collider.maxY};}
     const z1=collider.z1??collider.z,z2=collider.z2??collider.z,half=collider.w/2;
     return {minX:Math.min(collider.x1,collider.x2)-half,maxX:Math.max(collider.x1,collider.x2)+half,minZ:Math.min(z1,z2)-half,maxZ:Math.max(z1,z2)+half,minY:collider.bottomY,maxY:Math.max(collider.y0,collider.y1)};
   }
@@ -38,13 +39,14 @@ export function createAuthoredWorldCollision(world){
   function circleTouchesBox(x,z,r,minX,maxX,minZ,maxZ){const qx=clamp(x,minX,maxX),qz=clamp(z,minZ,maxZ),dx=x-qx,dz=z-qz;return dx*dx+dz*dz<r*r;}
   function circleTouchesColliderBox(c,x,z,r){const p=localPoint(c,x,z);return circleTouchesBox(p.x,p.z,r,-c.w/2,c.w/2,-c.d/2,c.d/2);}
   function circleTouchesRamp(c,x,z,r){const q=rampProjection(c,x,z),pad=q.length>0?r/q.length:0;return q.raw>=-pad&&q.raw<=1+pad&&q.d<c.w/2+r;}
+  function pyramidContact(c,x,z,r=0){const half=c.base/2,qx=clamp(x,c.x-half,c.x+half),qz=clamp(z,c.z-half,c.z+half),dx=x-qx,dz=z-qz;if(dx*dx+dz*dz>r*r)return null;const relief=Math.max(Math.abs(qx-c.x),Math.abs(qz-c.z)),top=c.minY+c.h*(1-clamp(relief/Math.max(.001,half),0,1));return{x:qx,z:qz,top};}
   
   function verticalOverlap(y,height,minY,maxY){
     return y+height>minY+VERTICAL_SKIN&&y<maxY-VERTICAL_SKIN;
   }
   
   function rampTopAt(collider,x,z){const q=rampProjection(collider,x,z);return collider.y0+(collider.y1-collider.y0)*q.t;}
-  function colliderTopAt(collider,x,z){return collider.type==='ramp'?rampTopAt(collider,x,z):collider.maxY;}
+  function colliderTopAt(collider,x,z){if(collider.type==='ramp')return rampTopAt(collider,x,z);if(collider.type==='pyramid')return pyramidContact(collider,x,z,0)?.top??collider.minY;return collider.maxY;}
   
   let stamp=0;
   function worldBlockerAt(x,z,y,height=PLAYER_HEIGHT,radius=PLAYER_RADIUS){
@@ -61,16 +63,7 @@ export function createAuthoredWorldCollision(world){
       for(const entry of list){
         if(entry.visit===stamp)continue;entry.visit=stamp;
         const c=entry.collider,b=entry.bounds;
-        if(c.type==='ramp'){
-          if(!circleTouchesRamp(c,px,pz,effectiveRadius))continue;
-          const top=rampTopAt(c,px,pz);
-          if(verticalOverlap(py,h,c.bottomY,top))return c;
-          continue;
-        }
-        if(!verticalOverlap(py,h,b.minY,b.maxY))continue;
-        if(c.type==='box'){
-          if(circleTouchesColliderBox(c,px,pz,effectiveRadius))return c;
-        }else if(Math.hypot(px-c.x,pz-c.z)<c.r+effectiveRadius)return c;
+        if(colliderBlocksAt(c,b,px,pz,py,h,effectiveRadius))return c;
       }
     }
     return null;
@@ -82,12 +75,14 @@ export function createAuthoredWorldCollision(world){
   
   function horizontalSignedDistance(collider,b,x,z){
     if(collider.type==='round')return Math.hypot(x-collider.x,z-collider.z)-collider.r;
+    if(collider.type==='pyramid'){const half=collider.base/2,dx=Math.max(Math.abs(x-collider.x)-half,0),dz=Math.max(Math.abs(z-collider.z)-half,0);if(dx||dz)return Math.hypot(dx,dz);return -Math.min(half-Math.abs(x-collider.x),half-Math.abs(z-collider.z));}
     if(collider.type==='ramp'){const q=rampProjection(collider,x,z),along=q.raw<0?-q.raw*q.length:q.raw>1?(q.raw-1)*q.length:0,side=q.d-collider.w/2;if(along>0||side>0)return Math.hypot(Math.max(0,along),Math.max(0,side));return -Math.min(collider.w/2-q.d,Math.min(q.t,1-q.t)*q.length);}
     const p=localPoint(collider,x,z),hx=collider.w/2,hz=collider.d/2,dx=Math.max(-hx-p.x,0,p.x-hx),dz=Math.max(-hz-p.z,0,p.z-hz);if(dx||dz)return Math.hypot(dx,dz);return -Math.min(p.x+hx,hx-p.x,p.z+hz,hz-p.z);
   }
   
   function colliderBlocksAt(collider,b,x,z,y,height,effectiveRadius){
     if(collider.type==='ramp'){if(!circleTouchesRamp(collider,x,z,effectiveRadius))return false;return verticalOverlap(y,height,collider.bottomY,rampTopAt(collider,x,z));}
+    if(collider.type==='pyramid'){const contact=pyramidContact(collider,x,z,effectiveRadius);return!!contact&&verticalOverlap(y,height,collider.minY,contact.top);}
     if(!verticalOverlap(y,height,b.minY,b.maxY))return false;
     if(collider.type==='box')return circleTouchesColliderBox(collider,x,z,effectiveRadius);
     return Math.hypot(x-collider.x,z-collider.z)<collider.r+effectiveRadius;

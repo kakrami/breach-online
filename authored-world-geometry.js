@@ -102,6 +102,27 @@ export function createAuthoredWorldGeometry(def={}){
     return d+(1-fx)*(c-d)+(1-fz)*(b-d);
   }
   
+  function makeStaticGeometry(o){
+    const base=terrainHeight(o.x,o.z)+o.yOffset,parts=[];
+    const toWorld=(lx,lz)=>worldPoint(o,lx,lz);
+    const addBox=(role,lx,lz,w,d,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({type:'box',role,x:p.x,z:p.z,w,d,rot:o.rot,minY:bottomY,maxY:topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:flags.supportTop!==false,traversal:flags.traversal??'mantle'});};
+    const addRound=(role,lx,lz,r,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({type:'round',role,x:p.x,z:p.z,r,minY:bottomY,maxY:topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,traversal:flags.traversal??''});};
+    const kind=String(o.kind||'box'),longX=o.w>=o.d,length=Math.max(o.w,o.d),width=Math.min(o.w,o.d),boxDims=(L,W)=>longX?[L,W]:[W,L],axis=(v)=>longX?[v,0]:[0,v];
+    if(kind==='burntCar'){const [bw,bd]=boxDims(length*.96,width*.94),[cw,cd]=boxDims(length*.47,width*.84),[cx,cz]=axis(-length*.03);addBox('burntCarBody',0,0,bw,bd,base,base+o.h*.55,{supportTop:true,traversal:'mantle'});addBox('burntCarCabin',cx,cz,cw,cd,base+o.h*.50,base+o.h*.90,{supportTop:true,traversal:'mantle'});}
+    else if(kind==='burntBus'){const [bw,bd]=boxDims(length*.96,width*.94),[uw,ud]=boxDims(length*.90,width*.88);addBox('burntBusBody',0,0,bw,bd,base,base+o.h*.66,{supportTop:true,traversal:'mantle'});addBox('burntBusUpper',0,0,uw,ud,base+o.h*.62,base+o.h*.96,{supportTop:true,traversal:'mantle'});}
+    else if(kind==='dumpster'){addBox('dumpsterBody',0,0,o.w,o.d,base,base+o.h*.84,{supportTop:true,traversal:'mantle'});addBox('dumpsterLid',0,0,o.w*1.02,o.d*1.03,base+o.h*.86,base+o.h*.98,{supportTop:true,traversal:'mantle'});}
+    else if(kind==='fuelTank'){const radius=width*.46,segment=Math.max(.05,length-2*radius),[cw,cd]=boxDims(segment,radius*2),end=Math.max(0,length/2-radius),[ax,az]=axis(end),[bx,bz]=axis(-end);addBox('fuelTankCenter',0,0,cw,cd,base,base+o.h,{supportTop:false,traversal:''});addRound('fuelTankCap',ax,az,radius,base,base+o.h,{supportTop:false,traversal:''});addRound('fuelTankCap',bx,bz,radius,base,base+o.h,{supportTop:false,traversal:''});}
+    else if(kind==='checkpoint'){addBox('checkpointBody',0,0,o.w,o.d,base,base+o.h*.92,{supportTop:true,traversal:'mantle'});addBox('checkpointRoof',0,0,o.w*1.10,o.d*1.10,base+o.h*.92,base+o.h+0.20,{supportTop:true,traversal:'mantle'});}
+    else if(kind==='sandbag')addBox('sandbag',0,0,o.w,o.d,base,base+o.h,{supportTop:false,traversal:'vault'});
+    else if(kind==='brokenWall')addBox('brokenWall',0,0,o.w,o.d,base,base+o.h,{supportTop:false,traversal:'vault'});
+    else if(kind==='barrier')addBox('barrier',0,0,o.w,o.d,base,base+o.h,{supportTop:false,traversal:'vault'});
+    else if(kind==='boundary')addBox('boundary',0,0,o.w,o.d,base,base+o.h,{supportTop:false,traversal:''});
+    else addBox(kind,0,0,o.w,o.d,base,base+o.h,{supportTop:true,traversal:'mantle'});
+    return{parts};
+  }
+  const STATIC_GEOMETRY=STATIC_BOXES.map(makeStaticGeometry);
+  const STATIC_PARTS=STATIC_GEOMETRY.flatMap(g=>g.parts);
+
   // Standalone ladder anchors. Ladders are non-solid interaction volumes; the wall/roof
   // remains authoritative collision, while ladder mount/climb/dismount is validated separately.
   const LADDERS = Object.freeze(sanitizeLadders(def?.ladders).map(l=>Object.freeze(l)));
@@ -254,9 +275,9 @@ export function createAuthoredWorldGeometry(def={}){
         supports.push({type:'rect',x:panel.x,z:panel.z,w:panel.w,d:panel.d,y:floorY});
         horizontalSolids.push({x:panel.x,z:panel.z,w:panel.w,d:panel.d,bottomY:floorY-.18,topY:floorY});
       }
-      addBox(parts,'floor',b.x,plan.balconyZ,plan.balconyW,plan.balconyD,floorY-.18,floorY,{supportTop:true,traversal:'mantle'});
+      addBox(parts,'floor',b.x,plan.balconyZ,plan.balconyW,plan.balconyD,floorY-.188,floorY-.008,{supportTop:true,traversal:'mantle'});
       supports.push({type:'rect',x:b.x,z:plan.balconyZ,w:plan.balconyW,d:plan.balconyD,y:floorY});
-      horizontalSolids.push({x:b.x,z:plan.balconyZ,w:plan.balconyW,d:plan.balconyD,bottomY:floorY-.18,topY:floorY});
+      horizontalSolids.push({x:b.x,z:plan.balconyZ,w:plan.balconyW,d:plan.balconyD,bottomY:floorY-.188,topY:floorY-.008});
       const railBottom=floorY+.08,outerZ=plan.front-b.balcony+.06;
       addBox(parts,'rail',b.x,outerZ,plan.balconyW,.14,railBottom,railBottom+.82,{traversal:'vault'});
       addBox(parts,'rail',b.x-plan.balconyW/2,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82,{traversal:'vault'});
@@ -342,38 +363,37 @@ export function createAuthoredWorldGeometry(def={}){
     return portals;
   }));
   
-  const STATIC_SUPPORTS = STATIC_BOXES.map(o=>({type:'rect',x:o.x,z:o.z,w:o.w,d:o.d,y:terrainHeight(o.x,o.z)+o.yOffset+o.h,rot:o.rot}));
-  
-  
-  // Canonical player collision proxies. Both the client predictor and the server
-  // authority consume these exact shapes; rendering never creates a second set of
-  // ad-hoc collision bounds.
-  const STATIC_PLAYER_COLLIDERS = STATIC_BOXES.map(o=>{
-    const minY=terrainHeight(o.x,o.z)+o.yOffset,a=orientedAabb(o.x,o.z,o.w,o.d,o.rot);
-    return {type:'box',x:o.x,z:o.z,w:o.w,d:o.d,rot:o.rot,...a,minY,maxY:minY+o.h,role:'static',supportTop:true,traversal:'mantle'};
-  });
-  
+  const STATIC_SUPPORTS = STATIC_PARTS.filter(p=>p.supportTop).map(p=>p.type==='round'?{type:'round',x:p.x,z:p.z,r:p.r,y:p.maxY,role:p.role}:{type:'rect',x:p.x,z:p.z,w:p.w,d:p.d,y:p.maxY,rot:p.rot,role:p.role});
+
+  // Canonical player/projectile collision proxies. These are derived from the same
+  // physical parts used to describe authored props, rather than one oversized box
+  // around detailed visual models. This prevents invisible corners and walk-through
+  // bodywork on compound props.
+  const STATIC_PLAYER_COLLIDERS = STATIC_PARTS.filter(p=>p.playerSolid).map(p=>p.type==='round'?{type:'round',x:p.x,z:p.z,r:p.r,minY:p.minY,maxY:p.maxY,role:p.role,supportTop:!!p.supportTop,traversal:p.traversal||''}:{type:'box',x:p.x,z:p.z,w:p.w,d:p.d,rot:p.rot,...orientedAabb(p.x,p.z,p.w,p.d,p.rot),minY:p.minY,maxY:p.maxY,role:p.role,supportTop:!!p.supportTop,traversal:p.traversal||''});
+  const STATIC_PROJECTILE_COLLIDERS = STATIC_PARTS.filter(p=>p.projectileSolid).map(p=>p.type==='round'?{type:'round',x:p.x,z:p.z,r:p.r,minY:p.minY,maxY:p.maxY,role:p.role}:{type:'box',x:p.x,z:p.z,w:p.w,d:p.d,rot:p.rot,minY:p.minY,maxY:p.maxY,role:p.role});
+
   const NATURAL_PLAYER_COLLIDERS = NATURAL_OBSTACLES.map(o=>{
     const minY=naturalGroundBase(o.type,o.x,o.z,o.r);
-    if(o.type==='tree')return {type:'round',x:o.x,z:o.z,r:o.r*.72,minY,maxY:minY+o.h*.64,role:'tree',supportTop:false,traversal:''};
+    if(o.type==='tree')return {type:'round',x:o.x,z:o.z,r:o.r*.92,minY,maxY:minY+o.h*.64,role:'tree',supportTop:false,traversal:''};
     if(o.type==='bush'){
       // Foliage is visual/soft cover. Only the dense lower core blocks movement,
       // so a normal jump or vault clears a bush instead of colliding with leaves.
       const r=o.r*.46,maxY=minY+Math.min(.74,o.h*.50);
       return {type:'round',x:o.x,z:o.z,r,minY,maxY,role:'bush',supportTop:false,traversal:'vault'};
     }
-    const r=o.r*.88,maxY=minY+o.h,supportRadius=Math.max(PLAYER_RADIUS+.14,o.r*.62);
+    const r=o.r*.98,maxY=minY+o.h,supportRadius=Math.max(PLAYER_RADIUS+.14,o.r*.72);
     return {type:'round',x:o.x,z:o.z,r,minY,maxY,role:'rock',supportTop:true,supportRadius,traversal:'mantle'};
   });
-  
+
   const NATURAL_SUPPORTS = NATURAL_PLAYER_COLLIDERS.filter(c=>c.role==='rock').map(c=>({type:'round',x:c.x,z:c.z,r:c.supportRadius,y:c.maxY,role:'rock'}));
-  
+  const PYRAMID_PLAYER_COLLIDERS = PYRAMIDS.map(p=>{const minY=terrainHeight(p.x,p.z)-.05;return{type:'pyramid',x:p.x,z:p.z,base:p.base,h:p.h,minY,maxY:minY+p.h,role:'mound',supportTop:true,traversal:''};});
+
   const BUILDING_PLAYER_COLLIDERS = [
     ...BUILDING_PARTS.filter(p=>p.playerSolid).map(p=>{const a=orientedAabb(p.x,p.z,p.w,p.d,p.rot||0);return{type:'box',x:p.x,z:p.z,w:p.w,d:p.d,rot:p.rot||0,...a,minY:p.bottomY,maxY:p.topY,role:p.role,crouchStep:!!p.crouchStep,supportTop:!!p.supportTop,traversal:p.traversal||(p.crouchStep?'vault':p.supportTop?'mantle':'')}}),
     ...BUILDING_PLAYER_RAMPS.map(r=>({...r,supportTop:true,traversal:''})),
   ];
   
-  const WORLD_PLAYER_COLLIDERS = [...STATIC_PLAYER_COLLIDERS,...NATURAL_PLAYER_COLLIDERS,...BUILDING_PLAYER_COLLIDERS];
+  const WORLD_PLAYER_COLLIDERS = [...STATIC_PLAYER_COLLIDERS,...NATURAL_PLAYER_COLLIDERS,...PYRAMID_PLAYER_COLLIDERS,...BUILDING_PLAYER_COLLIDERS];
   
   
   function circleTouchesRect(x,z,r,minX,maxX,minZ,maxZ){const qx=clamp(x,minX,maxX),qz=clamp(z,minZ,maxZ),dx=x-qx,dz=z-qz;return dx*dx+dz*dz<=r*r;}
@@ -389,9 +409,8 @@ export function createAuthoredWorldGeometry(def={}){
   
   function worldSupportHeight(x,z,currentY=terrainHeight(x,z),allowCrouchStep=false,playerRadius=PLAYER_RADIUS){
     let best=terrainHeight(x,z),limit=currentY+MAX_STEP_HEIGHT;
-    for(const p of PYRAMIDS){
-      const dx=Math.abs(x-p.x),dz=Math.abs(z-p.z),half=p.base/2;
-      if(dx<=half&&dz<=half){const y=terrainHeight(p.x,p.z)+p.h*(1-Math.max(dx,dz)/half);if(y<=limit&&y>best)best=y;}
+    for(const p of PYRAMID_PLAYER_COLLIDERS){
+      const half=p.base/2,qx=clamp(x,p.x-half,p.x+half),qz=clamp(z,p.z-half,p.z+half),od=Math.hypot(x-qx,z-qz);if(od>playerRadius)continue;const y=p.minY+p.h*(1-Math.max(Math.abs(qx-p.x),Math.abs(qz-p.z))/half);if(y<=limit&&y>best)best=y;
     }
     for(const surface of STATIC_SUPPORTS){const y=surfaceHeightAt(surface,x,z,playerRadius);if(y!=null&&y<=limit&&y>best)best=y;}
     for(const surface of NATURAL_SUPPORTS){const y=surfaceHeightAt(surface,x,z,playerRadius);if(y!=null&&y<=limit&&y>best)best=y;}
@@ -418,6 +437,7 @@ export function createAuthoredWorldGeometry(def={}){
     };
     for(const surface of STATIC_SUPPORTS)consider(surface);
     for(const surface of NATURAL_SUPPORTS)consider(surface);
+    for(const p of PYRAMID_PLAYER_COLLIDERS){const half=p.base/2,qx=clamp(x,p.x-half,p.x+half),qz=clamp(z,p.z-half,p.z+half);if(Math.hypot(x-qx,z-qz)>playerRadius)continue;const y=p.minY+p.h*(1-Math.max(Math.abs(qx-p.x),Math.abs(qz-p.z))/half);if(y>py+.015&&y<=limit+.001&&(best==null||y>best))best=y;}
     for(const surface of BUILDING_SUPPORTS)consider(surface,false);
     return best;
   }
@@ -435,5 +455,5 @@ export function createAuthoredWorldGeometry(def={}){
     }
     return{y:resolved,hit};
   }
-  return {PLAYER_HEIGHT,PLAYER_RADIUS,ARENA_LIMIT,MAX_STEP_HEIGHT,CROUCH_WINDOW_STEP_HEIGHT,ROADS,STATIC_BOXES,BUILDINGS,AUTHORED_HEIGHTFIELD,AUTHORED_MATERIAL_SURFACE,AUTHORED_ENVIRONMENT,groundMaterialCode,TERRAIN_MODIFIERS,ELEVATION_OBJECTS,PYRAMIDS,NATURAL_OBSTACLES,COMBAT_FLOW_NODES,rawTerrainHeight,TERRAIN_SIZE,TERRAIN_SEGMENTS,terrainVertexHeight,terrainHeight,LADDERS,terrainMinAround,naturalGroundBase,buildingWallOpenings,splitWall,buildingPlan,makeBuildingGeometry,makeAllBuildingGeometry,BUILDING_GEOMETRY,BUILDING_SUPPORTS,BUILDING_HORIZONTAL_SOLIDS,BUILDING_PLAYER_RAMPS,BUILDING_PARTS,BUILDING_WINDOW_PORTALS,STATIC_SUPPORTS,STATIC_PLAYER_COLLIDERS,NATURAL_PLAYER_COLLIDERS,NATURAL_SUPPORTS,BUILDING_PLAYER_COLLIDERS,WORLD_PLAYER_COLLIDERS,worldSupportHeight,worldStepUpHeight,resolveCeilingCollision,MINIMAP_LIMIT};
+  return {PLAYER_HEIGHT,PLAYER_RADIUS,ARENA_LIMIT,MAX_STEP_HEIGHT,CROUCH_WINDOW_STEP_HEIGHT,ROADS,STATIC_BOXES,STATIC_GEOMETRY,STATIC_PARTS,STATIC_PROJECTILE_COLLIDERS,BUILDINGS,AUTHORED_HEIGHTFIELD,AUTHORED_MATERIAL_SURFACE,AUTHORED_ENVIRONMENT,groundMaterialCode,TERRAIN_MODIFIERS,ELEVATION_OBJECTS,PYRAMIDS,PYRAMID_PLAYER_COLLIDERS,NATURAL_OBSTACLES,COMBAT_FLOW_NODES,rawTerrainHeight,TERRAIN_SIZE,TERRAIN_SEGMENTS,terrainVertexHeight,terrainHeight,LADDERS,terrainMinAround,naturalGroundBase,buildingWallOpenings,splitWall,buildingPlan,makeBuildingGeometry,makeAllBuildingGeometry,BUILDING_GEOMETRY,BUILDING_SUPPORTS,BUILDING_HORIZONTAL_SOLIDS,BUILDING_PLAYER_RAMPS,BUILDING_PARTS,BUILDING_WINDOW_PORTALS,STATIC_SUPPORTS,STATIC_PLAYER_COLLIDERS,NATURAL_PLAYER_COLLIDERS,NATURAL_SUPPORTS,BUILDING_PLAYER_COLLIDERS,WORLD_PLAYER_COLLIDERS,worldSupportHeight,worldStepUpHeight,resolveCeilingCollision,MINIMAP_LIMIT};
 }

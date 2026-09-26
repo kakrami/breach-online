@@ -2,12 +2,12 @@ import { CROUCH_HEIGHT } from './game-config.js';
 import { segmentAabbFirstT, segmentCylinderFirstT, segmentPyramidFirstT, segmentEllipsoidFirstT } from './collision-primitives.js';
 
 export function createAuthoredServerCollision(world){
-  const {PLAYER_HEIGHT,ARENA_LIMIT,STATIC_BOXES,BUILDING_PARTS,PYRAMIDS,NATURAL_OBSTACLES,terrainHeight,naturalGroundBase}=world;
+  const {PLAYER_HEIGHT,ARENA_LIMIT,STATIC_BOXES,STATIC_PROJECTILE_COLLIDERS,BUILDING_PARTS,PYRAMIDS,NATURAL_OBSTACLES,terrainHeight,naturalGroundBase}=world;
   
   const CELL_SIZE = 8;
   const CELL_HEIGHT = 3;
   const WORLD_PROJECTILE_OBSTACLES = [
-    ...STATIC_BOXES.map((o) => ({ type:'box', ...o })),
+    ...(Array.isArray(STATIC_PROJECTILE_COLLIDERS)?STATIC_PROJECTILE_COLLIDERS:STATIC_BOXES.map((o) => ({ type:'box', ...o }))),
     ...PYRAMIDS.map((o) => ({ type:'pyramid', ...o })),
     ...NATURAL_OBSTACLES.map((o) => ({ ...o })),
     ...BUILDING_PARTS.filter((p) => p.projectileSolid).map((p) => ({
