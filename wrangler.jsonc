@@ -9,12 +9,14 @@
   "durable_objects": {
     "bindings": [
       { "name": "ROOMS", "class_name": "GameRoom" },
-      { "name": "DIRECTORY", "class_name": "WorldDirectory" }
+      { "name": "DIRECTORY", "class_name": "WorldDirectory" },
+      { "name": "MAPS", "class_name": "MapLibrary" }
     ]
   },
   "exports": {
     "GameRoom": { "type": "durable-object", "storage": "sqlite" },
-    "WorldDirectory": { "type": "durable-object", "storage": "sqlite" }
+    "WorldDirectory": { "type": "durable-object", "storage": "sqlite" },
+    "MapLibrary": { "type": "durable-object", "storage": "sqlite" }
   },
   "observability": {
     "enabled": true

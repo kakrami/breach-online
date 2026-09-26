@@ -189,9 +189,10 @@ export const LADDER_ATTACH_MAX_NORMAL = 0.88;
 export const LADDER_TOP_ATTACH_MAX_NORMAL = 0.92;
 
 export function ladderById(ladders,id){return (Array.isArray(ladders)?ladders:[]).find(ladder=>String(ladder?.id||'')===String(id||''))||null;}
-export function ladderClimbPoint(ladder,radius=0.34){const r=Math.max(.05,Number(radius)||.34);return{x:Number(ladder.x)+Number(ladder.nx)*(r+.08),z:Number(ladder.z)+Number(ladder.nz)*(r+.08)};}
-export function ladderBottomExitPoint(ladder,radius=0.34){const r=Math.max(.05,Number(radius)||.34);return{x:Number(ladder.x)+Number(ladder.nx)*(r+.34),y:Number(ladder.bottomY),z:Number(ladder.z)+Number(ladder.nz)*(r+.34)};}
-export function ladderTopExitPoint(ladder,radius=0.34){const r=Math.max(.05,Number(radius)||.34);return{x:Number(ladder.x)-Number(ladder.nx)*(r+.32),y:Number(ladder.topY),z:Number(ladder.z)-Number(ladder.nz)*(r+.32)};}
+export function ladderFrame(ladder){const rx=Number(ladder?.nx),rz=Number(ladder?.nz),len=Math.hypot(rx,rz);if(!Number.isFinite(len)||len<.25)return null;const nx=rx/len,nz=rz/len;return{nx,nz,tx:-nz,tz:nx};}
+export function ladderClimbPoint(ladder,radius=0.34){const frame=ladderFrame(ladder);if(!frame)return{x:Number(ladder?.x)||0,z:Number(ladder?.z)||0};const r=Math.max(.05,Number(radius)||.34);return{x:Number(ladder.x)+frame.nx*(r+.08),z:Number(ladder.z)+frame.nz*(r+.08)};}
+export function ladderBottomExitPoint(ladder,radius=0.34){const frame=ladderFrame(ladder);if(!frame)return{x:Number(ladder?.x)||0,y:Number(ladder?.bottomY)||0,z:Number(ladder?.z)||0};const r=Math.max(.05,Number(radius)||.34);return{x:Number(ladder.x)+frame.nx*(r+.34),y:Number(ladder.bottomY),z:Number(ladder.z)+frame.nz*(r+.34)};}
+export function ladderTopExitPoint(ladder,radius=0.34){const frame=ladderFrame(ladder);if(!frame)return{x:Number(ladder?.x)||0,y:Number(ladder?.topY)||0,z:Number(ladder?.z)||0};const r=Math.max(.05,Number(radius)||.34);return{x:Number(ladder.x)-frame.nx*(r+.32),y:Number(ladder.topY),z:Number(ladder.z)-frame.nz*(r+.32)};}
 export function findLadderEntry({ladders,x,y,z,dirX,dirZ,faceX=null,faceZ=null,radius=.34,grounded=true}={}){
   if(!grounded||!Array.isArray(ladders)||!ladders.length)return null;
   const px=Number(x),py=Number(y),pz=Number(z),r=Math.max(.05,Number(radius)||.34);let dx=Number(dirX)||0,dz=Number(dirZ)||0;const len=Math.hypot(dx,dz);
@@ -199,8 +200,9 @@ export function findLadderEntry({ladders,x,y,z,dirX,dirZ,faceX=null,faceZ=null,r
   let fx=Number(faceX),fz=Number(faceZ),faceLen=Math.hypot(fx,fz),hasFacing=Number.isFinite(fx)&&Number.isFinite(fz)&&faceLen>.20;if(hasFacing){fx/=faceLen;fz/=faceLen;}
   let best=null;
   for(const ladder of ladders){
-    const nx=Number(ladder.nx)||0,nz=Number(ladder.nz)||0,tx=Number(ladder.tx)||0,tz=Number(ladder.tz)||0,width=Math.max(.5,Number(ladder.width)||1),bottomY=Number(ladder.bottomY),topY=Number(ladder.topY);
-    if(!Number.isFinite(bottomY)||!Number.isFinite(topY)||topY<=bottomY+.5)continue;
+    const frame=ladderFrame(ladder),width=Math.max(.5,Number(ladder.width)||1),bottomY=Number(ladder.bottomY),topY=Number(ladder.topY);
+    if(!frame||!Number.isFinite(bottomY)||!Number.isFinite(topY)||topY<=bottomY+.5)continue;
+    const {nx,nz,tx,tz}=frame;
     const relX=px-Number(ladder.x),relZ=pz-Number(ladder.z),normal=relX*nx+relZ*nz,lateral=relX*tx+relZ*tz,approach=dx*nx+dz*nz,faceNormal=hasFacing?fx*nx+fz*nz:0;
     if(Math.abs(lateral)>width/2+r*.14)continue;
     if(Math.abs(py-bottomY)<=.42&&normal>=LADDER_ATTACH_MIN_NORMAL&&normal<=LADDER_ATTACH_MAX_NORMAL&&approach<-.38&&(!hasFacing||faceNormal<-.18)){

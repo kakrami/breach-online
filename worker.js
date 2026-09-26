@@ -553,6 +553,10 @@ function botRosterMatchesConfig(world,existing, blueBots, redBots, mode='tdm') {
 async function directoryStub(env) {
   return env.DIRECTORY.get(env.DIRECTORY.idFromName("global"));
 }
+async function mapLibraryStub(env) {
+  return env.MAPS.get(env.MAPS.idFromName("global"));
+}
+function mapApiBody(body={}){return{client:safeClientId(body.client),auth:safeClientAuth(body.auth)};}
 
 export default {
   async fetch(request, env, ctx) {
@@ -576,6 +580,38 @@ export default {
         build: BUILD_ID,
         mode: "durable-object-tactical-fps-lobby-modes",
       });
+    }
+
+
+    if (url.pathname === "/maps/list" && request.method === "POST") {
+      let body={};try{body=await request.json();}catch{}
+      const response=await (await mapLibraryStub(env)).fetch("https://maps.internal/list",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+      let data={};try{data=await response.json();}catch{data={error:"Map library unavailable."};}
+      return json(request,env,data,response.status);
+    }
+    if (url.pathname === "/maps/save" && request.method === "POST") {
+      let body={};try{body=await request.json();}catch{}
+      const response=await (await mapLibraryStub(env)).fetch("https://maps.internal/save",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+      let data={};try{data=await response.json();}catch{data={error:"Map save unavailable."};}
+      return json(request,env,data,response.status);
+    }
+    if (url.pathname === "/maps/publish" && request.method === "POST") {
+      let body={};try{body=await request.json();}catch{}
+      const response=await (await mapLibraryStub(env)).fetch("https://maps.internal/publish",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+      let data={};try{data=await response.json();}catch{data={error:"Map publish unavailable."};}
+      return json(request,env,data,response.status);
+    }
+    if (url.pathname === "/maps/get" && request.method === "POST") {
+      let body={};try{body=await request.json();}catch{}
+      const response=await (await mapLibraryStub(env)).fetch("https://maps.internal/get",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+      let data={};try{data=await response.json();}catch{data={error:"Map unavailable."};}
+      return json(request,env,data,response.status);
+    }
+    if (url.pathname === "/maps/delete" && request.method === "POST") {
+      let body={};try{body=await request.json();}catch{}
+      const response=await (await mapLibraryStub(env)).fetch("https://maps.internal/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+      let data={};try{data=await response.json();}catch{data={error:"Map delete unavailable."};}
+      return json(request,env,data,response.status);
     }
 
     if (url.pathname === "/rooms" && request.method === "GET") {
@@ -751,6 +787,63 @@ export class WorldDirectory {
     }
 
     return new Response("not found", { status: 404 });
+  }
+}
+
+
+export class MapLibrary {
+  constructor(ctx, env){this.ctx=ctx;this.env=env;}
+  async ownerHash(client,auth){const id=safeClientId(client),secret=safeClientAuth(auth);if(!id||secret.length<32)return null;return{id,hash:await sha256Hex(secret)};}
+  async index(){return (await this.ctx.storage.get('map:index'))||{};}
+  async putIndex(index){await this.ctx.storage.put('map:index',index);}
+  safeId(value){const id=String(value||'').toLowerCase().replace(/[^a-z0-9_-]/g,'').slice(0,48);return /^map_[a-z0-9]{8,40}$/.test(id)?id:'';}
+  newId(){const raw=globalThis.crypto?.randomUUID?.().replace(/-/g,'')||`${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;return `map_${raw.slice(0,16).toLowerCase()}`;}
+  publicMeta(entry){return{id:entry.id,name:entry.name,ownerClientId:entry.ownerClientId,createdAt:entry.createdAt,updatedAt:entry.updatedAt,publishedRevision:entry.publishedRevision||0,draft:!!entry.hasDraft,schemaVersion:entry.schemaVersion||3,summary:entry.summary||{},source:'user'};}
+  official(){return[
+    {id:'highlands',name:'HIGHLANDS',source:'official',summary:{theme:'highlands'}},
+    {id:'depot',name:'FREIGHT DEPOT',source:'official',summary:{theme:'depot'}},
+    {id:'yard',name:'CONTAINER YARD',source:'official',summary:{theme:'yard'}},
+    {id:'rig',name:'DUST RIG',source:'official',summary:{theme:'rig'}}
+  ];}
+  async fetch(request){
+    const url=new URL(request.url);let body={};if(request.method==='POST'){try{body=await request.json();}catch{}}
+    if(url.pathname==='/list'&&request.method==='POST'){
+      const owner=await this.ownerHash(body.client,body.auth),index=await this.index();
+      const mine=owner?Object.values(index).filter(e=>e.ownerClientId===owner.id&&e.ownerAuthHash===owner.hash).sort((a,b)=>b.updatedAt-a.updatedAt).map(e=>this.publicMeta(e)):[];
+      return new Response(JSON.stringify({official:this.official(),mine}),{headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
+    }
+    if(url.pathname==='/save'&&request.method==='POST'){
+      const owner=await this.ownerHash(body.client,body.auth);if(!owner)return new Response(JSON.stringify({error:'Missing map owner credential.'}),{status:401,headers:{'content-type':'application/json'}});
+      let def;try{def=sanitizeUploadedMapDefinition(body.map);}catch(error){return new Response(JSON.stringify({error:String(error?.message||'Invalid map.')}),{status:400,headers:{'content-type':'application/json'}});}
+      const index=await this.index();let id=this.safeId(body.mapId);let entry=id?index[id]:null;
+      if(entry&&(entry.ownerClientId!==owner.id||entry.ownerAuthHash!==owner.hash))return new Response(JSON.stringify({error:'Map is owned by another player.'}),{status:403,headers:{'content-type':'application/json'}});
+      if(!entry){id=this.newId();const now=Date.now();entry={id,ownerClientId:owner.id,ownerAuthHash:owner.hash,createdAt:now,publishedRevision:0};}
+      def.meta={...(def.meta||{}),id,name:String(body.name||def.meta?.name||'UNTITLED MAP').replace(/[\u0000-\u001f\u007f]/g,'').slice(0,64)||'UNTITLED MAP'};
+      const now=Date.now(),summary={...customMapSummary(def),theme:def.theme};entry.name=def.meta.name;entry.updatedAt=now;entry.hasDraft=true;entry.schemaVersion=def.schemaVersion;entry.summary=summary;entry.draftFingerprint=customMapFingerprint(def);index[id]=entry;
+      await this.ctx.storage.put(`map:${id}:draft`,def);await this.putIndex(index);
+      return new Response(JSON.stringify({ok:true,map:this.publicMeta(entry),mapId:id}),{headers:{'content-type':'application/json; charset=utf-8'}});
+    }
+    if(url.pathname==='/publish'&&request.method==='POST'){
+      const owner=await this.ownerHash(body.client,body.auth),id=this.safeId(body.mapId),index=await this.index(),entry=index[id];
+      if(!owner||!entry||entry.ownerClientId!==owner.id||entry.ownerAuthHash!==owner.hash)return new Response(JSON.stringify({error:'Map not found.'}),{status:404,headers:{'content-type':'application/json'}});
+      const draft=await this.ctx.storage.get(`map:${id}:draft`);if(!draft)return new Response(JSON.stringify({error:'Save a draft first.'}),{status:409,headers:{'content-type':'application/json'}});
+      const revision=Math.max(0,Math.floor(Number(entry.publishedRevision)||0))+1,def=sanitizeUploadedMapDefinition(draft);await this.ctx.storage.put(`map:${id}:rev:${revision}`,def);
+      entry.publishedRevision=revision;entry.updatedAt=Date.now();entry.hasDraft=true;entry.publishedFingerprint=customMapFingerprint(def);index[id]=entry;await this.putIndex(index);
+      return new Response(JSON.stringify({ok:true,map:this.publicMeta(entry),revision}),{headers:{'content-type':'application/json; charset=utf-8'}});
+    }
+    if(url.pathname==='/get'&&request.method==='POST'){
+      const id=this.safeId(body.mapId),index=await this.index(),entry=index[id];if(!entry)return new Response(JSON.stringify({error:'Map not found.'}),{status:404,headers:{'content-type':'application/json'}});
+      const revision=Math.max(0,Math.floor(Number(body.revision)||0));let key='';
+      if(revision>0){if(revision>Number(entry.publishedRevision||0))return new Response(JSON.stringify({error:'Revision not found.'}),{status:404,headers:{'content-type':'application/json'}});key=`map:${id}:rev:${revision}`;}
+      else {const owner=await this.ownerHash(body.client,body.auth);if(owner&&entry.ownerClientId===owner.id&&entry.ownerAuthHash===owner.hash&&entry.hasDraft)key=`map:${id}:draft`;else if(entry.publishedRevision>0)key=`map:${id}:rev:${entry.publishedRevision}`;else return new Response(JSON.stringify({error:'Map has not been published.'}),{status:403,headers:{'content-type':'application/json'}});}
+      const def=await this.ctx.storage.get(key);if(!def)return new Response(JSON.stringify({error:'Map data missing.'}),{status:404,headers:{'content-type':'application/json'}});
+      return new Response(JSON.stringify({map:this.publicMeta(entry),definition:def,revision:revision||entry.publishedRevision||0}),{headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
+    }
+    if(url.pathname==='/delete'&&request.method==='POST'){
+      const owner=await this.ownerHash(body.client,body.auth),id=this.safeId(body.mapId),index=await this.index(),entry=index[id];if(!owner||!entry||entry.ownerClientId!==owner.id||entry.ownerAuthHash!==owner.hash)return new Response(JSON.stringify({error:'Map not found.'}),{status:404,headers:{'content-type':'application/json'}});
+      await this.ctx.storage.delete(`map:${id}:draft`);for(let r=1;r<=Number(entry.publishedRevision||0);r++)await this.ctx.storage.delete(`map:${id}:rev:${r}`);delete index[id];await this.putIndex(index);return new Response(JSON.stringify({ok:true}),{headers:{'content-type':'application/json'}});
+    }
+    return new Response('not found',{status:404});
   }
 }
 

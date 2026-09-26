@@ -4,6 +4,7 @@ const text=(v,max=64,f='')=>String(v??f).replace(/[\u0000-\u001f\u007f]/g,'').sl
 const arr=(v,max)=>Array.isArray(v)?v.slice(0,max):[];
 const rot=v=>{let r=finite(v)%360;if(r<0)r+=360;return r;};
 const point=(p,arena)=>Array.isArray(p)&&p.length>=2?[clamp(finite(p[0]),-arena,arena),clamp(finite(p[1]),-arena,arena),clamp(finite(p[2]),-12,40),rot(p[3])]:null;
+function ladderFrame(o){const rx=finite(o?.nx),rz=finite(o?.nz),len=Math.hypot(rx,rz);if(!Number.isFinite(len)||len<.25)return null;const nx=rx/len,nz=rz/len;return{nx,nz,tx:-nz,tz:nx};}
 export const MAX_CUSTOM_MAP_BYTES=900000;
 export const CUSTOM_MAP_SCHEMA='breach-authored-map';
 export const CUSTOM_MAP_SCHEMA_VERSIONS=Object.freeze([1,2,3]);
@@ -28,7 +29,7 @@ export function sanitizeUploadedMapDefinition(raw){
  clean.elevationObjects=arr(raw.elevationObjects||raw.elevation,128).map(o=>({kind:['platform','ramp','stairs','overpass'].includes(String(o?.kind))?String(o.kind):'platform',x:clamp(finite(o?.x),-arena,arena),z:clamp(finite(o?.z),-arena,arena),w:clamp(finite(o?.w,8),2,80),d:clamp(finite(o?.d,10),2,100),rise:clamp(finite(o?.rise,3),.5,24),rot:rot(o?.rot),yOffset:clamp(finite(o?.yOffset),-20,40)}));
  clean.pyramids=arr(raw.pyramids||raw.mounds,128).map(o=>({x:clamp(finite(o?.x),-arena,arena),z:clamp(finite(o?.z),-arena,arena),base:clamp(finite(o?.base,8),2,80),h:clamp(finite(o?.h,4),.5,40)}));
  clean.naturalObstacles=arr(raw.naturalObstacles||raw.naturals,256).map(o=>({type:['tree','bush','rock'].includes(String(o?.type||o?.kind))?String(o.type||o.kind):'rock',x:clamp(finite(o?.x),-arena,arena),z:clamp(finite(o?.z),-arena,arena),r:clamp(finite(o?.r,1),.2,20),h:clamp(finite(o?.h,1),.2,40)}));
- clean.ladders=arr(raw.ladders,128).map((o,i)=>({id:text(o?.id,48,`ladder-${i+1}`),x:clamp(finite(o?.x),-arena,arena),z:clamp(finite(o?.z),-arena,arena),nx:clamp(finite(o?.nx),-1,1),nz:clamp(finite(o?.nz),-1,1),tx:clamp(finite(o?.tx),-1,1),tz:clamp(finite(o?.tz),-1,1),width:clamp(finite(o?.width,1.2),.5,4),bottomY:clamp(finite(o?.bottomY),-30,80),topY:clamp(finite(o?.topY,3),-29,100)})).filter(o=>o.topY>o.bottomY+.4);
+ clean.ladders=arr(raw.ladders,128).map((o,i)=>{const frame=ladderFrame(o);if(!frame)return null;return{id:text(o?.id,48,`ladder-${i+1}`),x:clamp(finite(o?.x),-arena,arena),z:clamp(finite(o?.z),-arena,arena),...frame,width:clamp(finite(o?.width,1.2),.5,4),bottomY:clamp(finite(o?.bottomY),-30,80),topY:clamp(finite(o?.topY,3),-29,100)};}).filter(o=>o&&o.topY>o.bottomY+.4);
  clean.combatFlowNodes=arr(raw.combatFlowNodes||raw.flowNodes||raw.flow,512).map(o=>({x:clamp(finite(o?.x),-arena,arena),z:clamp(finite(o?.z),-arena,arena)}));
  const sp=raw.spawnSets||raw.spawns||{},teams={};for(const k of ['blue','red','ffa'])teams[k]=arr(sp[k],96).map(p=>point(p,arena)).filter(Boolean);clean.spawnSets=teams;clean.spawnPolicy=scalars(raw.spawnPolicy,128);
  return clean;
