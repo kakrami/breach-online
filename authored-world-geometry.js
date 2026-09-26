@@ -1,13 +1,21 @@
 const finite=(v,f=0)=>Number.isFinite(Number(v))?Number(v):f;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const clampNumber=(v,a,b,f)=>clamp(finite(v,f),a,b);
-function sanitizeStaticBoxes(list){return (Array.isArray(list)?list:[]).map(o=>({x:finite(o?.x),z:finite(o?.z),w:clampNumber(o?.w,.2,100,2),d:clampNumber(o?.d,.2,100,2),h:clampNumber(o?.h,.2,50,2),...(o?.kind?{kind:String(o.kind)}:{})}));}
-function sanitizeBuildings(list){return (Array.isArray(list)?list:[]).map(b=>{let balcony=finite(b?.balcony,4);if(balcony<1.8||balcony>8)balcony=4;const levels=Math.max(2,Math.min(6,Math.round(finite(b?.levels,2))));return{x:finite(b?.x),z:finite(b?.z),w:clampNumber(b?.w,10,60,18),d:clampNumber(b?.d,9,50,14),floorH:clampNumber(b?.floorH,2.7,4.2,3.1),balcony,levels,...((b?.tall||levels>=4)?{tall:true}:{}),style:String(b?.style||'industrial')};});}
+const normalizeRot=v=>{let r=finite(v)%360;if(r<0)r+=360;return r;};
+const rotatePoint=(x,z,cx,cz,rot)=>{const a=normalizeRot(rot)*Math.PI/180,c=Math.cos(a),ss=Math.sin(a),dx=x-cx,dz=z-cz;return{x:cx+dx*c-dz*ss,z:cz+dx*ss+dz*c};};
+const rotateVector=(x,z,rot)=>{const a=normalizeRot(rot)*Math.PI/180,c=Math.cos(a),ss=Math.sin(a);return{x:x*c-z*ss,z:x*ss+z*c};};
+const orientedAabb=(x,z,w,d,rot=0)=>{const a=normalizeRot(rot)*Math.PI/180,c=Math.abs(Math.cos(a)),ss=Math.abs(Math.sin(a)),hx=w/2*c+d/2*ss,hz=w/2*ss+d/2*c;return{minX:x-hx,maxX:x+hx,minZ:z-hz,maxZ:z+hz};};
+function sanitizeStaticBoxes(list){return (Array.isArray(list)?list:[]).map(o=>({x:finite(o?.x),z:finite(o?.z),w:clampNumber(o?.w,.2,100,2),d:clampNumber(o?.d,.2,100,2),h:clampNumber(o?.h,.2,50,2),rot:normalizeRot(o?.rot),yOffset:clampNumber(o?.yOffset,-20,40,0),...(o?.kind?{kind:String(o.kind)}:{})}));}
+function sanitizeRoads(list){const kinds=new Set(['street','alley','service','dirt','sidewalk','crosswalk']);return (Array.isArray(list)?list:[]).map(o=>{let w=clampNumber(o?.w,2,300,20),d=clampNumber(o?.d,2,300,8),rot=normalizeRot(o?.rot);if(o?.rot==null&&d>w){[w,d]=[d,w];rot=90;}return{kind:kinds.has(String(o?.kind))?String(o.kind):'street',x:finite(o?.x),z:finite(o?.z),w,d,rot};});}
+function sanitizeBuildings(list){return (Array.isArray(list)?list:[]).map(b=>{let balcony=finite(b?.balcony,4);if(balcony<1.8||balcony>8)balcony=4;const levels=Math.max(2,Math.min(6,Math.round(finite(b?.levels,2))));return{x:finite(b?.x),z:finite(b?.z),w:clampNumber(b?.w,10,60,18),d:clampNumber(b?.d,9,50,14),floorH:clampNumber(b?.floorH,2.7,4.2,3.1),balcony,levels,rot:normalizeRot(b?.rot),yOffset:clampNumber(b?.yOffset,-20,40,0),...((b?.tall||levels>=4)?{tall:true}:{}),style:String(b?.style||'industrial')};});}
+function sanitizeTerrainModifiers(list){const kinds=new Set(['hill','valley','plateau','pit']);return (Array.isArray(list)?list:[]).map(o=>({kind:kinds.has(String(o?.kind))?String(o.kind):'hill',x:finite(o?.x),z:finite(o?.z),radius:clampNumber(o?.radius,3,100,16),height:clampNumber(o?.height,-24,30,(o?.kind==='valley'||o?.kind==='pit')?-3:3)}));}
+function sanitizeElevation(list){const kinds=new Set(['platform','ramp','stairs','overpass']);return (Array.isArray(list)?list:[]).map(o=>({kind:kinds.has(String(o?.kind))?String(o.kind):'platform',x:finite(o?.x),z:finite(o?.z),w:clampNumber(o?.w,2,80,8),d:clampNumber(o?.d,2,100,10),rise:clampNumber(o?.rise,.5,24,3),rot:normalizeRot(o?.rot)}));}
 function sanitizePyramids(list){return (Array.isArray(list)?list:[]).map(p=>({x:finite(p?.x),z:finite(p?.z),base:clampNumber(p?.base,2,80,8),h:clampNumber(p?.h,.5,40,4)}));}
 function sanitizeNatural(list){return (Array.isArray(list)?list:[]).map(o=>({type:['tree','bush','rock'].includes(String(o?.type))?String(o.type):'rock',x:finite(o?.x),z:finite(o?.z),r:clampNumber(o?.r,.2,20,1),h:clampNumber(o?.h,.2,40,1)}));}
 function sanitizeFlow(list){return (Array.isArray(list)?list:[]).map(p=>({x:finite(p?.x),z:finite(p?.z)}));}
 function sanitizeLadders(list){return (Array.isArray(list)?list:[]).map((l,i)=>({id:String(l?.id||`ladder-${i+1}`),x:finite(l?.x),z:finite(l?.z),nx:finite(l?.nx),nz:finite(l?.nz),tx:finite(l?.tx),tz:finite(l?.tz),width:clampNumber(l?.width,.5,4,1.2),bottomY:finite(l?.bottomY),topY:finite(l?.topY,3)})).filter(l=>l.topY>l.bottomY+.4);}
-function authoredMinimapLimit(def,arena){let extent=0;const take=(x,z,pad=0)=>{extent=Math.max(extent,Math.abs(finite(x))+pad,Math.abs(finite(z))+pad);};for(const o of def?.staticBoxes||[])take(o.x,o.z,Math.max(finite(o.w),finite(o.d))/2);for(const b of def?.buildings||[])take(b.x,b.z,Math.max(finite(b.w),finite(b.d))/2);for(const p of def?.pyramids||[])take(p.x,p.z,finite(p.base)/2);for(const o of def?.naturalObstacles||[])take(o.x,o.z,finite(o.r));for(const team of Object.values(def?.spawnSets||{}))for(const p of Array.isArray(team)?team:[])if(Array.isArray(p)&&p.length>=2)take(p[0],p[1]);return Math.min(arena,Math.max(12,finite(def?.minimapLimit,arena),Math.min(arena,extent+6)));}
+function authoredMinimapLimit(def,arena){let extent=0;const take=(x,z,pad=0)=>{extent=Math.max(extent,Math.abs(finite(x))+pad,Math.abs(finite(z))+pad);};const rect=(o)=>take(o.x,o.z,Math.abs(finite(o.rot))>1e-6?Math.hypot(finite(o.w),finite(o.d))/2:Math.max(finite(o.w),finite(o.d))/2);for(const o of def?.roads||[])rect(o);for(const o of def?.staticBoxes||[])rect(o);for(const b of def?.buildings||[])rect(b);for(const e of def?.elevationObjects||def?.elevation||[])rect(e);for(const t of def?.terrain?.modifiers||def?.terrainModifiers||[])take(t.x,t.z,finite(t.radius));for(const p of def?.pyramids||[])take(p.x,p.z,finite(p.base)/2);for(const o of def?.naturalObstacles||[])take(o.x,o.z,finite(o.r));for(const team of Object.values(def?.spawnSets||{}))for(const p of Array.isArray(team)?team:[])if(Array.isArray(p)&&p.length>=2)take(p[0],p[1]);return Math.min(arena,Math.max(12,finite(def?.minimapLimit,arena),Math.min(arena,extent+6)));}
+
 function terrainPresetHeight(preset,x,z){const key=String(preset||'flat').toLowerCase();if(key==='highlands'){const rolling=.55+1.15*Math.sin(x*.031)*Math.cos(z*.027)+.72*Math.sin((x+z)*.021)+.48*Math.cos((x-z)*.018),westRidge=8.8*Math.exp(-((x+62)**2)/1150)*Math.exp(-((z-20)**2)/6200),northHill=10.5*Math.exp(-((x-34)**2+(z-68)**2)/1450),southHill=7.2*Math.exp(-((x+20)**2+(z+67)**2)/1200),eastRise=6.5*Math.exp(-((x-78)**2+(z+10)**2)/1750),centerKnoll=4.4*Math.exp(-((x-8)**2+(z-4)**2)/900),valley=4*Math.exp(-((x+12)**2+(z-34)**2)/1050);return clamp(rolling+westRidge+northHill+southHill+eastRise+centerKnoll-valley,-2.4,13.8);}if(key==='depot'||key==='freight-depot'){const slab=.42+.24*Math.sin(x*.026)*Math.cos(z*.024)+.18*Math.sin((x-z)*.018),west=2.8*Math.exp(-((x+98)**2)/520)*Math.exp(-(z*z)/7600),east=2.5*Math.exp(-((x-100)**2)/520)*Math.exp(-(z*z)/7600),north=2.2*Math.exp(-((z-103)**2)/620)*Math.exp(-(x*x)/8200),south=2.4*Math.exp(-((z+102)**2)/620)*Math.exp(-(x*x)/8200),rise=1.35*Math.exp(-((x+48)**2+(z-56)**2)/1250)+1.05*Math.exp(-((x-54)**2+(z+56)**2)/1100),drain=1.15*Math.exp(-((x-2)**2)/280)*Math.exp(-((z+2)**2)/6800);return clamp(slab+west+east+north+south+rise-drain,-1,5.2);}if(key==='yard'||key==='container-yard'){return clamp(.18+.035*Math.sin(x*.11)+.028*Math.cos(z*.09)+.018*Math.sin((x+z)*.07),.08,.30);}if(key==='rig'||key==='dust-rig'){const base=.22+.055*Math.sin(x*.055)*Math.cos(z*.047)+.032*Math.sin((x-z)*.071),edge=.42*Math.max(0,(Math.max(Math.abs(x),Math.abs(z))-43)/12);return clamp(base+edge,.10,.72);}return 0;}
 
 export function createAuthoredWorldGeometry(def={}){
@@ -18,9 +26,13 @@ export function createAuthoredWorldGeometry(def={}){
   const MAX_STEP_HEIGHT = 0.62;
   const CROUCH_WINDOW_STEP_HEIGHT = 0.86;
   
+  const ROADS = sanitizeRoads(def?.roads);
+  
   const STATIC_BOXES = sanitizeStaticBoxes(def?.staticBoxes);
   
   const BUILDINGS = sanitizeBuildings(def?.buildings);
+  const TERRAIN_MODIFIERS = Object.freeze(sanitizeTerrainModifiers(def?.terrain?.modifiers||def?.terrainModifiers).map(o=>Object.freeze(o)));
+  const ELEVATION_OBJECTS = Object.freeze(sanitizeElevation(def?.elevationObjects||def?.elevation).map(o=>Object.freeze(o)));
   
   const PYRAMIDS = sanitizePyramids(def?.pyramids);
   
@@ -31,15 +43,16 @@ export function createAuthoredWorldGeometry(def={}){
   const SUPPORT_CONTACT_RADIUS = 0.075;
   const CEILING_HEAD_RADIUS = 0.22;
   
-  function rawTerrainHeight(x,z){ return terrainPresetHeight(def?.terrain?.preset||def?.theme||'flat',x,z); }
+  function terrainStampWeight(m,x,z){const r=Math.max(2,m.radius),d=Math.hypot(x-m.x,z-m.z),t=clamp(d/r,0,1);if(t>=1)return 0;if(m.kind==='plateau'){if(t<=.55)return 1;const q=(t-.55)/.45;return 1-(q*q*(3-2*q));}const q=1-t;return q*q*(3-2*q);}
+  function rawTerrainHeight(x,z){let h=terrainPresetHeight(def?.terrain?.preset||def?.theme||'flat',x,z);for(const m of TERRAIN_MODIFIERS)h+=m.height*terrainStampWeight(m,x,z);return clamp(h,-18,28);}
   
   const foundations = [
     ...PYRAMIDS.map(p=>({x:p.x,z:p.z,halfX:p.base/2+.45,halfZ:p.base/2+.45,blend:4.0})),
-    ...STATIC_BOXES.map(o=>({x:o.x,z:o.z,halfX:o.w/2+.45,halfZ:o.d/2+.45,blend:4.0})),
-    ...BUILDINGS.map(b=>({x:b.x,z:b.z,halfX:b.w/2+.55,halfZ:b.d/2+.55,blend:4.5}))
+    ...STATIC_BOXES.filter(o=>Math.abs(o.yOffset)<.05).map(o=>({x:o.x,z:o.z,halfX:Math.max(o.w,o.d)/2+.45,halfZ:Math.max(o.w,o.d)/2+.45,blend:4.0})),
+    ...BUILDINGS.filter(b=>Math.abs(b.yOffset)<.05).map(b=>({x:b.x,z:b.z,halfX:Math.max(b.w,b.d)/2+.55,halfZ:Math.max(b.w,b.d)/2+.55,blend:4.5}))
   ];
   
-  const TERRAIN_SIZE = 244;
+  const TERRAIN_SIZE = Math.max(244,ARENA_LIMIT*2+4);
   const TERRAIN_SEGMENTS = 128;
   const TERRAIN_HALF = TERRAIN_SIZE / 2;
   const TERRAIN_STEP = TERRAIN_SIZE / TERRAIN_SEGMENTS;
@@ -205,7 +218,7 @@ export function createAuthoredWorldGeometry(def={}){
   }
   
   function makeBuildingGeometry(b){
-    const levels=Math.max(2,Math.min(6,Math.floor(b.levels||2))),base=terrainHeight(b.x,b.z),plan=buildingPlan(b),parts=[],supports=[],horizontalSolids=[],playerRamps=[];
+    const levels=Math.max(2,Math.min(6,Math.floor(b.levels||2))),base=terrainHeight(b.x,b.z)+b.yOffset,plan=buildingPlan(b),parts=[],supports=[],horizontalSolids=[],playerRamps=[];
     const t=plan.wallT;
     const addWallX=(z,level,side)=>{
       const openings=buildingWallOpenings(b,level,side);
@@ -287,16 +300,23 @@ export function createAuthoredWorldGeometry(def={}){
     return{levels,base,plan,parts,supports,horizontalSolids,playerRamps};
   }
   
-  function makeAllBuildingGeometry(){return BUILDINGS.map(makeBuildingGeometry);}
-  
+  function transformRect(rect,b){const p=rotatePoint(rect.x,rect.z,b.x,b.z,b.rot);return{...rect,x:p.x,z:p.z,rot:normalizeRot((rect.rot||0)+b.rot)};}
+  function transformRamp(r,b){const a=rotatePoint(r.x1,r.z1??r.z,b.x,b.z,b.rot),c=rotatePoint(r.x2,r.z2??r.z,b.x,b.z,b.rot);return{...r,x1:a.x,z1:a.z,x2:c.x,z2:c.z,rot:normalizeRot((r.rot||0)+b.rot)};}
+  function transformBuildingGeometry(g,b){if(!b.rot)return{...g,parts:g.parts.map(p=>({...p,rot:0})),supports:g.supports.map(s=>s.type==='ramp'?transformRamp(s,b):({...s,rot:0})),horizontalSolids:g.horizontalSolids.map(s=>({...s,rot:0})),playerRamps:g.playerRamps.map(r=>transformRamp(r,b))};return{...g,parts:g.parts.map(p=>transformRect(p,b)),supports:g.supports.map(s=>s.type==='ramp'?transformRamp(s,b):transformRect(s,b)),horizontalSolids:g.horizontalSolids.map(s=>transformRect(s,b)),playerRamps:g.playerRamps.map(r=>transformRamp(r,b))};}
+  function makeAllBuildingGeometry(){return BUILDINGS.map(b=>transformBuildingGeometry(makeBuildingGeometry(b),b));}
+  function makeElevationGeometry(o){const base=terrainHeight(o.x,o.z),parts=[],supports=[],horizontalSolids=[],playerRamps=[],toWorld=(lx,lz)=>rotatePoint(o.x+lx,o.z+lz,o.x,o.z,o.rot),addRect=(role,lx,lz,w,d,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({role,x:p.x,z:p.z,w,d,bottomY,topY,rot:o.rot,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:false,traversal:flags.traversal||'',decorative:false});};
+    if(o.kind==='platform'||o.kind==='overpass'){const thick=o.kind==='overpass'?.7:.5,top=base+o.rise;addRect(o.kind,0,0,o.w,o.d,top-thick,top,{supportTop:true,traversal:'mantle'});supports.push({type:'rect',x:o.x,z:o.z,w:o.w,d:o.d,y:top,rot:o.rot,role:o.kind});horizontalSolids.push({x:o.x,z:o.z,w:o.w,d:o.d,bottomY:top-thick,topY:top,rot:o.rot});if(o.kind==='overpass')for(const side of [-1,1])addRect('overpassSupport',side*(o.w/2-.45),0,.7,o.d*.94,base,top-thick,{supportTop:false});}
+    else {const steps=Math.max(4,Math.ceil(o.rise/(o.kind==='stairs'?.34:.45))),stepD=o.d/steps;for(let i=0;i<steps;i++){const h=o.rise*(i+1)/steps,lz=-o.d/2+stepD*(i+.5);addRect(o.kind==='stairs'?'stairStep':'rampStep',0,lz,o.w,stepD+.04,base,base+h,{playerSolid:false,projectileSolid:true});}const low=toWorld(0,-o.d/2),high=toWorld(0,o.d/2),ramp={type:'ramp',x1:low.x,z1:low.z,x2:high.x,z2:high.z,w:o.w,bottomY:base,y0:base,y1:base+o.rise,role:o.kind==='stairs'?'stairRamp':'ramp',supportTop:true,traversal:''};supports.push(ramp);playerRamps.push(ramp);}
+    return{parts,supports,horizontalSolids,playerRamps};}
   const BUILDING_GEOMETRY = makeAllBuildingGeometry();
-  const BUILDING_SUPPORTS = BUILDING_GEOMETRY.flatMap(g=>g.supports);
-  const BUILDING_HORIZONTAL_SOLIDS = BUILDING_GEOMETRY.flatMap(g=>g.horizontalSolids);
-  const BUILDING_PLAYER_RAMPS = BUILDING_GEOMETRY.flatMap(g=>g.playerRamps);
-  const BUILDING_PARTS = BUILDING_GEOMETRY.flatMap(g=>g.parts);
+  const ELEVATION_GEOMETRY = ELEVATION_OBJECTS.map(makeElevationGeometry);
+  const BUILDING_SUPPORTS = [...BUILDING_GEOMETRY.flatMap(g=>g.supports),...ELEVATION_GEOMETRY.flatMap(g=>g.supports)];
+  const BUILDING_HORIZONTAL_SOLIDS = [...BUILDING_GEOMETRY.flatMap(g=>g.horizontalSolids),...ELEVATION_GEOMETRY.flatMap(g=>g.horizontalSolids)];
+  const BUILDING_PLAYER_RAMPS = [...BUILDING_GEOMETRY.flatMap(g=>g.playerRamps),...ELEVATION_GEOMETRY.flatMap(g=>g.playerRamps)];
+  const BUILDING_PARTS = [...BUILDING_GEOMETRY.flatMap(g=>g.parts),...ELEVATION_GEOMETRY.flatMap(g=>g.parts)];
   
   const BUILDING_WINDOW_PORTALS = Object.freeze(BUILDINGS.flatMap((b,buildingIndex)=>{
-    const base=terrainHeight(b.x,b.z),plan=buildingPlan(b),levels=Math.max(2,Math.min(6,Math.floor(b.levels||2))),portals=[];
+    const base=terrainHeight(b.x,b.z)+b.yOffset,plan=buildingPlan(b),levels=Math.max(2,Math.min(6,Math.floor(b.levels||2))),portals=[];
     const sides=[
       {side:'front',nx:0,nz:-1,tx:1,tz:0,x:b.x,z:b.z-b.d/2+plan.wallT/2},
       {side:'back',nx:0,nz:1,tx:1,tz:0,x:b.x,z:b.z+b.d/2-plan.wallT/2},
@@ -306,10 +326,10 @@ export function createAuthoredWorldGeometry(def={}){
     for(let level=0;level<levels;level++)for(const face of sides){
       for(const opening of buildingWallOpenings(b,level,face.side)){
         if(opening.kind!=='window')continue;
-        const cx=face.x+face.tx*opening.u,cz=face.z+face.tz*opening.u,floorY=base+level*b.floorH;
+        const rawX=face.x+face.tx*opening.u,rawZ=face.z+face.tz*opening.u,floorY=base+level*b.floorH,p=rotatePoint(rawX,rawZ,b.x,b.z,b.rot),nv=rotateVector(face.nx,face.nz,b.rot),tv=rotateVector(face.tx,face.tz,b.rot);
         portals.push(Object.freeze({
           id:`b${buildingIndex}-l${level}-${face.side}-${Math.round(opening.u*1000)}`,
-          buildingIndex,level,side:face.side,cx,cz,nx:face.nx,nz:face.nz,tx:face.tx,tz:face.tz,
+          buildingIndex,level,side:face.side,cx:p.x,cz:p.z,nx:nv.x,nz:nv.z,tx:tv.x,tz:tv.z,
           width:opening.w,halfWidth:opening.w/2,wallThickness:plan.wallT,floorY,
           bottomY:floorY+opening.bottom,topY:floorY+opening.top,
         }));
@@ -318,15 +338,15 @@ export function createAuthoredWorldGeometry(def={}){
     return portals;
   }));
   
-  const STATIC_SUPPORTS = STATIC_BOXES.map(o=>({type:'rect',x:o.x,z:o.z,w:o.w,d:o.d,y:terrainHeight(o.x,o.z)+o.h}));
+  const STATIC_SUPPORTS = STATIC_BOXES.map(o=>({type:'rect',x:o.x,z:o.z,w:o.w,d:o.d,y:terrainHeight(o.x,o.z)+o.yOffset+o.h,rot:o.rot}));
   
   
   // Canonical player collision proxies. Both the client predictor and the server
   // authority consume these exact shapes; rendering never creates a second set of
   // ad-hoc collision bounds.
   const STATIC_PLAYER_COLLIDERS = STATIC_BOXES.map(o=>{
-    const minY=terrainHeight(o.x,o.z);
-    return {type:'box',x:o.x,z:o.z,w:o.w,d:o.d,minX:o.x-o.w/2,maxX:o.x+o.w/2,minZ:o.z-o.d/2,maxZ:o.z+o.d/2,minY,maxY:minY+o.h,role:'static',supportTop:true,traversal:'mantle'};
+    const minY=terrainHeight(o.x,o.z)+o.yOffset,a=orientedAabb(o.x,o.z,o.w,o.d,o.rot);
+    return {type:'box',x:o.x,z:o.z,w:o.w,d:o.d,rot:o.rot,...a,minY,maxY:minY+o.h,role:'static',supportTop:true,traversal:'mantle'};
   });
   
   const NATURAL_PLAYER_COLLIDERS = NATURAL_OBSTACLES.map(o=>{
@@ -345,41 +365,21 @@ export function createAuthoredWorldGeometry(def={}){
   const NATURAL_SUPPORTS = NATURAL_PLAYER_COLLIDERS.filter(c=>c.role==='rock').map(c=>({type:'round',x:c.x,z:c.z,r:c.supportRadius,y:c.maxY,role:'rock'}));
   
   const BUILDING_PLAYER_COLLIDERS = [
-    ...BUILDING_PARTS.filter(p=>p.playerSolid).map(p=>({type:'box',x:p.x,z:p.z,w:p.w,d:p.d,minX:p.x-p.w/2,maxX:p.x+p.w/2,minZ:p.z-p.d/2,maxZ:p.z+p.d/2,minY:p.bottomY,maxY:p.topY,role:p.role,crouchStep:!!p.crouchStep,supportTop:!!p.supportTop,traversal:p.traversal||(p.crouchStep?'vault':p.supportTop?'mantle':'')})),
+    ...BUILDING_PARTS.filter(p=>p.playerSolid).map(p=>{const a=orientedAabb(p.x,p.z,p.w,p.d,p.rot||0);return{type:'box',x:p.x,z:p.z,w:p.w,d:p.d,rot:p.rot||0,...a,minY:p.bottomY,maxY:p.topY,role:p.role,crouchStep:!!p.crouchStep,supportTop:!!p.supportTop,traversal:p.traversal||(p.crouchStep?'vault':p.supportTop?'mantle':'')}}),
     ...BUILDING_PLAYER_RAMPS.map(r=>({...r,supportTop:true,traversal:''})),
   ];
   
   const WORLD_PLAYER_COLLIDERS = [...STATIC_PLAYER_COLLIDERS,...NATURAL_PLAYER_COLLIDERS,...BUILDING_PLAYER_COLLIDERS];
   
   
-  function circleTouchesRect(x,z,r,minX,maxX,minZ,maxZ){
-    const qx=clamp(x,minX,maxX),qz=clamp(z,minZ,maxZ),dx=x-qx,dz=z-qz;
-    return dx*dx+dz*dz<=r*r;
-  }
-  
+  function circleTouchesRect(x,z,r,minX,maxX,minZ,maxZ){const qx=clamp(x,minX,maxX),qz=clamp(z,minZ,maxZ),dx=x-qx,dz=z-qz;return dx*dx+dz*dz<=r*r;}
+  function circleTouchesOrientedRect(x,z,r,surface){const a=-normalizeRot(surface.rot||0)*Math.PI/180,c=Math.cos(a),ss=Math.sin(a),dx=x-surface.x,dz=z-surface.z,lx=dx*c-dz*ss,lz=dx*ss+dz*c;return circleTouchesRect(lx,lz,r,-surface.w/2,surface.w/2,-surface.d/2,surface.d/2);}
+  function rampPoint(surface,x,z){const z1=surface.z1??surface.z,z2=surface.z2??surface.z,vx=surface.x2-surface.x1,vz=z2-z1,len2=vx*vx+vz*vz;if(len2<1e-9)return{t:0,d:Math.hypot(x-surface.x1,z-z1),length:0};const raw=((x-surface.x1)*vx+(z-z1)*vz)/len2,t=clamp(raw,0,1),px=surface.x1+vx*t,pz=z1+vz*t;return{t,d:Math.hypot(x-px,z-pz),length:Math.sqrt(len2),raw};}
   function surfaceHeightAt(surface,x,z,radius=PLAYER_RADIUS,contactRadius=SUPPORT_CONTACT_RADIUS){
     const r=Math.max(0,Number(radius)||0),contact=Math.min(r,Math.max(0,Number(contactRadius)||0));
-    if(surface.type==='rect'){
-      const minX=surface.x-surface.w/2,maxX=surface.x+surface.w/2,minZ=surface.z-surface.d/2,maxZ=surface.z+surface.d/2;
-      // Feet need meaningful contact with a flat surface. Using the whole player
-      // radius made floors/roofs grab the capsule ~38 cm before its center reached
-      // an edge, causing stair-top pops and sticky ledges.
-      return circleTouchesRect(x,z,contact,minX,maxX,minZ,maxZ)?surface.y:null;
-    }
-    // Round rocks still require the full capsule footprint to fit on top.
+    if(surface.type==='rect')return circleTouchesOrientedRect(x,z,contact,surface)?surface.y:null;
     if(surface.type==='round')return Math.hypot(x-surface.x,z-surface.z)<=Math.max(0,surface.r-r)?surface.y:null;
-    if(surface.type==='ramp'){
-      const lo=Math.min(surface.x1,surface.x2),hi=Math.max(surface.x1,surface.x2),minZ=surface.z-surface.w/2,maxZ=surface.z+surface.w/2;
-      // Ramps are walkable collision proxies for stairs/slopes. Their blocker uses
-      // the full capsule footprint, so support must use that same footprint too.
-      // Using the tiny flat-floor contact radius here created an invisible lip at
-      // ramp sides: the capsule touched the ramp before its feet were considered
-      // supported, allowing brief penetration/stickiness near stair edges.
-      const rampContact=Math.max(contact,r);
-      if(!circleTouchesRect(x,z,rampContact,lo,hi,minZ,maxZ))return null;
-      const sx=clamp(x,lo,hi),span=surface.x2-surface.x1,t=Math.abs(span)>1e-9?(sx-surface.x1)/span:0;
-      return surface.y0+(surface.y1-surface.y0)*t;
-    }
+    if(surface.type==='ramp'){const rampContact=Math.max(contact,r),q=rampPoint(surface,x,z),alongPad=q.length>0?rampContact/q.length:0;if(q.raw<-alongPad||q.raw>1+alongPad||q.d>surface.w/2+rampContact)return null;return surface.y0+(surface.y1-surface.y0)*q.t;}
     return null;
   }
   
@@ -422,9 +422,7 @@ export function createAuthoredWorldGeometry(def={}){
     if(nextY<=previousY)return{y:nextY,hit:false};
     const newHead=nextY+playerHeight,r=Math.max(0,Math.min(playerRadius,CEILING_HEAD_RADIUS)-.01);let resolved=nextY,hit=false;
     for(const s of BUILDING_HORIZONTAL_SOLIDS){
-      const minX=s.x-s.w/2,maxX=s.x+s.w/2,minZ=s.z-s.d/2,maxZ=s.z+s.d/2;
-      const qx=clamp(x,minX,maxX),qz=clamp(z,minZ,maxZ),dx=x-qx,dz=z-qz;
-      if(dx*dx+dz*dz>=r*r)continue;
+      if(!circleTouchesOrientedRect(x,z,r,s))continue;
       // If the feet are still below the slab, any upward head penetration is a
       // ceiling hit. This also repairs a missed prior frame instead of letting the
       // player oscillate through the underside. The smaller head probe prevents
@@ -433,5 +431,5 @@ export function createAuthoredWorldGeometry(def={}){
     }
     return{y:resolved,hit};
   }
-  return {PLAYER_HEIGHT,PLAYER_RADIUS,ARENA_LIMIT,MAX_STEP_HEIGHT,CROUCH_WINDOW_STEP_HEIGHT,STATIC_BOXES,BUILDINGS,PYRAMIDS,NATURAL_OBSTACLES,COMBAT_FLOW_NODES,rawTerrainHeight,TERRAIN_SIZE,TERRAIN_SEGMENTS,terrainVertexHeight,terrainHeight,LADDERS,terrainMinAround,naturalGroundBase,buildingWallOpenings,splitWall,buildingPlan,makeBuildingGeometry,makeAllBuildingGeometry,BUILDING_GEOMETRY,BUILDING_SUPPORTS,BUILDING_HORIZONTAL_SOLIDS,BUILDING_PLAYER_RAMPS,BUILDING_PARTS,BUILDING_WINDOW_PORTALS,STATIC_SUPPORTS,STATIC_PLAYER_COLLIDERS,NATURAL_PLAYER_COLLIDERS,NATURAL_SUPPORTS,BUILDING_PLAYER_COLLIDERS,WORLD_PLAYER_COLLIDERS,worldSupportHeight,worldStepUpHeight,resolveCeilingCollision,MINIMAP_LIMIT};
+  return {PLAYER_HEIGHT,PLAYER_RADIUS,ARENA_LIMIT,MAX_STEP_HEIGHT,CROUCH_WINDOW_STEP_HEIGHT,ROADS,STATIC_BOXES,BUILDINGS,TERRAIN_MODIFIERS,ELEVATION_OBJECTS,PYRAMIDS,NATURAL_OBSTACLES,COMBAT_FLOW_NODES,rawTerrainHeight,TERRAIN_SIZE,TERRAIN_SEGMENTS,terrainVertexHeight,terrainHeight,LADDERS,terrainMinAround,naturalGroundBase,buildingWallOpenings,splitWall,buildingPlan,makeBuildingGeometry,makeAllBuildingGeometry,BUILDING_GEOMETRY,BUILDING_SUPPORTS,BUILDING_HORIZONTAL_SOLIDS,BUILDING_PLAYER_RAMPS,BUILDING_PARTS,BUILDING_WINDOW_PORTALS,STATIC_SUPPORTS,STATIC_PLAYER_COLLIDERS,NATURAL_PLAYER_COLLIDERS,NATURAL_SUPPORTS,BUILDING_PLAYER_COLLIDERS,WORLD_PLAYER_COLLIDERS,worldSupportHeight,worldStepUpHeight,resolveCeilingCollision,MINIMAP_LIMIT};
 }

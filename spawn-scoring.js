@@ -101,8 +101,8 @@ export function spawnPointCountFor(mode,team,teamPoints,ffaPoints){
 }
 
 export function spawnForModeFromPoints(mode,team,index,terrainHeight,teamPoints,ffaPoints){
-  const points=modeId(mode)==='ffa'?ffaPoints:teamPoints[safeTeam(team)],p=points[Math.abs(Math.floor(finite(index,0)))%points.length],x=p[0],z=p[1];
-  return{x,y:finite(terrainHeight?.(x,z),0),z,yaw:inwardYaw(x,z)};
+  const points=modeId(mode)==='ffa'?ffaPoints:teamPoints[safeTeam(team)],p=points[Math.abs(Math.floor(finite(index,0)))%points.length],x=p[0],z=p[1],y=finite(terrainHeight?.(x,z),0)+finite(p[2],0);
+  return{x,y,z,yaw:inwardYaw(x,z)};
 }
 
 export function scoreSpawnCandidate(policy,{
@@ -160,7 +160,7 @@ export function chooseSafeSpawnFromPoints(policy,teamPoints,ffaPoints,{
   const start=Math.abs(Math.floor(finite(index,0)))%Math.max(1,catalog.length);
   let bestSafe=null,bestUnsafe=null;
   for(let offset=0;offset<catalog.length;offset++){
-    const entry=catalog[(start+offset)%catalog.length],p=entry.p,x=p[0],z=p[1],y=finite(terrainHeight?.(x,z),0);if(blockedAt?.(x,z,y))continue;
+    const entry=catalog[(start+offset)%catalog.length],p=entry.p,x=p[0],z=p[1],y=finite(terrainHeight?.(x,z),0)+finite(p[2],0);if(blockedAt?.(x,z,y))continue;
     const detail=scoreSpawnCandidate(policy,{mode,team,x,y,z,actors,excludeId,candidateCluster:entry.cluster,recentDeaths,recentSpawns,recentGunfire,recentExplosions,projectiles,throwables,now,lineOfSight});
     const candidate={score:detail.score-offset*.01,x,y,z,yaw:clearSpawnYaw(x,y,z,blockedAt),cluster:entry.cluster,detail,emergency:!detail.safe};
     if(detail.safe){if(!bestSafe||candidate.score>bestSafe.score)bestSafe=candidate;}else if(!bestUnsafe||candidate.score>bestUnsafe.score)bestUnsafe=candidate;

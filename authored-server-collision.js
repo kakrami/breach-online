@@ -11,12 +11,15 @@ export function createAuthoredServerCollision(world){
     ...PYRAMIDS.map((o) => ({ type:'pyramid', ...o })),
     ...NATURAL_OBSTACLES.map((o) => ({ ...o })),
     ...BUILDING_PARTS.filter((p) => p.projectileSolid).map((p) => ({
-      type:'box', x:p.x, z:p.z, w:p.w, d:p.d, minY:p.bottomY, maxY:p.topY, role:p.role,
+      type:'box', x:p.x, z:p.z, w:p.w, d:p.d, rot:p.rot||0, minY:p.bottomY, maxY:p.topY, role:p.role,
     })),
   ];
   
   const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
   const cellKey = (x, y, z) => `${x},${y},${z}`;
+  const normalizeRot=v=>{let r=finite(v)%360;if(r<0)r+=360;return r;};
+  function boxAabb(o){const a=normalizeRot(o.rot||0)*Math.PI/180,c=Math.abs(Math.cos(a)),sn=Math.abs(Math.sin(a)),hx=o.w/2*c+o.d/2*sn,hz=o.w/2*sn+o.d/2*c;return{minX:o.x-hx,maxX:o.x+hx,minZ:o.z-hz,maxZ:o.z+hz};}
+  function segmentOrientedBoxFirstT(x1,y1,z1,x2,y2,z2,o,minY,maxY,r=0){const a=-normalizeRot(o.rot||0)*Math.PI/180,c=Math.cos(a),sn=Math.sin(a),rot=(x,z)=>{const dx=x-o.x,dz=z-o.z;return{x:dx*c-dz*sn,z:dx*sn+dz*c};},p1=rot(x1,z1),p2=rot(x2,z2);return segmentAabbFirstT(p1.x,y1,p1.z,p2.x,y2,p2.z,-o.w/2-r,o.w/2+r,minY-r,maxY+r,-o.d/2-r,o.d/2+r);}
   let collisionIndex = null;
   
   function obstacleBaseY(obstacle) {
@@ -24,7 +27,7 @@ export function createAuthoredServerCollision(world){
     if (obstacle.type === 'tree' || obstacle.type === 'bush' || obstacle.type === 'rock') {
       return naturalGroundBase(obstacle.type, obstacle.x, obstacle.z, obstacle.r);
     }
-    return terrainHeight(obstacle.x, obstacle.z);
+    return terrainHeight(obstacle.x, obstacle.z) + finite(obstacle.yOffset,0);
   }
   
   function ensureCollisionIndex() {
@@ -33,9 +36,7 @@ export function createAuthoredServerCollision(world){
     for (const obstacle of WORLD_PROJECTILE_OBSTACLES) {
       const baseY = obstacleBaseY(obstacle);
       let minX, maxX, minZ, maxZ;
-      if (obstacle.type === 'box') {
-        minX = obstacle.x - obstacle.w / 2; maxX = obstacle.x + obstacle.w / 2;
-        minZ = obstacle.z - obstacle.d / 2; maxZ = obstacle.z + obstacle.d / 2;
+      if (obstacle.type === 'box') {const a=boxAabb(obstacle);minX=a.minX;maxX=a.maxX;minZ=a.minZ;maxZ=a.maxZ;
       } else if (obstacle.type === 'pyramid') {
         minX = obstacle.x - obstacle.base / 2; maxX = obstacle.x + obstacle.base / 2;
         minZ = obstacle.z - obstacle.base / 2; maxZ = obstacle.z + obstacle.base / 2;
@@ -110,7 +111,7 @@ export function createAuthoredServerCollision(world){
     for (const entry of collisionCandidates(minX, maxX, minY, maxY, minZ, maxZ)) {
       const obstacle = entry.obstacle;
       let t = null;
-      if (obstacle.type === 'box') t = segmentAabbFirstT(x1, y1, z1, x2, y2, z2, entry.minX-r, entry.maxX+r, entry.baseY-r, entry.maxY+r, entry.minZ-r, entry.maxZ+r);
+      if (obstacle.type === 'box') t = segmentOrientedBoxFirstT(x1,y1,z1,x2,y2,z2,obstacle,entry.baseY,entry.maxY,r);
       else if (obstacle.type === 'pyramid') t = segmentPyramidFirstT(x1, y1, z1, x2, y2, z2, obstacle.x, obstacle.z, obstacle.base+2*r, obstacle.h+r, entry.baseY-r, entry.maxY+r);
       else t = segmentCylinderFirstT(x1, y1, z1, x2, y2, z2, obstacle.x, obstacle.z, obstacle.r+r, entry.baseY-r, entry.maxY+r);
       if (t != null && (best == null || t < best)) best = t;
