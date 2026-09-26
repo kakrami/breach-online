@@ -1,13 +1,10 @@
-import { ARENA_LIMIT, PLAYER_HEIGHT, PLAYER_RADIUS, WORLD_PLAYER_COLLIDERS, BUILDING_WINDOW_PORTALS, worldSupportHeight } from './world-geometry-yard.js?v=1.51.0';
+import { ARENA_LIMIT, PLAYER_HEIGHT, PLAYER_RADIUS, WORLD_PLAYER_COLLIDERS, BUILDING_WINDOW_PORTALS, worldSupportHeight, terrainHeight } from './world-geometry-yard.js?v=1.52.0';
+import { createTraversalResolver } from './traversal-resolver.js';
 
 const CELL_SIZE = 8;
 const CELL_HEIGHT = 3;
 const HORIZONTAL_SKIN = 0.015;
 const VERTICAL_SKIN = 0.04;
-const TRAVERSE_PROBE = 1.65;
-const VAULT_MAX_RISE = 1.10;
-const MANTLE_GROUNDED_MAX_RISE = 1.18;
-const MANTLE_AIR_MAX_RISE = 1.90;
 const grid = new Map();
 const entries = [];
 const keyFor = (cx,cy,cz) => `${cx},${cy},${cz}`;
@@ -44,10 +41,6 @@ function rampTopAt(collider,x){
   const span=collider.x2-collider.x1;
   const t=Math.abs(span)>1e-9?(sx-collider.x1)/span:0;
   return collider.y0+(collider.y1-collider.y0)*t;
-}
-
-function colliderTopAt(collider,x){
-  return collider.type==='ramp'?rampTopAt(collider,x):collider.maxY;
 }
 
 let stamp=0;
@@ -127,10 +120,6 @@ export function worldMoveBlockedAt(x,z,y,fromX,fromZ,height=PLAYER_HEIGHT,radius
   return false;
 }
 
-function clearStandingAt(x,z,y,height,radius){
-  return !worldBlockerAt(x,z,y+.018,height,radius);
-}
-
 // Standing up is a height-expansion test, not a fresh full-body collision test.
 // Checking the entire standing capsule made low sills/steps near the feet report
 // false "clearance" failures even though the extra head space was open.
@@ -142,155 +131,10 @@ export function worldHeightExpansionBlockedAt(x,z,y,fromHeight,toHeight,radius=P
 }
 
 
-function findWindowPortalCandidate(x,y,z,dx,dz,height,radius){
-  let best=null;
-  for(const portal of BUILDING_WINDOW_PORTALS){
-    const relX=x-portal.cx,relZ=z-portal.cz,normalDistance=relX*portal.nx+relZ*portal.nz;
-    if(Math.abs(normalDistance)>.08+TRAVERSE_PROBE)continue;
-    const approach=dx*portal.nx+dz*portal.nz;
-    if(Math.abs(approach)<.28||normalDistance*approach>=-.012)continue;
-    const distance=-normalDistance/approach;
-    if(distance<.015||distance>TRAVERSE_PROBE+.38)continue;
-    const crossX=x+dx*distance,crossZ=z+dz*distance;
-    const lateral=(crossX-portal.cx)*portal.tx+(crossZ-portal.cz)*portal.tz;
-    const assistHalf=Math.max(.08,portal.halfWidth-.055);
-    if(Math.abs(lateral)>assistHalf)continue;
-    const openingHeight=portal.topY-portal.bottomY;
-    if(openingHeight+VERTICAL_SKIN*2<height)continue;
-    if(y<portal.floorY-.48||y>portal.bottomY+.72)continue;
-    const sillTop=portal.bottomY+.015,rise=sillTop-y;
-    if(rise>VAULT_MAX_RISE+.08)continue;
+const traversalResolver=createTraversalResolver({
+  colliders:WORLD_PLAYER_COLLIDERS,windowPortals:BUILDING_WINDOW_PORTALS,worldBlockerAt,worldSupportHeight,terrainHeight,playerHeight:PLAYER_HEIGHT,playerRadius:PLAYER_RADIUS,
+});
 
-    const safeHalf=Math.max(.04,portal.halfWidth-radius-.075),safeLateral=clamp(lateral,-safeHalf,safeHalf);
-    const targetNormal=(normalDistance>0?-1:1)*(portal.wallThickness/2+radius+.16);
-    const endX=portal.cx+portal.tx*safeLateral+portal.nx*targetNormal;
-    const endZ=portal.cz+portal.tz*safeLateral+portal.nz*targetNormal;
-    const support=worldSupportHeight(endX,endZ,portal.floorY,false,radius);
-    const supportClose=Math.abs(support-portal.floorY)<=.82;
-    let endY=portal.floorY,endGrounded=false;
-    if(supportClose&&clearStandingAt(endX,endZ,support,height,radius)){endY=support;endGrounded=true;}
-    else if(!clearStandingAt(endX,endZ,endY,height,radius))continue;
+export function findTraversalCandidate(args={}){return traversalResolver.findTraversalCandidate(args);}
 
-    const candidate={
-      mode:'vault',role:'window',portalId:portal.id,rise:Math.max(.12,rise),topY:sillTop,
-      endX,endY,endZ,peakY:Math.max(sillTop+.075,y+.62),endGrounded,exitVelocityY:endGrounded?0:-1.15,
-      // First-person traversal uses the actual opening ceiling instead of
-      // carrying the normal standing eye height through the wall thickness.
-      // Keeping the camera below this cap prevents the view from entering the
-      // lintel while the body is intentionally passing through the portal.
-      viewMaxY:portal.topY-.16,
-      dirX:dx,dirZ:dz,
-    };
-    if(!best||distance<best.distance)best={distance,candidate};
-  }
-  return best?.candidate||null;
-}
-
-function findFrontBlocker(x,y,z,dx,dz,height,radius){
-  for(let distance=.08;distance<=TRAVERSE_PROBE;distance+=.07){
-    const px=x+dx*distance,pz=z+dz*distance,c=worldBlockerAt(px,pz,y,height,radius);
-    if(c&&c.role!=='arena'&&c.role!=='invalid')return {collider:c,distance,probeX:px,probeZ:pz};
-  }
-  return null;
-}
-
-function vaultLanding(x,y,z,dx,dz,height,radius,hit,topY){
-  let sawBlocked=false;
-  for(let distance=Math.max(.12,hit.distance);distance<=3.05;distance+=.07){
-    const px=x+dx*distance,pz=z+dz*distance;
-    const obstacle=worldBlockerAt(px,pz,y,height,radius);
-    if(obstacle){sawBlocked=true;continue;}
-    if(!sawBlocked)continue;
-    const support=worldSupportHeight(px,pz,y,false,radius);
-    if(Math.abs(support-y)>.82)continue;
-    if(!clearStandingAt(px,pz,support,height,radius))continue;
-    return {endX:px,endY:support,endZ:pz,peakY:Math.max(topY+.20,y+.62)};
-  }
-  return null;
-}
-
-function boxMantleLanding(c,x,y,z,dx,dz,height,radius,hit,topY){
-  const inset=radius+.065,minX=c.minX+inset,maxX=c.maxX-inset,minZ=c.minZ+inset,maxZ=c.maxZ-inset;
-  if(minX>maxX||minZ>maxZ)return null;
-  for(let distance=Math.max(hit.distance,.10);distance<=hit.distance+2.15;distance+=.055){
-    const px=x+dx*distance,pz=z+dz*distance;
-    if(px<minX||px>maxX||pz<minZ||pz>maxZ)continue;
-    if(!clearStandingAt(px,pz,topY,height,radius))continue;
-    const support=worldSupportHeight(px,pz,topY,false,radius);
-    if(Math.abs(support-topY)>.09)continue;
-    return {endX:px,endY:topY,endZ:pz,peakY:topY+.12};
-  }
-  return null;
-}
-
-function barrierMantleLanding(c,x,y,z,dx,dz,height,radius,hit,topY){
-  // Wall faces are too thin to stand on. Search through the face for a real
-  // floor/roof/balcony support. Split wall cells around windows may end below
-  // the actual floor slab, so accept the first support at or above that cell.
-  const start=Math.max(hit.distance+.08,.12),end=hit.distance+2.65;
-  for(let distance=start;distance<=end;distance+=.055){
-    const px=x+dx*distance,pz=z+dz*distance;
-    const support=worldSupportHeight(px,pz,topY,false,radius);
-    if(support<topY-.11)continue;
-    if(!clearStandingAt(px,pz,support,height,radius))continue;
-    return {endX:px,endY:support,endZ:pz,peakY:Math.max(topY,support)+.16};
-  }
-  return null;
-}
-
-function roundMantleLanding(c,x,y,z,dx,dz,height,radius,topY){
-  const supportRadius=Math.max(radius+.10,Number(c.supportRadius)||c.r),available=supportRadius-radius-.055;
-  if(available<=.05)return null;
-  let ox=x-c.x,oz=z-c.z,len=Math.hypot(ox,oz);
-  if(len<1e-5){ox=-dx;oz=-dz;len=1;}
-  const px=c.x+ox/len*available,pz=c.z+oz/len*available;
-  if(Math.hypot(px-x,pz-z)>2.35)return null;
-  if(!clearStandingAt(px,pz,topY,height,radius))return null;
-  const support=worldSupportHeight(px,pz,topY,false,radius);
-  if(Math.abs(support-topY)>.09)return null;
-  return {endX:px,endY:topY,endZ:pz,peakY:topY+.12};
-}
-
-export function findTraversalCandidate({x,y,z,dirX,dirZ,height=PLAYER_HEIGHT,radius=PLAYER_RADIUS,airborne=false}={}){
-  const px=Number(x),py=Number(y),pz=Number(z),h=Math.max(.2,Number(height)||PLAYER_HEIGHT),r=Math.max(.05,Number(radius)||PLAYER_RADIUS);
-  let dx=Number(dirX)||0,dz=Number(dirZ)||0;const len=Math.hypot(dx,dz);
-  if(!Number.isFinite(px)||!Number.isFinite(py)||!Number.isFinite(pz)||len<.35)return null;
-  dx/=len;dz/=len;
-  const windowPortal=findWindowPortalCandidate(px,py,pz,dx,dz,h,r);if(windowPortal)return windowPortal;
-  const hit=findFrontBlocker(px,py,pz,dx,dz,h,r);if(!hit)return null;
-  const c=hit.collider,mode=c.traversal||'';if(!mode)return null;
-  const topY=colliderTopAt(c,hit.probeX),rise=topY-py;
-  if(!Number.isFinite(topY)||rise<.12)return null;
-  // Thin overhead slabs are ceilings, not mantle ledges. A ledge must have a
-  // face that reaches down near the player's feet.
-  const minY=Number.isFinite(c.minY)?c.minY:Number.isFinite(c.bottomY)?c.bottomY:py;
-  if(minY>py+.34&&c.role!=='wall')return null;
-  if(mode==='vault'){
-    if(rise>VAULT_MAX_RISE)return null;
-    let landing=vaultLanding(px,py,pz,dx,dz,h,r,hit,topY);
-    if(!landing&&c.crouchStep){
-      let sawBlocked=false;
-      for(let distance=Math.max(.12,hit.distance);distance<=3.05;distance+=.07){
-        const ex=px+dx*distance,ez=pz+dz*distance,obstacle=worldBlockerAt(ex,ez,py,h,r);
-        if(obstacle){sawBlocked=true;continue;}
-        if(!sawBlocked||!clearStandingAt(ex,ez,py,h,r))continue;
-        landing={endX:ex,endY:py,endZ:ez,peakY:Math.max(topY+.075,py+.62),endGrounded:false,exitVelocityY:-1.15};break;
-      }
-    }
-    if(!landing)return null;
-    return {mode:'vault',role:c.crouchStep?'window':c.role||'',rise,topY,...landing,dirX:dx,dirZ:dz};
-  }
-  if(mode==='mantle'){
-    const maxRise=airborne?MANTLE_AIR_MAX_RISE:MANTLE_GROUNDED_MAX_RISE;
-    if(rise>maxRise)return null;
-    const landing=c.supportTop
-      ?(c.type==='box'?boxMantleLanding(c,px,py,pz,dx,dz,h,r,hit,topY):c.type==='round'?roundMantleLanding(c,px,py,pz,dx,dz,h,r,topY):null)
-      :(c.type==='box'?barrierMantleLanding(c,px,py,pz,dx,dz,h,r,hit,topY):null);
-    if(!landing)return null;
-    const landingRise=landing.endY-py;if(landingRise>.12&&landingRise>maxRise+.001)return null;
-    return {mode:'mantle',role:c.role||'',rise:Math.max(rise,landingRise),topY:Math.max(topY,landing.endY),...landing,dirX:dx,dirZ:dz};
-  }
-  return null;
-}
-
-export function collisionDebugStats(){return {colliders:entries.length,cells:grid.size};}
+export function collisionDebugStats(){return {colliders:entries.length,cells:grid.size,traversalAffordances:traversalResolver.affordances.all.length};}

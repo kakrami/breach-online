@@ -105,19 +105,19 @@ export function createAuthoredWorldGeometry(def={}){
   function makeStaticGeometry(o){
     const base=terrainHeight(o.x,o.z)+o.yOffset,parts=[];
     const toWorld=(lx,lz)=>worldPoint(o,lx,lz);
-    const addBox=(role,lx,lz,w,d,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({type:'box',role,x:p.x,z:p.z,w,d,rot:o.rot,minY:bottomY,maxY:topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:flags.supportTop!==false,traversal:flags.traversal??'mantle'});};
-    const addRound=(role,lx,lz,r,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({type:'round',role,x:p.x,z:p.z,r,minY:bottomY,maxY:topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,traversal:flags.traversal??''});};
+    const addBox=(role,lx,lz,w,d,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({type:'box',role,x:p.x,z:p.z,w,d,rot:o.rot,minY:bottomY,maxY:topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:flags.supportTop!==false});};
+    const addRound=(role,lx,lz,r,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({type:'round',role,x:p.x,z:p.z,r,minY:bottomY,maxY:topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop});};
     const kind=String(o.kind||'box'),longX=o.w>=o.d,length=Math.max(o.w,o.d),width=Math.min(o.w,o.d),boxDims=(L,W)=>longX?[L,W]:[W,L],axis=(v)=>longX?[v,0]:[0,v];
-    if(kind==='burntCar'){const [bw,bd]=boxDims(length*.96,width*.94),[cw,cd]=boxDims(length*.47,width*.84),[cx,cz]=axis(-length*.03);addBox('burntCarBody',0,0,bw,bd,base,base+o.h*.55,{supportTop:true,traversal:'mantle'});addBox('burntCarCabin',cx,cz,cw,cd,base+o.h*.50,base+o.h*.90,{supportTop:true,traversal:'mantle'});}
-    else if(kind==='burntBus'){const [bw,bd]=boxDims(length*.96,width*.94),[uw,ud]=boxDims(length*.90,width*.88);addBox('burntBusBody',0,0,bw,bd,base,base+o.h*.66,{supportTop:true,traversal:'mantle'});addBox('burntBusUpper',0,0,uw,ud,base+o.h*.62,base+o.h*.96,{supportTop:true,traversal:'mantle'});}
-    else if(kind==='dumpster'){addBox('dumpsterBody',0,0,o.w,o.d,base,base+o.h*.84,{supportTop:true,traversal:'mantle'});addBox('dumpsterLid',0,0,o.w*1.02,o.d*1.03,base+o.h*.86,base+o.h*.98,{supportTop:true,traversal:'mantle'});}
-    else if(kind==='fuelTank'){const radius=width*.46,segment=Math.max(.05,length-2*radius),[cw,cd]=boxDims(segment,radius*2),end=Math.max(0,length/2-radius),[ax,az]=axis(end),[bx,bz]=axis(-end);addBox('fuelTankCenter',0,0,cw,cd,base,base+o.h,{supportTop:false,traversal:''});addRound('fuelTankCap',ax,az,radius,base,base+o.h,{supportTop:false,traversal:''});addRound('fuelTankCap',bx,bz,radius,base,base+o.h,{supportTop:false,traversal:''});}
-    else if(kind==='checkpoint'){addBox('checkpointBody',0,0,o.w,o.d,base,base+o.h*.92,{supportTop:true,traversal:'mantle'});addBox('checkpointRoof',0,0,o.w*1.10,o.d*1.10,base+o.h*.92,base+o.h+0.20,{supportTop:true,traversal:'mantle'});}
-    else if(kind==='sandbag')addBox('sandbag',0,0,o.w,o.d,base,base+o.h,{supportTop:false,traversal:'vault'});
-    else if(kind==='brokenWall')addBox('brokenWall',0,0,o.w,o.d,base,base+o.h,{supportTop:false,traversal:'vault'});
-    else if(kind==='barrier')addBox('barrier',0,0,o.w,o.d,base,base+o.h,{supportTop:false,traversal:'vault'});
-    else if(kind==='boundary')addBox('boundary',0,0,o.w,o.d,base,base+o.h,{supportTop:false,traversal:''});
-    else addBox(kind,0,0,o.w,o.d,base,base+o.h,{supportTop:true,traversal:'mantle'});
+    if(kind==='burntCar'){const [bw,bd]=boxDims(length*.96,width*.94),[cw,cd]=boxDims(length*.47,width*.84),[cx,cz]=axis(-length*.03);addBox('burntCarBody',0,0,bw,bd,base,base+o.h*.55,{supportTop:true});addBox('burntCarCabin',cx,cz,cw,cd,base+o.h*.50,base+o.h*.90,{supportTop:true});}
+    else if(kind==='burntBus'){const [bw,bd]=boxDims(length*.96,width*.94),[uw,ud]=boxDims(length*.90,width*.88);addBox('burntBusBody',0,0,bw,bd,base,base+o.h*.66,{supportTop:true});addBox('burntBusUpper',0,0,uw,ud,base+o.h*.62,base+o.h*.96,{supportTop:true});}
+    else if(kind==='dumpster'){addBox('dumpsterBody',0,0,o.w,o.d,base,base+o.h*.84,{supportTop:true});addBox('dumpsterLid',0,0,o.w*1.02,o.d*1.03,base+o.h*.86,base+o.h*.98,{supportTop:true});}
+    else if(kind==='fuelTank'){const radius=width*.46,segment=Math.max(.05,length-2*radius),[cw,cd]=boxDims(segment,radius*2),end=Math.max(0,length/2-radius),[ax,az]=axis(end),[bx,bz]=axis(-end);addBox('fuelTankCenter',0,0,cw,cd,base,base+o.h,{supportTop:false});addRound('fuelTankCap',ax,az,radius,base,base+o.h,{supportTop:false});addRound('fuelTankCap',bx,bz,radius,base,base+o.h,{supportTop:false});}
+    else if(kind==='checkpoint'){addBox('checkpointBody',0,0,o.w,o.d,base,base+o.h*.92,{supportTop:true});addBox('checkpointRoof',0,0,o.w*1.10,o.d*1.10,base+o.h*.92,base+o.h+0.20,{supportTop:true});}
+    else if(kind==='sandbag')addBox('sandbag',0,0,o.w,o.d,base,base+o.h,{supportTop:false});
+    else if(kind==='brokenWall')addBox('brokenWall',0,0,o.w,o.d,base,base+o.h,{supportTop:false});
+    else if(kind==='barrier')addBox('barrier',0,0,o.w,o.d,base,base+o.h,{supportTop:false});
+    else if(kind==='boundary')addBox('boundary',0,0,o.w,o.d,base,base+o.h,{supportTop:false});
+    else addBox(kind,0,0,o.w,o.d,base,base+o.h,{supportTop:true});
     return{parts};
   }
   const STATIC_GEOMETRY=STATIC_BOXES.map(makeStaticGeometry);
@@ -223,7 +223,7 @@ export function createAuthoredWorldGeometry(def={}){
   
   function addBox(parts,role,x,z,w,d,bottomY,topY,flags={}){
     if(w<=0||d<=0||topY-bottomY<=0)return;
-    parts.push({role,x,z,w,d,bottomY,topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:!!flags.crouchStep,traversal:flags.traversal||'',decorative:!!flags.decorative});
+    parts.push({role,x,z,w,d,bottomY,topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:!!flags.crouchStep,decorative:!!flags.decorative});
   }
   
   function addFrameX(parts,b,z,base,level,opening){
@@ -249,7 +249,7 @@ export function createAuthoredWorldGeometry(def={}){
       const openings=buildingWallOpenings(b,level,side);
       for(const cell of splitWall(b.w,b.floorH,openings)){
         const x=b.x+cell.u,bottomY=base+level*b.floorH+cell.y,topY=bottomY+cell.h+.015;
-        addBox(parts,'wall',x,z,cell.w+.015,t,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep,traversal:cell.crouchStep?'vault':'mantle'});
+        addBox(parts,'wall',x,z,cell.w+.015,t,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep});
         if(cell.crouchStep)supports.push({type:'rect',x,z,w:cell.w+.015,d:t,y:topY,role:'windowSill',crouchStep:true});
       }
       for(const opening of openings)addFrameX(parts,b,z+(side==='front'?-.012:.012),base,level,opening);
@@ -258,7 +258,7 @@ export function createAuthoredWorldGeometry(def={}){
       const openings=buildingWallOpenings(b,level,side);
       for(const cell of splitWall(b.d,b.floorH,openings)){
         const z=b.z+cell.u,bottomY=base+level*b.floorH+cell.y,topY=bottomY+cell.h+.015;
-        addBox(parts,'wall',x,z,t,cell.w+.015,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep,traversal:cell.crouchStep?'vault':'mantle'});
+        addBox(parts,'wall',x,z,t,cell.w+.015,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep});
         if(cell.crouchStep)supports.push({type:'rect',x,z,w:t,d:cell.w+.015,y:topY,role:'windowSill',crouchStep:true});
       }
       for(const opening of openings)addFrameZ(parts,b,x+(side==='left'?-.012:.012),base,level,opening);
@@ -271,33 +271,33 @@ export function createAuthoredWorldGeometry(def={}){
     for(let floorLevel=1;floorLevel<levels;floorLevel++){
       const floorY=base+floorLevel*b.floorH,hole=plan.holes[floorLevel-1],panels=panelsAroundHole(b,hole);
       for(const panel of panels){
-        addBox(parts,'floor',panel.x,panel.z,panel.w+.03,panel.d+.03,floorY-.18,floorY,{supportTop:true,traversal:'mantle'});
+        addBox(parts,'floor',panel.x,panel.z,panel.w+.03,panel.d+.03,floorY-.18,floorY,{supportTop:true});
         supports.push({type:'rect',x:panel.x,z:panel.z,w:panel.w,d:panel.d,y:floorY});
         horizontalSolids.push({x:panel.x,z:panel.z,w:panel.w,d:panel.d,bottomY:floorY-.18,topY:floorY});
       }
-      addBox(parts,'floor',b.x,plan.balconyZ,plan.balconyW,plan.balconyD,floorY-.188,floorY-.008,{supportTop:true,traversal:'mantle'});
+      addBox(parts,'floor',b.x,plan.balconyZ,plan.balconyW,plan.balconyD,floorY-.188,floorY-.008,{supportTop:true});
       supports.push({type:'rect',x:b.x,z:plan.balconyZ,w:plan.balconyW,d:plan.balconyD,y:floorY});
       horizontalSolids.push({x:b.x,z:plan.balconyZ,w:plan.balconyW,d:plan.balconyD,bottomY:floorY-.188,topY:floorY-.008});
       const railBottom=floorY+.08,outerZ=plan.front-b.balcony+.06;
-      addBox(parts,'rail',b.x,outerZ,plan.balconyW,.14,railBottom,railBottom+.82,{traversal:'vault'});
-      addBox(parts,'rail',b.x-plan.balconyW/2,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82,{traversal:'vault'});
-      addBox(parts,'rail',b.x+plan.balconyW/2,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82,{traversal:'vault'});
+      addBox(parts,'rail',b.x,outerZ,plan.balconyW,.14,railBottom,railBottom+.82,{});
+      addBox(parts,'rail',b.x-plan.balconyW/2,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82,{});
+      addBox(parts,'rail',b.x+plan.balconyW/2,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82,{});
   
       const guardY=floorY+.05,guardH=.76;
       // Guard the long edges only. The bottom and top of every straight flight
       // stay open so the player can walk directly onto and off the staircase.
-      addBox(parts,'rail',(hole.left+hole.right)/2,hole.minZ+.05,hole.right-hole.left,.12,guardY,guardY+guardH,{traversal:'vault'});
-      addBox(parts,'rail',(hole.left+hole.right)/2,hole.maxZ-.05,hole.right-hole.left,.12,guardY,guardY+guardH,{traversal:'vault'});
+      addBox(parts,'rail',(hole.left+hole.right)/2,hole.minZ+.05,hole.right-hole.left,.12,guardY,guardY+guardH,{});
+      addBox(parts,'rail',(hole.left+hole.right)/2,hole.maxZ-.05,hole.right-hole.left,.12,guardY,guardY+guardH,{});
     }
   
     const roofY=base+b.floorH*levels;
-    addBox(parts,'roof',b.x,b.z,b.w+.04,b.d+.04,roofY-.20,roofY,{supportTop:true,traversal:'mantle'});
+    addBox(parts,'roof',b.x,b.z,b.w+.04,b.d+.04,roofY-.20,roofY,{supportTop:true});
     supports.push({type:'rect',x:b.x,z:b.z,w:b.w,d:b.d,y:roofY});
     horizontalSolids.push({x:b.x,z:b.z,w:b.w,d:b.d,bottomY:roofY-.20,topY:roofY});
     if(b.tall){
       const py=roofY;
-      addBox(parts,'rail',b.x,b.z-b.d/2+.10,b.w,.20,py,py+.55,{traversal:'vault'});addBox(parts,'rail',b.x,b.z+b.d/2-.10,b.w,.20,py,py+.55,{traversal:'vault'});
-      addBox(parts,'rail',b.x-b.w/2+.10,b.z,.20,b.d,py,py+.55,{traversal:'vault'});addBox(parts,'rail',b.x+b.w/2-.10,b.z,.20,b.d,py,py+.55,{traversal:'vault'});
+      addBox(parts,'rail',b.x,b.z-b.d/2+.10,b.w,.20,py,py+.55,{});addBox(parts,'rail',b.x,b.z+b.d/2-.10,b.w,.20,py,py+.55,{});
+      addBox(parts,'rail',b.x-b.w/2+.10,b.z,.20,b.d,py,py+.55,{});addBox(parts,'rail',b.x+b.w/2-.10,b.z,.20,b.d,py,py+.55,{});
     }
   
     // Visible treads stay discrete, but player support uses one continuous
@@ -329,9 +329,9 @@ export function createAuthoredWorldGeometry(def={}){
   function transformRamp(r,b){const a=rotatePoint(r.x1,r.z1??r.z,b.x,b.z,b.rot),c=rotatePoint(r.x2,r.z2??r.z,b.x,b.z,b.rot);return{...r,x1:a.x,z1:a.z,x2:c.x,z2:c.z,rot:normalizeRot((r.rot||0)+b.rot)};}
   function transformBuildingGeometry(g,b){if(!b.rot)return{...g,parts:g.parts.map(p=>({...p,rot:0})),supports:g.supports.map(s=>s.type==='ramp'?transformRamp(s,b):({...s,rot:0})),horizontalSolids:g.horizontalSolids.map(s=>({...s,rot:0})),playerRamps:g.playerRamps.map(r=>transformRamp(r,b))};return{...g,parts:g.parts.map(p=>transformRect(p,b)),supports:g.supports.map(s=>s.type==='ramp'?transformRamp(s,b):transformRect(s,b)),horizontalSolids:g.horizontalSolids.map(s=>transformRect(s,b)),playerRamps:g.playerRamps.map(r=>transformRamp(r,b))};}
   function makeAllBuildingGeometry(){return BUILDINGS.map(b=>transformBuildingGeometry(makeBuildingGeometry(b),b));}
-  function makeElevationGeometry(o){const base=terrainHeight(o.x,o.z)+o.yOffset,parts=[],supports=[],horizontalSolids=[],playerRamps=[],toWorld=(lx,lz)=>rotatePoint(o.x+lx,o.z+lz,o.x,o.z,o.rot),addRect=(role,lx,lz,w,d,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({role,x:p.x,z:p.z,w,d,bottomY,topY,rot:o.rot,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:false,traversal:flags.traversal||'',decorative:false});};
-    if(o.kind==='platform'||o.kind==='overpass'){const thick=o.kind==='overpass'?.7:.5,top=base+o.rise;addRect(o.kind,0,0,o.w,o.d,top-thick,top,{supportTop:true,traversal:'mantle'});supports.push({type:'rect',x:o.x,z:o.z,w:o.w,d:o.d,y:top,rot:o.rot,role:o.kind});horizontalSolids.push({x:o.x,z:o.z,w:o.w,d:o.d,bottomY:top-thick,topY:top,rot:o.rot});if(o.kind==='overpass')for(const side of [-1,1])addRect('overpassSupport',side*(o.w/2-.45),0,.7,o.d*.94,base,top-thick,{supportTop:false});}
-    else {const steps=Math.max(4,Math.ceil(o.rise/(o.kind==='stairs'?.34:.45))),stepD=o.d/steps;for(let i=0;i<steps;i++){const h=o.rise*(i+1)/steps,lz=-o.d/2+stepD*(i+.5);addRect(o.kind==='stairs'?'stairStep':'rampStep',0,lz,o.w,stepD+.04,base,base+h,{playerSolid:false,projectileSolid:true});}const low=toWorld(0,-o.d/2),high=toWorld(0,o.d/2),ramp={type:'ramp',x1:low.x,z1:low.z,x2:high.x,z2:high.z,w:o.w,bottomY:base,y0:base,y1:base+o.rise,role:o.kind==='stairs'?'stairRamp':'ramp',supportTop:true,traversal:''};supports.push(ramp);playerRamps.push(ramp);}
+  function makeElevationGeometry(o){const base=terrainHeight(o.x,o.z)+o.yOffset,parts=[],supports=[],horizontalSolids=[],playerRamps=[],toWorld=(lx,lz)=>rotatePoint(o.x+lx,o.z+lz,o.x,o.z,o.rot),addRect=(role,lx,lz,w,d,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({role,x:p.x,z:p.z,w,d,bottomY,topY,rot:o.rot,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:false,decorative:false});};
+    if(o.kind==='platform'||o.kind==='overpass'){const thick=o.kind==='overpass'?.7:.5,top=base+o.rise;addRect(o.kind,0,0,o.w,o.d,top-thick,top,{supportTop:true});supports.push({type:'rect',x:o.x,z:o.z,w:o.w,d:o.d,y:top,rot:o.rot,role:o.kind});horizontalSolids.push({x:o.x,z:o.z,w:o.w,d:o.d,bottomY:top-thick,topY:top,rot:o.rot});if(o.kind==='overpass')for(const side of [-1,1])addRect('overpassSupport',side*(o.w/2-.45),0,.7,o.d*.94,base,top-thick,{supportTop:false});}
+    else {const steps=Math.max(4,Math.ceil(o.rise/(o.kind==='stairs'?.34:.45))),stepD=o.d/steps;for(let i=0;i<steps;i++){const h=o.rise*(i+1)/steps,lz=-o.d/2+stepD*(i+.5);addRect(o.kind==='stairs'?'stairStep':'rampStep',0,lz,o.w,stepD+.04,base,base+h,{playerSolid:false,projectileSolid:true});}const low=toWorld(0,-o.d/2),high=toWorld(0,o.d/2),ramp={type:'ramp',x1:low.x,z1:low.z,x2:high.x,z2:high.z,w:o.w,bottomY:base,y0:base,y1:base+o.rise,role:o.kind==='stairs'?'stairRamp':'ramp',supportTop:true};supports.push(ramp);playerRamps.push(ramp);}
     return{parts,supports,horizontalSolids,playerRamps};}
   const BUILDING_GEOMETRY = makeAllBuildingGeometry();
   const ELEVATION_GEOMETRY = ELEVATION_OBJECTS.map(makeElevationGeometry);
@@ -369,28 +369,28 @@ export function createAuthoredWorldGeometry(def={}){
   // physical parts used to describe authored props, rather than one oversized box
   // around detailed visual models. This prevents invisible corners and walk-through
   // bodywork on compound props.
-  const STATIC_PLAYER_COLLIDERS = STATIC_PARTS.filter(p=>p.playerSolid).map(p=>p.type==='round'?{type:'round',x:p.x,z:p.z,r:p.r,minY:p.minY,maxY:p.maxY,role:p.role,supportTop:!!p.supportTop,traversal:p.traversal||''}:{type:'box',x:p.x,z:p.z,w:p.w,d:p.d,rot:p.rot,...orientedAabb(p.x,p.z,p.w,p.d,p.rot),minY:p.minY,maxY:p.maxY,role:p.role,supportTop:!!p.supportTop,traversal:p.traversal||''});
+  const STATIC_PLAYER_COLLIDERS = STATIC_PARTS.filter(p=>p.playerSolid).map(p=>p.type==='round'?{type:'round',x:p.x,z:p.z,r:p.r,minY:p.minY,maxY:p.maxY,role:p.role,supportTop:!!p.supportTop}:{type:'box',x:p.x,z:p.z,w:p.w,d:p.d,rot:p.rot,...orientedAabb(p.x,p.z,p.w,p.d,p.rot),minY:p.minY,maxY:p.maxY,role:p.role,supportTop:!!p.supportTop});
   const STATIC_PROJECTILE_COLLIDERS = STATIC_PARTS.filter(p=>p.projectileSolid).map(p=>p.type==='round'?{type:'round',x:p.x,z:p.z,r:p.r,minY:p.minY,maxY:p.maxY,role:p.role}:{type:'box',x:p.x,z:p.z,w:p.w,d:p.d,rot:p.rot,minY:p.minY,maxY:p.maxY,role:p.role});
 
   const NATURAL_PLAYER_COLLIDERS = NATURAL_OBSTACLES.map(o=>{
     const minY=naturalGroundBase(o.type,o.x,o.z,o.r);
-    if(o.type==='tree')return {type:'round',x:o.x,z:o.z,r:o.r*.92,minY,maxY:minY+o.h*.64,role:'tree',supportTop:false,traversal:''};
+    if(o.type==='tree')return {type:'round',x:o.x,z:o.z,r:o.r*.92,minY,maxY:minY+o.h*.64,role:'tree',supportTop:false};
     if(o.type==='bush'){
       // Foliage is visual/soft cover. Only the dense lower core blocks movement,
       // so a normal jump or vault clears a bush instead of colliding with leaves.
       const r=o.r*.46,maxY=minY+Math.min(.74,o.h*.50);
-      return {type:'round',x:o.x,z:o.z,r,minY,maxY,role:'bush',supportTop:false,traversal:'vault'};
+      return {type:'round',x:o.x,z:o.z,r,minY,maxY,role:'bush',supportTop:false};
     }
     const r=o.r*.98,maxY=minY+o.h,supportRadius=Math.max(PLAYER_RADIUS+.14,o.r*.72);
-    return {type:'round',x:o.x,z:o.z,r,minY,maxY,role:'rock',supportTop:true,supportRadius,traversal:'mantle'};
+    return {type:'round',x:o.x,z:o.z,r,minY,maxY,role:'rock',supportTop:true,supportRadius};
   });
 
   const NATURAL_SUPPORTS = NATURAL_PLAYER_COLLIDERS.filter(c=>c.role==='rock').map(c=>({type:'round',x:c.x,z:c.z,r:c.supportRadius,y:c.maxY,role:'rock'}));
-  const PYRAMID_PLAYER_COLLIDERS = PYRAMIDS.map(p=>{const minY=terrainHeight(p.x,p.z)-.05;return{type:'pyramid',x:p.x,z:p.z,base:p.base,h:p.h,minY,maxY:minY+p.h,role:'mound',supportTop:true,traversal:''};});
+  const PYRAMID_PLAYER_COLLIDERS = PYRAMIDS.map(p=>{const minY=terrainHeight(p.x,p.z)-.05;return{type:'pyramid',x:p.x,z:p.z,base:p.base,h:p.h,minY,maxY:minY+p.h,role:'mound',supportTop:true};});
 
   const BUILDING_PLAYER_COLLIDERS = [
-    ...BUILDING_PARTS.filter(p=>p.playerSolid).map(p=>{const a=orientedAabb(p.x,p.z,p.w,p.d,p.rot||0);return{type:'box',x:p.x,z:p.z,w:p.w,d:p.d,rot:p.rot||0,...a,minY:p.bottomY,maxY:p.topY,role:p.role,crouchStep:!!p.crouchStep,supportTop:!!p.supportTop,traversal:p.traversal||(p.crouchStep?'vault':p.supportTop?'mantle':'')}}),
-    ...BUILDING_PLAYER_RAMPS.map(r=>({...r,supportTop:true,traversal:''})),
+    ...BUILDING_PARTS.filter(p=>p.playerSolid).map(p=>{const a=orientedAabb(p.x,p.z,p.w,p.d,p.rot||0);return{type:'box',x:p.x,z:p.z,w:p.w,d:p.d,rot:p.rot||0,...a,minY:p.bottomY,maxY:p.topY,role:p.role,crouchStep:!!p.crouchStep,supportTop:!!p.supportTop}}),
+    ...BUILDING_PLAYER_RAMPS.map(r=>({...r,supportTop:true})),
   ];
   
   const WORLD_PLAYER_COLLIDERS = [...STATIC_PLAYER_COLLIDERS,...NATURAL_PLAYER_COLLIDERS,...PYRAMID_PLAYER_COLLIDERS,...BUILDING_PLAYER_COLLIDERS];

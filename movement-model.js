@@ -132,7 +132,7 @@ export function createTraversalPlan(candidate, startX, startY, startZ, startedAt
   const distance=Math.hypot(ex-sx,ez-sz),rise=Math.max(0,ey-sy);
   const durationMs=mode==='vault'?Math.round(Math.max(300,Math.min(430,300+distance*34))):Math.round(Math.max(380,Math.min(540,390+rise*72+distance*24)));
   return {
-    seq:Math.max(0,Math.floor(Number(seq)||0)),mode,role:String(candidate.role||''),portalId:String(candidate.portalId||''),
+    seq:Math.max(0,Math.floor(Number(seq)||0)),mode,role:String(candidate.role||''),portalId:String(candidate.portalId||''),affordanceId:String(candidate.affordanceId||''),
     startX:sx,startY:sy,startZ:sz,endX:ex,endY:ey,endZ:ez,
     peakY:Math.max(Number(candidate.peakY)||ey,ey+.08),startedAt:Number(startedAt)||0,durationMs,
     endGrounded:candidate.endGrounded!==false,exitVelocityY:Number.isFinite(Number(candidate.exitVelocityY))?Number(candidate.exitVelocityY):0,
@@ -152,15 +152,21 @@ export function traversalPose(plan, now) {
     const clearanceY=Math.max(Number(plan.peakY)||sy,sy,ey);
     x=sx+(ex-sx)*cross;z=sz+(ez-sz)*cross;y=sy+(clearanceY-sy)*lift+(ey-clearanceY)*settle;
   }else if(plan.mode==='vault'){
-    x=sx+(ex-sx)*eased;z=sz+(ez-sz)*eased;
-    const base=sy+(ey-sy)*eased,peak=Math.max(Number(plan.peakY)||base,sy,ey);
-    y=base+Math.sin(Math.PI*p)*Math.max(0,peak-(sy+ey)*.5);
+    // Vaults are also sweepable now: raise the capsule above the explicit low
+    // obstacle before crossing it, then settle onto the validated far support.
+    const clearanceY=Math.max(Number(plan.peakY)||sy,sy,ey);
+    const lift=smooth01(Math.min(1,p/.28)),cross=smooth01(Math.max(0,(p-.30)/.42)),settle=smooth01(Math.max(0,(p-.72)/.28));
+    x=sx+(ex-sx)*cross;z=sz+(ez-sz)*cross;y=sy+(clearanceY-sy)*lift+(ey-clearanceY)*settle;
   }else{
     // Mantle is a two-stage pull: rise to hand height, then move the hips onto
     // the ledge. The motion is deterministic on client and server.
-    const lift=smooth01(Math.min(1,p/.56)),pull=smooth01(Math.max(0,(p-.30)/.70));
+    // Lift the capsule clear of the ledge before pulling it forward.  The old
+    // overlap-first curve moved horizontally while the feet were still below
+    // the obstacle top; that only worked because traversal bypassed collision.
+    // Mantle motion is now physically sweepable from start to finish.
+    const lift=smooth01(Math.min(1,p/.46)),pull=smooth01(Math.max(0,(p-.48)/.52));
     const grabY=Math.max(ey+.055,Math.min(Number(plan.peakY)||ey+.10,ey+.18));
-    x=sx+(ex-sx)*pull;z=sz+(ez-sz)*pull;y=sy+(grabY-sy)*lift+(ey-grabY)*smooth01(Math.max(0,(p-.62)/.38));
+    x=sx+(ex-sx)*pull;z=sz+(ez-sz)*pull;y=sy+(grabY-sy)*lift+(ey-grabY)*smooth01(Math.max(0,(p-.78)/.22));
   }
   return {x,y,z,progress:p,done:raw>=1,mode:plan.mode};
 }

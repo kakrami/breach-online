@@ -227,7 +227,7 @@ export function buildingPlan(b){
 
 function addBox(parts,role,x,z,w,d,bottomY,topY,flags={}){
   if(w<=0||d<=0||topY-bottomY<=0)return;
-  parts.push({role,x,z,w,d,bottomY,topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:!!flags.crouchStep,traversal:flags.traversal||'',decorative:!!flags.decorative});
+  parts.push({role,x,z,w,d,bottomY,topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:!!flags.crouchStep,decorative:!!flags.decorative});
 }
 
 function addFrameX(parts,b,z,base,level,opening){
@@ -253,7 +253,7 @@ export function makeBuildingGeometry(b){
     const openings=buildingWallOpenings(b,level,side);
     for(const cell of splitWall(b.w,b.floorH,openings)){
       const x=b.x+cell.u,bottomY=base+level*b.floorH+cell.y,topY=bottomY+cell.h+.015;
-      addBox(parts,'wall',x,z,cell.w+.015,t,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep,traversal:cell.crouchStep?'vault':'mantle'});
+      addBox(parts,'wall',x,z,cell.w+.015,t,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep});
       if(cell.crouchStep)supports.push({type:'rect',x,z,w:cell.w+.015,d:t,y:topY,role:'windowSill',crouchStep:true});
     }
     for(const opening of openings)addFrameX(parts,b,z+(side==='front'?-.012:.012),base,level,opening);
@@ -262,7 +262,7 @@ export function makeBuildingGeometry(b){
     const openings=buildingWallOpenings(b,level,side);
     for(const cell of splitWall(b.d,b.floorH,openings)){
       const z=b.z+cell.u,bottomY=base+level*b.floorH+cell.y,topY=bottomY+cell.h+.015;
-      addBox(parts,'wall',x,z,t,cell.w+.015,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep,traversal:cell.crouchStep?'vault':'mantle'});
+      addBox(parts,'wall',x,z,t,cell.w+.015,bottomY,topY,{supportTop:cell.crouchStep,crouchStep:cell.crouchStep});
       if(cell.crouchStep)supports.push({type:'rect',x,z,w:t,d:cell.w+.015,y:topY,role:'windowSill',crouchStep:true});
     }
     for(const opening of openings)addFrameZ(parts,b,x+(side==='left'?-.012:.012),base,level,opening);
@@ -275,33 +275,33 @@ export function makeBuildingGeometry(b){
   for(let floorLevel=1;floorLevel<levels;floorLevel++){
     const floorY=base+floorLevel*b.floorH,hole=plan.holes[floorLevel-1],panels=panelsAroundHole(b,hole);
     for(const panel of panels){
-      addBox(parts,'floor',panel.x,panel.z,panel.w+.03,panel.d+.03,floorY-.18,floorY,{supportTop:true,traversal:'mantle'});
+      addBox(parts,'floor',panel.x,panel.z,panel.w+.03,panel.d+.03,floorY-.18,floorY,{supportTop:true});
       supports.push({type:'rect',x:panel.x,z:panel.z,w:panel.w,d:panel.d,y:floorY});
       horizontalSolids.push({x:panel.x,z:panel.z,w:panel.w,d:panel.d,bottomY:floorY-.18,topY:floorY});
     }
-    addBox(parts,'floor',b.x,plan.balconyZ,plan.balconyW,plan.balconyD,floorY-.18,floorY,{supportTop:true,traversal:'mantle'});
+    addBox(parts,'floor',b.x,plan.balconyZ,plan.balconyW,plan.balconyD,floorY-.18,floorY,{supportTop:true});
     supports.push({type:'rect',x:b.x,z:plan.balconyZ,w:plan.balconyW,d:plan.balconyD,y:floorY});
     horizontalSolids.push({x:b.x,z:plan.balconyZ,w:plan.balconyW,d:plan.balconyD,bottomY:floorY-.18,topY:floorY});
     const railBottom=floorY+.08,outerZ=plan.front-b.balcony+.06;
-    addBox(parts,'rail',b.x,outerZ,plan.balconyW,.14,railBottom,railBottom+.82,{traversal:'vault'});
-    addBox(parts,'rail',b.x-plan.balconyW/2,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82,{traversal:'vault'});
-    addBox(parts,'rail',b.x+plan.balconyW/2,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82,{traversal:'vault'});
+    addBox(parts,'rail',b.x,outerZ,plan.balconyW,.14,railBottom,railBottom+.82,{});
+    addBox(parts,'rail',b.x-plan.balconyW/2,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82,{});
+    addBox(parts,'rail',b.x+plan.balconyW/2,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82,{});
 
     const guardY=floorY+.05,guardH=.76;
     // Guard the long edges only. The bottom and top of every straight flight
     // stay open so the player can walk directly onto and off the staircase.
-    addBox(parts,'rail',(hole.left+hole.right)/2,hole.minZ+.05,hole.right-hole.left,.12,guardY,guardY+guardH,{traversal:'vault'});
-    addBox(parts,'rail',(hole.left+hole.right)/2,hole.maxZ-.05,hole.right-hole.left,.12,guardY,guardY+guardH,{traversal:'vault'});
+    addBox(parts,'rail',(hole.left+hole.right)/2,hole.minZ+.05,hole.right-hole.left,.12,guardY,guardY+guardH,{});
+    addBox(parts,'rail',(hole.left+hole.right)/2,hole.maxZ-.05,hole.right-hole.left,.12,guardY,guardY+guardH,{});
   }
 
   const roofY=base+b.floorH*levels;
-  addBox(parts,'roof',b.x,b.z,b.w+.04,b.d+.04,roofY-.20,roofY,{supportTop:true,traversal:'mantle'});
+  addBox(parts,'roof',b.x,b.z,b.w+.04,b.d+.04,roofY-.20,roofY,{supportTop:true});
   supports.push({type:'rect',x:b.x,z:b.z,w:b.w,d:b.d,y:roofY});
   horizontalSolids.push({x:b.x,z:b.z,w:b.w,d:b.d,bottomY:roofY-.20,topY:roofY});
   if(b.tall){
     const py=roofY;
-    addBox(parts,'rail',b.x,b.z-b.d/2+.10,b.w,.20,py,py+.55,{traversal:'vault'});addBox(parts,'rail',b.x,b.z+b.d/2-.10,b.w,.20,py,py+.55,{traversal:'vault'});
-    addBox(parts,'rail',b.x-b.w/2+.10,b.z,.20,b.d,py,py+.55,{traversal:'vault'});addBox(parts,'rail',b.x+b.w/2-.10,b.z,.20,b.d,py,py+.55,{traversal:'vault'});
+    addBox(parts,'rail',b.x,b.z-b.d/2+.10,b.w,.20,py,py+.55,{});addBox(parts,'rail',b.x,b.z+b.d/2-.10,b.w,.20,py,py+.55,{});
+    addBox(parts,'rail',b.x-b.w/2+.10,b.z,.20,b.d,py,py+.55,{});addBox(parts,'rail',b.x+b.w/2-.10,b.z,.20,b.d,py,py+.55,{});
   }
 
   // Visible treads stay discrete, but player support uses one continuous
@@ -368,27 +368,27 @@ export const STATIC_SUPPORTS = STATIC_BOXES.map(o=>({type:'rect',x:o.x,z:o.z,w:o
 // ad-hoc collision bounds.
 export const STATIC_PLAYER_COLLIDERS = STATIC_BOXES.map(o=>{
   const minY=terrainHeight(o.x,o.z);
-  return {type:'box',x:o.x,z:o.z,w:o.w,d:o.d,minX:o.x-o.w/2,maxX:o.x+o.w/2,minZ:o.z-o.d/2,maxZ:o.z+o.d/2,minY,maxY:minY+o.h,role:'static',supportTop:true,traversal:'mantle'};
+  return {type:'box',x:o.x,z:o.z,w:o.w,d:o.d,minX:o.x-o.w/2,maxX:o.x+o.w/2,minZ:o.z-o.d/2,maxZ:o.z+o.d/2,minY,maxY:minY+o.h,role:'static',supportTop:true};
 });
 
 export const NATURAL_PLAYER_COLLIDERS = NATURAL_OBSTACLES.map(o=>{
   const minY=naturalGroundBase(o.type,o.x,o.z,o.r);
-  if(o.type==='tree')return {type:'round',x:o.x,z:o.z,r:o.r*.72,minY,maxY:minY+o.h*.64,role:'tree',supportTop:false,traversal:''};
+  if(o.type==='tree')return {type:'round',x:o.x,z:o.z,r:o.r*.72,minY,maxY:minY+o.h*.64,role:'tree',supportTop:false};
   if(o.type==='bush'){
     // Foliage is visual/soft cover. Only the dense lower core blocks movement,
     // so a normal jump or vault clears a bush instead of colliding with leaves.
     const r=o.r*.46,maxY=minY+Math.min(.74,o.h*.50);
-    return {type:'round',x:o.x,z:o.z,r,minY,maxY,role:'bush',supportTop:false,traversal:'vault'};
+    return {type:'round',x:o.x,z:o.z,r,minY,maxY,role:'bush',supportTop:false};
   }
   const r=o.r*.88,maxY=minY+o.h,supportRadius=Math.max(PLAYER_RADIUS+.14,o.r*.62);
-  return {type:'round',x:o.x,z:o.z,r,minY,maxY,role:'rock',supportTop:true,supportRadius,traversal:'mantle'};
+  return {type:'round',x:o.x,z:o.z,r,minY,maxY,role:'rock',supportTop:true,supportRadius};
 });
 
 export const NATURAL_SUPPORTS = NATURAL_PLAYER_COLLIDERS.filter(c=>c.role==='rock').map(c=>({type:'round',x:c.x,z:c.z,r:c.supportRadius,y:c.maxY,role:'rock'}));
 
 export const BUILDING_PLAYER_COLLIDERS = [
-  ...BUILDING_PARTS.filter(p=>p.playerSolid).map(p=>({type:'box',x:p.x,z:p.z,w:p.w,d:p.d,minX:p.x-p.w/2,maxX:p.x+p.w/2,minZ:p.z-p.d/2,maxZ:p.z+p.d/2,minY:p.bottomY,maxY:p.topY,role:p.role,crouchStep:!!p.crouchStep,supportTop:!!p.supportTop,traversal:p.traversal||(p.crouchStep?'vault':p.supportTop?'mantle':'')})),
-  ...BUILDING_PLAYER_RAMPS.map(r=>({...r,supportTop:true,traversal:''})),
+  ...BUILDING_PARTS.filter(p=>p.playerSolid).map(p=>({type:'box',x:p.x,z:p.z,w:p.w,d:p.d,minX:p.x-p.w/2,maxX:p.x+p.w/2,minZ:p.z-p.d/2,maxZ:p.z+p.d/2,minY:p.bottomY,maxY:p.topY,role:p.role,crouchStep:!!p.crouchStep,supportTop:!!p.supportTop})),
+  ...BUILDING_PLAYER_RAMPS.map(r=>({...r,supportTop:true})),
 ];
 
 export const WORLD_PLAYER_COLLIDERS = [...STATIC_PLAYER_COLLIDERS,...NATURAL_PLAYER_COLLIDERS,...BUILDING_PLAYER_COLLIDERS];
