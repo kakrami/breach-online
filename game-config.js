@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.55.1';
+export const APP_VERSION = '1.56.0';
 export const BUILD_ID = '20260927T015500Z';
 export const PROTOCOL_VERSION = 96;
 export const ROOM_CODE_LENGTH = 4;
