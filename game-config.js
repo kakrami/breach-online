@@ -1,10 +1,9 @@
-export const APP_VERSION = '1.53.0';
-export const BUILD_ID = '20260926T153000Z';
+export const APP_VERSION = '1.54.0';
+export const BUILD_ID = '20260927T010000Z';
 export const PROTOCOL_VERSION = 96;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS = 8;
-export const TEAM_COLORS = { blue:'#54a9ff', red:'#ff3b45' };
 
 export const KILLSTREAK_SELECTION_COUNT = 3;
 export const KILLSTREAK_ORDER = Object.freeze(['ufo','lightning','earthquake','asteroids','solarnuke']);
