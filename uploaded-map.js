@@ -36,4 +36,18 @@ export function sanitizeUploadedMapDefinition(raw){
  const sp=raw.spawnSets||raw.spawns||{},teams={};for(const k of ['blue','red','ffa'])teams[k]=arr(sp[k],96).map(p=>point(p,arena)).filter(Boolean);clean.spawnSets=teams;clean.spawnPolicy=scalars(raw.spawnPolicy,128);
  return clean;
 }
+export function sanitizeBuilderDraftDefinition(raw){
+ const clean=sanitizeUploadedMapDefinition(raw),sourceGroups=raw?.editor?.groups&&typeof raw.editor.groups==='object'&&!Array.isArray(raw.editor.groups)?raw.editor.groups:{},meta=(dst,src,{yOffset=false,archetype=false,parent=false}={})=>{if(!dst||!src||typeof src!=='object')return;const id=text(src.id,48);if(id)dst.id=id;const groupId=text(src.groupId||sourceGroups[id],48);if(groupId)dst.groupId=groupId;if(yOffset)dst.yOffset=clamp(finite(src.yOffset),-12,30);if(archetype){const a=text(src.archetype,24);if(a)dst.archetype=a}if(parent){const parentId=text(src.parentId,48);if(parentId)dst.parentId=parentId;const side=['e','w','n','s'].includes(String(src.side))?String(src.side):'';if(side)dst.side=side;dst.t=clamp(finite(src.t),-.45,.45)}};
+ const roadSrc=arr(raw.roads,256);clean.roads.forEach((o,i)=>meta(o,roadSrc[i],{yOffset:true}));
+ const boxSrc=arr(raw.staticBoxes||raw.props,512);clean.staticBoxes.forEach((o,i)=>meta(o,boxSrc[i]));
+ const buildingSrc=arr(raw.buildings,128);clean.buildings.forEach((o,i)=>meta(o,buildingSrc[i],{archetype:true}));
+ const elevationSrc=arr(raw.elevationObjects||raw.elevation,128);clean.elevationObjects.forEach((o,i)=>meta(o,elevationSrc[i]));
+ const moundSrc=arr(raw.pyramids||raw.mounds,128);clean.pyramids.forEach((o,i)=>meta(o,moundSrc[i]));
+ const naturalSrc=arr(raw.naturalObstacles||raw.naturals,256);clean.naturalObstacles.forEach((o,i)=>meta(o,naturalSrc[i]));
+ const flowSrc=arr(raw.combatFlowNodes||raw.flowNodes||raw.flow,512);clean.combatFlowNodes.forEach((o,i)=>meta(o,flowSrc[i]));
+ const ladderSrc=arr(raw.ladders,128),byLadderId=new Map(ladderSrc.map((o,i)=>[text(o?.id,48,`ladder-${i+1}`),o]));clean.ladders.forEach((o,i)=>meta(o,byLadderId.get(o.id)||ladderSrc[i],{parent:true}));
+ const spawnSrc=raw.spawnSets||raw.spawns||{};for(const team of ['blue','red','ffa']){const src=arr(spawnSrc[team],96),dst=clean.spawnSets[team]||[];for(let i=0;i<dst.length;i++){const p=src[i];if(!Array.isArray(p))continue;const id=text(p[4],48),groupId=text(p[5],48);if(id)dst[i].push(id);if(groupId){if(!id)dst[i].push('');dst[i].push(groupId)}}}
+ if(raw.editor&&typeof raw.editor==='object'&&!Array.isArray(raw.editor)){const editor=scalars(raw.editor,96),groups={};if(raw.editor.groups&&typeof raw.editor.groups==='object'&&!Array.isArray(raw.editor.groups))for(const [k,v] of Object.entries(raw.editor.groups).slice(0,1024)){const id=text(k,48),group=text(v,48);if(id&&group)groups[id]=group}if(Object.keys(groups).length)editor.groups=groups;const runtime=scalars(raw.editor.runtime,32);if(Object.keys(runtime).length)editor.runtime=runtime;clean.editor=editor}
+ return clean;
+}
 export function customMapSummary(def){const d=sanitizeUploadedMapDefinition(def);return{name:d.meta.name,id:d.meta.id,schemaVersion:d.schemaVersion,arenaLimit:d.arenaLimit,minimapLimit:d.minimapLimit,roads:d.roads.length,buildings:d.buildings.length,props:d.staticBoxes.length,spawns:(d.spawnSets.blue?.length||0)+(d.spawnSets.red?.length||0),bytes:customMapSerializedSize(d)};}

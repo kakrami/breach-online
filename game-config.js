@@ -1,5 +1,5 @@
-export const APP_VERSION = '1.65.0';
-export const BUILD_ID = '20260927T074500Z';
+export const APP_VERSION = '1.66.2';
+export const BUILD_ID = '20260927T165307Z';
 export const PROTOCOL_VERSION = 96;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
@@ -10,8 +10,13 @@ export const MAX_ACTIVE_ZOMBIES = 8;
 // Shared replay contract. The client owns playback/history; the server only
 // reserves the death window and authoritatively marks the score-limit final kill.
 export const REPLAY_PRE_MS = 3800;
-export const REPLAY_POST_MS = 650;
-export const REPLAY_RESPAWN_TIMEOUT_MS = 7000;
+export const REPLAY_POST_MS = 2000;
+// CoD-style replay pacing: regular killcams stay real-time; only the final
+// winning kill gets a short impact-focused slow-motion beat.
+export const REPLAY_FINAL_SLOW_PRE_MS = 500;
+export const REPLAY_FINAL_SLOW_POST_MS = 700;
+export const REPLAY_FINAL_SLOW_RATE = 0.35;
+export const REPLAY_RESPAWN_TIMEOUT_MS = 12000;
 export const REPLAY_SKIP_RESPAWN_MS = 180;
 
 export const KILLSTREAK_SELECTION_COUNT = 3;

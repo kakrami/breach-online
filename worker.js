@@ -30,7 +30,7 @@ import { createAuthoredWorldGeometry } from './authored-world-geometry.js';
 import { createAuthoredWorldCollision } from './authored-world-collision.js';
 import { createAuthoredServerCollision } from './authored-server-collision.js';
 import { createAuthoredSpawnDirector } from './authored-spawn-director.js';
-import { sanitizeUploadedMapDefinition, customMapSerializedSize, customMapFingerprint, customMapSummary } from './uploaded-map.js';
+import { sanitizeUploadedMapDefinition, sanitizeBuilderDraftDefinition, customMapSerializedSize, customMapFingerprint, customMapSummary } from './uploaded-map.js';
 
 const GAME_VERSION = APP_VERSION;
 const FALLBACK_CUSTOM_MAP_DEFINITION=sanitizeUploadedMapDefinition(CUSTOM_MAP_DEFINITION);
@@ -810,7 +810,7 @@ export class MapLibrary {
     }
     if(url.pathname==='/save'&&request.method==='POST'){
       const owner=await this.ownerHash(body.client,body.auth);if(!owner)return new Response(JSON.stringify({error:'Missing map owner credential.'}),{status:401,headers:{'content-type':'application/json'}});
-      let def;try{def=sanitizeUploadedMapDefinition(body.map);}catch(error){return new Response(JSON.stringify({error:String(error?.message||'Invalid map.')}),{status:400,headers:{'content-type':'application/json'}});}
+      let def;try{def=sanitizeBuilderDraftDefinition(body.map);}catch(error){return new Response(JSON.stringify({error:String(error?.message||'Invalid map.')}),{status:400,headers:{'content-type':'application/json'}});}
       const index=await this.index();let id=this.safeId(body.mapId);let entry=id?index[id]:null;
       if(entry&&(entry.ownerClientId!==owner.id||entry.ownerAuthHash!==owner.hash))return new Response(JSON.stringify({error:'Map is owned by another player.'}),{status:403,headers:{'content-type':'application/json'}});
       if(!entry){id=this.newId();const now=Date.now();entry={id,ownerClientId:owner.id,ownerAuthHash:owner.hash,createdAt:now,publishedRevision:0};}
@@ -2610,7 +2610,7 @@ export class GameRoom {
     this.broadcast({t:'throwableImpact',id:g.id,kind:g.kind,x:g.x,y:g.y,z:g.z,vx:g.vx,vy:g.vy,vz:g.vz,stuck:g.stuck,rolling:!!g.rolling,at});
   }
   detonateFlash(g,now){
-    const radius=FLASH_RADIUS;this.broadcast({t:'flashDetonate',id:g.id,x:g.x,y:g.y,z:g.z,radius});
+    const radius=FLASH_RADIUS;this.broadcast({t:'flashDetonate',id:g.id,x:g.x,y:g.y,z:g.z,radius,at:now});
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;
       const ex=p.x,ey=p.y+PLAYER_HEIGHT*.75,ez=p.z,dx=g.x-ex,dy=g.y-ey,dz=g.z-ez,dist=Math.hypot(dx,dy,dz);if(dist>radius)continue;
@@ -2644,7 +2644,7 @@ export class GameRoom {
     }
     for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,b.id,b.team))continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius||!this.world.serverCollision.blastHasLineOfSight(g.x,g.y,g.z,b.x,b.y+1,b.z))continue;const damage=this.blastDamage(maxDamage,d,radius,frag?.20:.18,frag?.30:.32),n=Math.hypot(dx,dz)||1,force=.28+.72*Math.sqrt(clamp(damage/maxDamage,0,1));this.damageBot(b,g.ownerId,damage,weapon,{x:dx/n*5.4*force,z:dz/n*5.4*force,y:1.1+2.4*force},now,g.id,settings,{distance:d,blast:true});}
     this.noteExplosion({x:g.x,z:g.z,team:g.ownerTeam,id:g.id,kind:weapon},now);
-    this.broadcast({t:'explosion',id:g.id,x:g.x,y:g.y,z:g.z,kind:weapon,radius});
+    this.broadcast({t:'explosion',id:g.id,x:g.x,y:g.y,z:g.z,kind:weapon,radius,at:now});
   }
 
 
@@ -2653,7 +2653,7 @@ export class GameRoom {
     const apply=(target,socket=null,isBot=false)=>{if(!target||target.hp<=0)return;const targetId=target.clientId||target.id,self=targetId===bullet.ownerId;if(!self&&combatantsAreFriendly(matchMode(this.metaCache?.match),bullet.ownerId,bullet.ownerTeam,targetId,target.team))return;const tx=target.x,ty=target.y+1,tz=target.z,dx=tx-bullet.x,dy=ty-bullet.y,dz=tz-bullet.z,d=Math.hypot(dx,dy,dz);if(d>radius||!this.world.serverCollision.blastHasLineOfSight(bullet.x,bullet.y,bullet.z,tx,ty,tz))return;let damage=this.blastDamage(maxDamage,d,radius,bullet.weapon==='rpg'?.22:.20,bullet.weapon==='rpg'?.34:.30);if(self)damage=Math.round(damage*.65);const horizontal=Math.hypot(dx,dz)||1,force=.28+.72*Math.sqrt(clamp(damage/maxDamage,0,1)),knockback={x:dx/horizontal*6.2*force,z:dz/horizontal*6.2*force,y:1.15+2.65*force};if(isBot)this.damageBot(target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d,blast:true});else this.damageHuman(socket,target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d,blast:true});};
     for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;apply(p,socket,false);}for(const bot of this.bots)apply(bot,null,true);
     this.noteExplosion({x:bullet.x,z:bullet.z,team:bullet.ownerTeam,id:bullet.id,kind:bullet.weapon},now);
-    this.broadcast({t:'explosion',id:bullet.id,x:bullet.x,y:bullet.y,z:bullet.z,kind:bullet.weapon,radius});
+    this.broadcast({t:'explosion',id:bullet.id,x:bullet.x,y:bullet.y,z:bullet.z,kind:bullet.weapon,radius,at:now});
   }
 
   applyRpgWander(bullet,at){
