@@ -837,7 +837,7 @@ export class MapLibrary {
     }
     if(url.pathname==='/delete'&&request.method==='POST'){
       const owner=await this.ownerHash(body.client,body.auth),id=this.safeId(body.mapId),index=await this.index(),entry=index[id];if(!owner||!entry||entry.ownerClientId!==owner.id||entry.ownerAuthHash!==owner.hash)return new Response(JSON.stringify({error:'Map not found.'}),{status:404,headers:{'content-type':'application/json'}});
-      await this.ctx.storage.delete(`map:${id}:draft`);for(let r=1;r<=Number(entry.publishedRevision||0);r++)await this.ctx.storage.delete(`map:${id}:rev:${r}`);delete index[id];await this.putIndex(index);return new Response(JSON.stringify({ok:true}),{headers:{'content-type':'application/json'}});
+      const stored=await this.ctx.storage.list({prefix:`map:${id}:`}),keys=[...stored.keys()];for(let i=0;i<keys.length;i+=128)await this.ctx.storage.delete(keys.slice(i,i+128));delete index[id];await this.putIndex(index);return new Response(JSON.stringify({ok:true,mapId:id}),{headers:{'content-type':'application/json'}});
     }
     return new Response('not found',{status:404});
   }

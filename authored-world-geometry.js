@@ -6,6 +6,16 @@ const rotatePoint=(x,z,cx,cz,rot)=>{const a=normalizeRot(rot)*Math.PI/180,c=Math
 const rotateVector=(x,z,rot)=>{const a=normalizeRot(rot)*Math.PI/180,c=Math.cos(a),ss=Math.sin(a);return{x:x*c-z*ss,z:x*ss+z*c};};
 const orientedAabb=(x,z,w,d,rot=0)=>{const a=normalizeRot(rot)*Math.PI/180,c=Math.abs(Math.cos(a)),ss=Math.abs(Math.sin(a)),hx=w/2*c+d/2*ss,hz=w/2*ss+d/2*c;return{minX:x-hx,maxX:x+hx,minZ:z-hz,maxZ:z+hz};};
 const PROP_KIND_ALIASES=Object.freeze({car:'burntCar',bus:'burntBus',brokenwall:'brokenWall',fueltank:'fuelTank',pipebank:'pipe',box:'crate'});
+export const AUTHORED_ROAD_SURFACE_POLICY=Object.freeze({
+  dirt:Object.freeze({priority:10,renderOrder:10,surfaceOffset:.014,polygonOffsetFactor:-1,polygonOffsetUnits:-2}),
+  alley:Object.freeze({priority:20,renderOrder:20,surfaceOffset:.014,polygonOffsetFactor:-1,polygonOffsetUnits:-3}),
+  service:Object.freeze({priority:30,renderOrder:30,surfaceOffset:.014,polygonOffsetFactor:-1,polygonOffsetUnits:-4}),
+  street:Object.freeze({priority:40,renderOrder:40,surfaceOffset:.014,polygonOffsetFactor:-1,polygonOffsetUnits:-5}),
+  sidewalk:Object.freeze({priority:50,renderOrder:50,surfaceOffset:.014,polygonOffsetFactor:-1,polygonOffsetUnits:-6}),
+  crosswalk:Object.freeze({priority:60,renderOrder:60,surfaceOffset:.014,polygonOffsetFactor:-1,polygonOffsetUnits:-7}),
+});
+export const AUTHORED_ROAD_MARKING_POLICY=Object.freeze({renderOrder:100,surfaceOffset:.020,polygonOffsetFactor:-2,polygonOffsetUnits:-16});
+export function authoredRoadSurfacePolicy(kind='street'){return AUTHORED_ROAD_SURFACE_POLICY[String(kind)]||AUTHORED_ROAD_SURFACE_POLICY.street;}
 function canonicalPropKind(value){const raw=String(value||'').trim();return PROP_KIND_ALIASES[raw]||raw||'crate';}
 function sanitizeStaticBoxes(list){return (Array.isArray(list)?list:[]).map(o=>({x:finite(o?.x),z:finite(o?.z),w:clampNumber(o?.w,.3,80,2),d:clampNumber(o?.d,.3,80,2),h:clampNumber(o?.h,.2,40,2),rot:normalizeRot(o?.rot),yOffset:clampNumber(o?.yOffset,-12,30,0),kind:canonicalPropKind(o?.kind)}));}
 function sanitizeRoads(list){const kinds=new Set(['street','alley','service','dirt','sidewalk','crosswalk']);return (Array.isArray(list)?list:[]).map(o=>{let w=clampNumber(o?.w,2,600,20),d=clampNumber(o?.d,1,40,8),rot=normalizeRot(o?.rot);if(o?.rot==null&&d>w){[w,d]=[d,w];rot=90;}return{kind:kinds.has(String(o?.kind))?String(o.kind):'street',x:finite(o?.x),z:finite(o?.z),w,d,rot};});}
