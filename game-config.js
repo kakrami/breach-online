@@ -1,11 +1,18 @@
-export const APP_VERSION = '1.64.0';
-export const BUILD_ID = '20260927T070500Z';
+export const APP_VERSION = '1.65.0';
+export const BUILD_ID = '20260927T074500Z';
 export const PROTOCOL_VERSION = 96;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS_PER_TEAM = 8;
 export const MAX_MATCH_BOTS = MAX_BOTS_PER_TEAM * 2;
 export const MAX_ACTIVE_ZOMBIES = 8;
+
+// Shared replay contract. The client owns playback/history; the server only
+// reserves the death window and authoritatively marks the score-limit final kill.
+export const REPLAY_PRE_MS = 3800;
+export const REPLAY_POST_MS = 650;
+export const REPLAY_RESPAWN_TIMEOUT_MS = 7000;
+export const REPLAY_SKIP_RESPAWN_MS = 180;
 
 export const KILLSTREAK_SELECTION_COUNT = 3;
 export const KILLSTREAK_ORDER = Object.freeze(['ufo','lightning','earthquake','asteroids','solarnuke']);

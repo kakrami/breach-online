@@ -4,7 +4,7 @@ import * as DepotGeometry from './world-geometry-depot.js';
 import * as YardGeometry from './world-geometry-yard.js';
 import * as RigGeometry from './world-geometry-rig.js';
 import {
-  APP_VERSION, BUILD_ID, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS_PER_TEAM, MAX_MATCH_BOTS, MAX_ACTIVE_ZOMBIES, KILLSTREAK_SPECS, KILLSTREAK_SELECTION_COUNT, normalizeKillstreak, normalizeKillstreakSelection, DEFAULT_MAP_ID, normalizeMapId, mapSpec,
+  APP_VERSION, BUILD_ID, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS_PER_TEAM, MAX_MATCH_BOTS, MAX_ACTIVE_ZOMBIES, REPLAY_RESPAWN_TIMEOUT_MS, REPLAY_SKIP_RESPAWN_MS, KILLSTREAK_SPECS, KILLSTREAK_SELECTION_COUNT, normalizeKillstreak, normalizeKillstreakSelection, DEFAULT_MAP_ID, normalizeMapId, mapSpec,
   WEAPON_ORDER, PRIMARY_WEAPONS, SECONDARY_WEAPONS, WEAPON_SPECS, normalizeWeaponAttachments, resolveWeaponSpec, weaponSpreadRadians, weaponHeatAfterDelay, weaponHeatAfterShot, weaponDamageAtDistance, weaponZoneDamageScale, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, EQUIPMENT_SPECS, TACTICAL_EQUIPMENT, LETHAL_EQUIPMENT, normalizeTactical, normalizeLethal, equipmentForLoadout, LOADOUT_CLASS_COUNT, LOADOUT_CLASS_IDS, normalizeLoadoutClassId, normalizeLoadoutClassName, normalizeLoadoutDefinition, defaultLoadoutClasses, normalizeLoadoutClasses, loadoutClassById, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings, modMovement, modGravity, MOVEMENT_FEEL, WEAPON_SWITCH_MS, EQUIPMENT_WEAPON_RECOVER_MS,
   DEFAULT_MATCH_RULES, GAME_MODES, zombieWaveSpec, ZOMBIE_WAVE_BREAK_MS, normalizeGameMode, gameModeSpec, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, equipmentCollisionRadius, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, FRAG_RADIUS, FRAG_MAX_DAMAGE, SMOKE_RADIUS, SMOKE_DURATION_MS, SMOKE_LOS_RADIUS_SCALE, SMOKE_GROW_MS, SMOKE_START_SCALE, GROUND_FOLLOW_DROP
 } from './game-config.js';
@@ -963,7 +963,7 @@ export class GameRoom {
       : type === 'state' ? { rate: 55, burst: 220 }
       : type === 'simTick' ? { rate: 40, burst: 180 }
       : type === 'fire' ? { rate: 24, burst: 72 }
-      : ['equipmentAction','throw','reload','weapon','loadout','killstreakLoadout','killstreak','team','god','startMatch','returnLobby','adminPlayer','adminSettings','adminBots'].includes(type) ? { rate: 14, burst: 22 }
+      : ['equipmentAction','throw','reload','weapon','loadout','killstreakLoadout','killstreak','replaySkip','team','god','startMatch','returnLobby','adminPlayer','adminSettings','adminBots'].includes(type) ? { rate: 14, burst: 22 }
       : type === 'ping' ? { rate: 8, burst: 12 }
       : type === 'chat' ? { rate: 1.5, burst: 4 }
       : { rate: 30, burst: 45 };
@@ -1199,18 +1199,19 @@ export class GameRoom {
   }
 
   recordMatchKill(attackerId,victimId,now=Date.now()){
-    const meta=this.metaCache;if(!meta)return;const match=meta.match,mode=matchMode(match),spec=gameModeSpec(mode);
-    if(!matchAllowsCombat(match)||spec.scoreType==='none'||spec.cooperative||!attackerId||attackerId===victimId)return;
+    const meta=this.metaCache;if(!meta)return{finalKill:false};const match=meta.match,mode=matchMode(match),spec=gameModeSpec(mode);
+    if(!matchAllowsCombat(match)||spec.scoreType==='none'||spec.cooperative||!attackerId||attackerId===victimId)return{finalKill:false};
     const attacker=this.findCombatant(attackerId),victim=this.findCombatant(victimId);
-    if(!attacker?.id||!victim?.id||combatantsAreFriendly(mode,attacker.id,attacker.team,victim.id,victim.team))return;
+    if(!attacker?.id||!victim?.id||combatantsAreFriendly(mode,attacker.id,attacker.team,victim.id,victim.team))return{finalKill:false};
     match.updatedAt=now;meta.match=match;this.matchDirty=true;
     if(spec.scoreType==='team'){
       if(attacker.team==='red')match.redScore+=1;else match.blueScore+=1;
       const reached=attacker.team==='red'?match.redScore>=match.scoreLimit:match.blueScore>=match.scoreLimit;
-      if(reached)this.finishMatch(meta,attacker.team,'score',now);else this.broadcastMatch(meta,now);return;
+      if(reached)return{finalKill:true,winner:attacker.team,reason:'score'};
+      this.broadcastMatch(meta,now);return{finalKill:false};
     }
-    if(attacker.kills>=match.scoreLimit){this.finishMatch(meta,{winnerId:attacker.id,winnerName:attacker.name},'score',now);return;}
-    this.broadcastMatch(meta,now);
+    if(attacker.kills>=match.scoreLimit)return{finalKill:true,winner:{winnerId:attacker.id,winnerName:attacker.name},reason:'score'};
+    this.broadcastMatch(meta,now);return{finalKill:false};
   }
 
   async loadJoinTickets(now = Date.now()) {
@@ -1537,6 +1538,13 @@ export class GameRoom {
       if(supplied.length!==KILLSTREAK_SELECTION_COUNT||raw.length!==KILLSTREAK_SELECTION_COUNT){sendJson(socket,{t:'killstreakLoadout',accepted:false,reason:'invalid',rev,selection:normalizeKillstreakSelection(me.killstreakSelection)});return;}
       me.killstreakSelection=normalizeKillstreakSelection(raw);me.killstreakKills=0;me.killstreakAvailable=[];me.killstreakEarned=[];socket.serializeAttachment(me);
       sendJson(socket,{t:'killstreakLoadout',accepted:true,rev,selection:me.killstreakSelection});sendJson(socket,{t:'killstreakState',...killstreakState(me)});return;
+    }
+
+    if(payload.t==='replaySkip'){
+      if(me.hp<=0&&matchMode(meta.match)!=='zombies'&&matchAllowsRespawn(meta.match)&&finiteNumber(me.wastedUntil,0)>now+REPLAY_SKIP_RESPAWN_MS){
+        me.wastedUntil=now+REPLAY_SKIP_RESPAWN_MS;socket.serializeAttachment(me);sendJson(socket,{t:'replaySkip',accepted:true,respawnAt:me.wastedUntil});
+      }else sendJson(socket,{t:'replaySkip',accepted:false,respawnAt:finiteNumber(me.wastedUntil,0)});
+      return;
     }
 
     if(payload.t==='killstreak'){
@@ -2892,7 +2900,7 @@ export class GameRoom {
   }
 
   awardKill(attackerId, victimId, now) {
-    if (!attackerId || attackerId === victimId) return 0;
+    if (!attackerId || attackerId === victimId) return {multiKill:0,finalKill:false};
     const updateChain = (p) => {
       const last = finiteNumber(p.lastKillAt, 0);
       p.multiKillCount = last > 0 && now - last <= MULTI_KILL_WINDOW_MS ? Math.max(1, Math.floor(finiteNumber(p.multiKillCount, 1))) + 1 : 1;
@@ -2910,17 +2918,17 @@ export class GameRoom {
       const multiKill = updateChain(p);
       socket.serializeAttachment(p);
       sendJson(socket,{t:'killstreakState',...killstreakState(p),justEarned:newlyEarned});
-      this.recordMatchKill(attackerId, victimId, now);
-      return multiKill;
+      const matchResult=this.recordMatchKill(attackerId, victimId, now);
+      return {multiKill,...matchResult};
     }
     const bot = this.bots.find((b) => b.id === attackerId);
     if (bot) {
       bot.kills = Math.max(0, Math.floor(finiteNumber(bot.kills, 0))) + 1;
       const multiKill = updateChain(bot);
-      this.recordMatchKill(attackerId, victimId, now);
-      return multiKill;
+      const matchResult=this.recordMatchKill(attackerId, victimId, now);
+      return {multiKill,...matchResult};
     }
-    return 0;
+    return {multiKill:0,finalKill:false};
   }
 
   damageHuman(socket, target, attackerId, damage, weapon, knockback, now, bulletId = "", settings = DEFAULT_WORLD_SETTINGS, hitMeta = {}) {
@@ -2937,7 +2945,7 @@ export class GameRoom {
     }
     target.regenAt = now + settings.combat.regenDelayMs;
     const wasted = target.hp <= 0;
-    let multiKill = 0;
+    let killAward = {multiKill:0,finalKill:false};
     if (wasted) {
       this.noteDeath(target,now);
       target.traversal = null;
@@ -2945,7 +2953,8 @@ export class GameRoom {
       target.spawnProtectedUntil=0;
       target.ads=false;target.adsAmount=0;target.crouched=false;target.sprinting=false;target.sliding=false;target.slideUntil=0;target.moveSpeed=0;
       target.reloadAt=0;target.reloadWeapon='';target.weaponReadyAt=0;target.equipmentReadyAt=0;target.combatAction='ready';target.combatActionKind='';target.combatReadyAt=0;target.sprintFireReadyAt=0;
-      target.wastedUntil = gameModeSpec(matchMode(this.metaCache?.match)).cooperative?0:now+settings.combat.respawnMs;
+      const cooperative=gameModeSpec(matchMode(this.metaCache?.match)).cooperative,hasKiller=!!attackerId&&attackerId!==target.clientId;
+      target.wastedUntil = cooperative?0:now+Math.max(settings.combat.respawnMs,hasKiller?REPLAY_RESPAWN_TIMEOUT_MS:0);
       target.deaths = Math.max(0, Math.floor(finiteNumber(target.deaths, 0))) + 1;
       target.multiKillCount = 0;
       target.lastKillAt = 0;
@@ -2954,7 +2963,7 @@ export class GameRoom {
       // the kill event snapshot. This keeps the scoreboard/KD state in sync
       // during the death screen instead of correcting only after respawn.
       socket.serializeAttachment(target);sendJson(socket,{t:'killstreakState',...killstreakState(target)});
-      multiKill = this.awardKill(attackerId, target.clientId, now);
+      killAward = this.awardKill(attackerId, target.clientId, now);
     }
     const headshot = !!hitMeta.headshot;
     const distance = Math.max(0, finiteNumber(hitMeta.distance, 0));
@@ -2964,7 +2973,10 @@ export class GameRoom {
       wasted, respawnAt: target.wastedUntil || 0,
       knockback: wasted ? { x: knockback.x * 1.35, z: knockback.z * 1.35, y: Math.max(3.8, knockback.y) } : knockback,
     });
-    if (wasted) this.broadcast(this.killEvent(attackerId, target.clientId, weapon, now, { headshot, distance, multiKill }));
+    if (wasted) {
+      this.broadcast(this.killEvent(attackerId, target.clientId, weapon, now, { headshot, distance, multiKill:killAward.multiKill, finalKill:killAward.finalKill }));
+      if(killAward.finalKill)this.finishMatch(this.metaCache,killAward.winner,killAward.reason||'score',now);
+    }
     return true;
   }
 
@@ -2974,7 +2986,7 @@ export class GameRoom {
     bot.hp = Math.max(0, bot.hp - damage);
     bot.regenAt = now + settings.combat.regenDelayMs;
     const wasted = bot.hp <= 0;
-    let multiKill = 0;
+    let killAward = {multiKill:0,finalKill:false};
     if (wasted) {
       this.noteDeath(bot,now);
       bot.traversal = null;
@@ -2986,7 +2998,7 @@ export class GameRoom {
       bot.multiKillCount = 0;
       bot.lastKillAt = 0;
       bot.killstreakKills=0;bot.killstreakEarned=[];bot.abductedUntil=0;bot.abductedBy='';
-      multiKill = this.awardKill(attackerId, bot.id, now);
+      killAward = this.awardKill(attackerId, bot.id, now);
       if(bot.zombie&&this.metaCache?.match?.status===MATCH_STATUS.ACTIVE){
         const match=this.metaCache.match;match.waveRemaining=Math.max(0,match.waveRemaining-1);match.blueScore+=1;match.updatedAt=now;this.matchDirty=true;this.broadcastMatch(this.metaCache,now);
       }
@@ -2997,7 +3009,10 @@ export class GameRoom {
       t: "hit", attacker: attackerId, target: bot.id, hp: bot.hp, damage, weapon, bulletId, headshot, distance,
       wasted, respawnAt: bot.wastedUntil || 0, knockback,
     });
-    if (wasted) this.broadcast(this.killEvent(attackerId, bot.id, weapon, now, { headshot, distance, multiKill }));
+    if (wasted) {
+      this.broadcast(this.killEvent(attackerId, bot.id, weapon, now, { headshot, distance, multiKill:killAward.multiKill, finalKill:killAward.finalKill }));
+      if(killAward.finalKill)this.finishMatch(this.metaCache,killAward.winner,killAward.reason||'score',now);
+    }
     return true;
   }
 
@@ -3026,7 +3041,7 @@ export class GameRoom {
     return {
       t: "kill", at: now, weapon: (["zombie","sticky","frag","ufo","lightning","asteroids","solarnuke"].includes(weapon)) ? weapon : safeWeapon(weapon), attacker, victim,
       headshot: !!meta.headshot, distance: Math.max(0, finiteNumber(meta.distance, 0)),
-      multiKill: Math.max(0, Math.floor(finiteNumber(meta.multiKill, 0))),
+      multiKill: Math.max(0, Math.floor(finiteNumber(meta.multiKill, 0))), finalKill:!!meta.finalKill,
     };
   }
 
