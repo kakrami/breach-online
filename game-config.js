@@ -1,9 +1,11 @@
-export const APP_VERSION = '1.57.0';
-export const BUILD_ID = '20260927T033500Z';
+export const APP_VERSION = '1.59.0';
+export const BUILD_ID = '20260927T060000Z';
 export const PROTOCOL_VERSION = 96;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
-export const MAX_BOTS = 8;
+export const MAX_BOTS_PER_TEAM = 8;
+export const MAX_MATCH_BOTS = MAX_BOTS_PER_TEAM * 2;
+export const MAX_ACTIVE_ZOMBIES = 8;
 
 export const KILLSTREAK_SELECTION_COUNT = 3;
 export const KILLSTREAK_ORDER = Object.freeze(['ufo','lightning','earthquake','asteroids','solarnuke']);

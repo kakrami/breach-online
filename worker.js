@@ -4,7 +4,7 @@ import * as DepotGeometry from './world-geometry-depot.js';
 import * as YardGeometry from './world-geometry-yard.js';
 import * as RigGeometry from './world-geometry-rig.js';
 import {
-  APP_VERSION, BUILD_ID, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS, KILLSTREAK_SPECS, KILLSTREAK_SELECTION_COUNT, normalizeKillstreak, normalizeKillstreakSelection, DEFAULT_MAP_ID, normalizeMapId, mapSpec,
+  APP_VERSION, BUILD_ID, PROTOCOL_VERSION, ROOM_CODE_LENGTH, MAX_PLAYERS, MAX_BOTS_PER_TEAM, MAX_MATCH_BOTS, MAX_ACTIVE_ZOMBIES, KILLSTREAK_SPECS, KILLSTREAK_SELECTION_COUNT, normalizeKillstreak, normalizeKillstreakSelection, DEFAULT_MAP_ID, normalizeMapId, mapSpec,
   WEAPON_ORDER, PRIMARY_WEAPONS, SECONDARY_WEAPONS, WEAPON_SPECS, normalizeWeaponAttachments, resolveWeaponSpec, weaponSpreadRadians, weaponHeatAfterDelay, weaponHeatAfterShot, weaponDamageAtDistance, weaponZoneDamageScale, CROUCH_HEIGHT, CROUCH_SPEED_MULTIPLIER, EQUIPMENT_CAPS, EQUIPMENT_SPECS, TACTICAL_EQUIPMENT, LETHAL_EQUIPMENT, normalizeTactical, normalizeLethal, equipmentForLoadout, LOADOUT_CLASS_COUNT, LOADOUT_CLASS_IDS, normalizeLoadoutClassId, normalizeLoadoutClassName, normalizeLoadoutDefinition, defaultLoadoutClasses, normalizeLoadoutClasses, loadoutClassById, DEFAULT_WORLD_SETTINGS, normalizeWorldSettings, modMovement, modGravity, MOVEMENT_FEEL, WEAPON_SWITCH_MS, EQUIPMENT_WEAPON_RECOVER_MS,
   DEFAULT_MATCH_RULES, GAME_MODES, zombieWaveSpec, ZOMBIE_WAVE_BREAK_MS, normalizeGameMode, gameModeSpec, MATCH_WARMUP_MS, MATCH_END_MS, TACTICAL_THROW_SPEED, TACTICAL_THROW_LOFT, TACTICAL_GRAVITY, equipmentCollisionRadius, FLASH_RADIUS, STICKY_RADIUS, STICKY_MAX_DAMAGE, FRAG_RADIUS, FRAG_MAX_DAMAGE, SMOKE_RADIUS, SMOKE_DURATION_MS, SMOKE_LOS_RADIUS_SCALE, SMOKE_GROW_MS, SMOKE_START_SCALE, GROUND_FOLLOW_DROP
 } from './game-config.js';
@@ -498,8 +498,8 @@ function makeBot(world,team, teamIndex, mode='tdm', spawnIndex=teamIndex, spawnO
   };
 }
 function makeBots(world,blueBots, redBots, mode='tdm') {
-  blueBots = clamp(Math.floor(finiteNumber(blueBots, 0)), 0, MAX_BOTS);
-  redBots = clamp(Math.floor(finiteNumber(redBots, 0)), 0, MAX_BOTS);
+  blueBots = clamp(Math.floor(finiteNumber(blueBots, 0)), 0, MAX_BOTS_PER_TEAM);
+  redBots = clamp(Math.floor(finiteNumber(redBots, 0)), 0, MAX_BOTS_PER_TEAM);
   const bots = [];let spawnIndex=0;
   for (let i = 0; i < blueBots; i += 1) bots.push(makeBot(world,"blue", i, mode, spawnIndex++));
   for (let i = 0; i < redBots; i += 1) bots.push(makeBot(world,"red", i, mode, spawnIndex++));
@@ -530,9 +530,9 @@ function reconcileBots(world,existing, blueBots, redBots, mode='tdm') {
   });
 }
 function botCountsFromMeta(meta) {
-  const blueBots = clamp(Math.floor(finiteNumber(meta?.blueBots, 0)), 0, MAX_BOTS);
-  const redBots = clamp(Math.floor(finiteNumber(meta?.redBots, 0)), 0, MAX_BOTS);
-  return { blueBots, redBots, botCount: Math.min(MAX_BOTS, blueBots + redBots) };
+  const blueBots = clamp(Math.floor(finiteNumber(meta?.blueBots, 0)), 0, MAX_BOTS_PER_TEAM);
+  const redBots = clamp(Math.floor(finiteNumber(meta?.redBots, 0)), 0, MAX_BOTS_PER_TEAM);
+  return { blueBots, redBots, botCount: Math.min(MAX_MATCH_BOTS, blueBots + redBots) };
 }
 function botRosterMatchesConfig(world,existing, blueBots, redBots, mode='tdm') {
   if (!Array.isArray(existing)) return false;
@@ -750,14 +750,14 @@ export class WorldDirectory {
         code,
         protocol: PROTOCOL_VERSION,
         players: clamp(Math.floor(finiteNumber(body.players, 0)), 0, MAX_PLAYERS),
-        blueBots: clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS),
-        redBots: clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS),
+        blueBots: clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS_PER_TEAM),
+        redBots: clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS_PER_TEAM),
         botDifficulty: safeBotDifficulty(body.botDifficulty),
         mapId: normalizeMapId(body.mapId),
         mapName: String(body.mapName||'').replace(/[\u0000-\u001f\u007f]/g,'').slice(0,64),
         mode,
-        blue: clamp(Math.floor(finiteNumber(body.blue, 0)), 0, MAX_PLAYERS + MAX_BOTS),
-        red: clamp(Math.floor(finiteNumber(body.red, 0)), 0, MAX_PLAYERS + MAX_BOTS),
+        blue: clamp(Math.floor(finiteNumber(body.blue, 0)), 0, MAX_PLAYERS + MAX_BOTS_PER_TEAM),
+        red: clamp(Math.floor(finiteNumber(body.red, 0)), 0, MAX_PLAYERS + MAX_BOTS_PER_TEAM),
         maxPlayers: MAX_PLAYERS,
         createdAt: finiteNumber(body.createdAt, now),
         updatedAt: now,
@@ -1158,7 +1158,7 @@ export class GameRoom {
     this.bots=this.bots.filter(bot=>bot.hp>0||now<bot.wastedUntil);
     let changed=this.bots.length!==oldLength;
     const humans=this.liveSockets().map(socket=>socket.deserializeAttachment()),rules=zombieWaveSpec(match.wave,humans.length);
-    while(this.bots.length<MAX_BOTS&&match.waveSpawned<match.waveTotal){
+    while(this.bots.length<MAX_ACTIVE_ZOMBIES&&match.waveSpawned<match.waveTotal){
       const index=match.waveSpawned++,id=`bot-zombie-${match.wave}-${index+1}`,spawn=this.selectSpawn('ffa','red',[...humans,...this.bots],index,id,now);
       const bot=makeBot(this.world,'red',index,'zombies',index,spawn);
       Object.assign(bot,{id,name:`Zombie ${index+1}`,zombie:true,maxHp:rules.health,hp:rules.health,nextMeleeAt:now+700,attackAt:0,equipment:{flash:0,smoke:0,sticky:0,frag:0}});
@@ -1736,8 +1736,8 @@ export class GameRoom {
       const setup=payload.setup&&typeof payload.setup==='object'?payload.setup:null;
       if(!setup||!setup.rules||!setup.bots||!setup.minimap||!setup.settings){sendJson(socket,{t:'notice',tone:'error',text:'MATCH SETUP INCOMPLETE'});return;}
       const mode=normalizeGameMode(setup.mode),rules=normalizeMatchRules({mode,scoreLimit:setup.rules.scoreLimit,timeLimitMs:setup.rules.timeLimitMs,minimapRevealAll:!!setup.minimap.revealAll,minimapDirectional:!!setup.minimap.directional});
-      const blueBots=clamp(Math.floor(finiteNumber(setup.bots.blueBots,0)),0,MAX_BOTS),redBots=clamp(Math.floor(finiteNumber(setup.bots.redBots,0)),0,MAX_BOTS);
-      if(blueBots+redBots>MAX_BOTS){sendJson(socket,{t:'notice',tone:'error',text:`Maximum ${MAX_BOTS} bots per match.`});return;}
+      const blueBots=clamp(Math.floor(finiteNumber(setup.bots.blueBots,0)),0,MAX_BOTS_PER_TEAM),redBots=clamp(Math.floor(finiteNumber(setup.bots.redBots,0)),0,MAX_BOTS_PER_TEAM);
+      if(blueBots+redBots>MAX_MATCH_BOTS){sendJson(socket,{t:'notice',tone:'error',text:`Maximum ${MAX_MATCH_BOTS} bots per match.`});return;}
       meta.mapId=normalizeMapId(setup.mapId);
       if(meta.mapId==='custom-map'){
         try{const incoming=setup.customMapDefinition||this.customMapDefinition||await this.loadStoredCustomMap(meta)||FALLBACK_CUSTOM_MAP_DEFINITION;await this.storeCustomMap(incoming,meta);this.world=worldBundle(meta.mapId,this.customMapDefinition);}catch(error){sendJson(socket,{t:'notice',tone:'error',text:`CUSTOM MAP REJECTED · ${String(error?.message||'invalid map').slice(0,120)}`});return;}
@@ -1874,10 +1874,10 @@ export class GameRoom {
         sendJson(socket,{t:"notice",tone:"error",text:"ADMIN REQUIRED"});
         return;
       }
-      const blueBots = clamp(Math.floor(finiteNumber(payload.blueBots, meta.blueBots || 0)), 0, MAX_BOTS);
-      const redBots = clamp(Math.floor(finiteNumber(payload.redBots, meta.redBots || 0)), 0, MAX_BOTS);
-      if (blueBots + redBots > MAX_BOTS) {
-        sendJson(socket,{t:"notice",tone:"error",text:`Maximum ${MAX_BOTS} bots per match.`});
+      const blueBots = clamp(Math.floor(finiteNumber(payload.blueBots, meta.blueBots || 0)), 0, MAX_BOTS_PER_TEAM);
+      const redBots = clamp(Math.floor(finiteNumber(payload.redBots, meta.redBots || 0)), 0, MAX_BOTS_PER_TEAM);
+      if (blueBots + redBots > MAX_MATCH_BOTS) {
+        sendJson(socket,{t:"notice",tone:"error",text:`Maximum ${MAX_MATCH_BOTS} bots per match.`});
         return;
       }
       meta.blueBots = blueBots;

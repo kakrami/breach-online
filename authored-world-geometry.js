@@ -5,17 +5,19 @@ const normalizeRot=v=>{let r=finite(v)%360;if(r<0)r+=360;return r;};
 const rotatePoint=(x,z,cx,cz,rot)=>{const a=normalizeRot(rot)*Math.PI/180,c=Math.cos(a),ss=Math.sin(a),dx=x-cx,dz=z-cz;return{x:cx+dx*c-dz*ss,z:cz+dx*ss+dz*c};};
 const rotateVector=(x,z,rot)=>{const a=normalizeRot(rot)*Math.PI/180,c=Math.cos(a),ss=Math.sin(a);return{x:x*c-z*ss,z:x*ss+z*c};};
 const orientedAabb=(x,z,w,d,rot=0)=>{const a=normalizeRot(rot)*Math.PI/180,c=Math.abs(Math.cos(a)),ss=Math.abs(Math.sin(a)),hx=w/2*c+d/2*ss,hz=w/2*ss+d/2*c;return{minX:x-hx,maxX:x+hx,minZ:z-hz,maxZ:z+hz};};
-function sanitizeStaticBoxes(list){return (Array.isArray(list)?list:[]).map(o=>({x:finite(o?.x),z:finite(o?.z),w:clampNumber(o?.w,.2,100,2),d:clampNumber(o?.d,.2,100,2),h:clampNumber(o?.h,.2,50,2),rot:normalizeRot(o?.rot),yOffset:clampNumber(o?.yOffset,-20,40,0),...(o?.kind?{kind:String(o.kind)}:{})}));}
-function sanitizeRoads(list){const kinds=new Set(['street','alley','service','dirt','sidewalk','crosswalk']);return (Array.isArray(list)?list:[]).map(o=>{let w=clampNumber(o?.w,2,300,20),d=clampNumber(o?.d,2,300,8),rot=normalizeRot(o?.rot);if(o?.rot==null&&d>w){[w,d]=[d,w];rot=90;}return{kind:kinds.has(String(o?.kind))?String(o.kind):'street',x:finite(o?.x),z:finite(o?.z),w,d,rot};});}
-function sanitizeBuildings(list){return (Array.isArray(list)?list:[]).map(b=>{let balcony=finite(b?.balcony,4);if(balcony<1.8||balcony>8)balcony=4;const levels=Math.max(2,Math.min(6,Math.round(finite(b?.levels,2))));return{x:finite(b?.x),z:finite(b?.z),w:clampNumber(b?.w,10,60,18),d:clampNumber(b?.d,9,50,14),floorH:clampNumber(b?.floorH,2.7,4.2,3.1),balcony,levels,rot:normalizeRot(b?.rot),yOffset:clampNumber(b?.yOffset,-20,40,0),...((b?.tall||levels>=4)?{tall:true}:{}),style:String(b?.style||'industrial')};});}
+const PROP_KIND_ALIASES=Object.freeze({car:'burntCar',bus:'burntBus',brokenwall:'brokenWall',fueltank:'fuelTank',pipebank:'pipe',box:'crate'});
+function canonicalPropKind(value){const raw=String(value||'').trim();return PROP_KIND_ALIASES[raw]||raw||'crate';}
+function sanitizeStaticBoxes(list){return (Array.isArray(list)?list:[]).map(o=>({x:finite(o?.x),z:finite(o?.z),w:clampNumber(o?.w,.3,80,2),d:clampNumber(o?.d,.3,80,2),h:clampNumber(o?.h,.2,40,2),rot:normalizeRot(o?.rot),yOffset:clampNumber(o?.yOffset,-12,30,0),kind:canonicalPropKind(o?.kind)}));}
+function sanitizeRoads(list){const kinds=new Set(['street','alley','service','dirt','sidewalk','crosswalk']);return (Array.isArray(list)?list:[]).map(o=>{let w=clampNumber(o?.w,2,600,20),d=clampNumber(o?.d,1,40,8),rot=normalizeRot(o?.rot);if(o?.rot==null&&d>w){[w,d]=[d,w];rot=90;}return{kind:kinds.has(String(o?.kind))?String(o.kind):'street',x:finite(o?.x),z:finite(o?.z),w,d,rot};});}
+function sanitizeBuildings(list){return (Array.isArray(list)?list:[]).map(b=>{const balcony=clampNumber(b?.balcony,0,10,0),levels=Math.max(1,Math.min(8,Math.round(finite(b?.levels,2))));return{x:finite(b?.x),z:finite(b?.z),w:clampNumber(b?.w,8,80,18),d:clampNumber(b?.d,6,80,14),floorH:clampNumber(b?.floorH,2.2,5,3.1),balcony,levels,rot:normalizeRot(b?.rot),yOffset:clampNumber(b?.yOffset,-12,30,0),...((b?.tall||levels>=4)?{tall:true}:{}),style:String(b?.style||'industrial')};});}
 function sanitizeTerrainModifiers(list){const kinds=new Set(['hill','valley','plateau','pit']);return (Array.isArray(list)?list:[]).map(o=>({kind:kinds.has(String(o?.kind))?String(o.kind):'hill',x:finite(o?.x),z:finite(o?.z),radius:clampNumber(o?.radius,3,100,16),height:clampNumber(o?.height,-24,30,(o?.kind==='valley'||o?.kind==='pit')?-3:3)}));}
 function sanitizeAuthoredHeightfield(raw,arena){if(!raw||typeof raw!=='object')return null;const size=Math.max(9,Math.min(129,Math.round(finite(raw.size,0)))),extent=clampNumber(raw.extent,20,arena,arena),values=Array.isArray(raw.values)?raw.values:null;if(!values||values.length!==size*size)return null;return Object.freeze({size,extent,values:Object.freeze(values.map(v=>clampNumber(v,-30,30,0)))});}
 function sampleAuthoredHeightfield(hf,x,z){if(!hf)return 0;const n=hf.size,e=hf.extent,u=clamp((finite(x)+e)/(e*2)*(n-1),0,n-1),v=clamp((finite(z)+e)/(e*2)*(n-1),0,n-1),x0=Math.floor(u),z0=Math.floor(v),x1=Math.min(n-1,x0+1),z1=Math.min(n-1,z0+1),tx=u-x0,tz=v-z0,a=hf.values[z0*n+x0],b=hf.values[z0*n+x1],c=hf.values[z1*n+x0],d=hf.values[z1*n+x1];return(a*(1-tx)+b*tx)*(1-tz)+(c*(1-tx)+d*tx)*tz;}
 function sanitizeAuthoredMaterials(raw,arena){if(!raw||typeof raw!=='object')return null;const size=Math.max(9,Math.min(129,Math.round(finite(raw.size,0)))),extent=clampNumber(raw.extent,20,arena,arena),values=Array.isArray(raw.values)?raw.values:null;if(!values||values.length!==size*size)return null;return Object.freeze({size,extent,values:Object.freeze(values.map(v=>Math.max(0,Math.min(8,Math.round(finite(v,0))))))});}
 function sampleAuthoredMaterial(surface,x,z){if(!surface)return 0;const n=surface.size,e=surface.extent,u=clamp((finite(x)+e)/(e*2)*(n-1),0,n-1),v=clamp((finite(z)+e)/(e*2)*(n-1),0,n-1),ix=Math.max(0,Math.min(n-1,Math.round(u))),iz=Math.max(0,Math.min(n-1,Math.round(v)));return surface.values[iz*n+ix]||0;}
-function sanitizeElevation(list){const kinds=new Set(['platform','ramp','stairs','overpass']);return (Array.isArray(list)?list:[]).map(o=>({kind:kinds.has(String(o?.kind))?String(o.kind):'platform',x:finite(o?.x),z:finite(o?.z),w:clampNumber(o?.w,2,80,8),d:clampNumber(o?.d,2,100,10),rise:clampNumber(o?.rise,.5,24,3),rot:normalizeRot(o?.rot),yOffset:clampNumber(o?.yOffset,-20,40,0)}));}
-function sanitizePyramids(list){return (Array.isArray(list)?list:[]).map(p=>({x:finite(p?.x),z:finite(p?.z),base:clampNumber(p?.base,2,80,8),h:clampNumber(p?.h,.5,40,4)}));}
-function sanitizeNatural(list){return (Array.isArray(list)?list:[]).map(o=>({type:['tree','bush','rock'].includes(String(o?.type))?String(o.type):'rock',x:finite(o?.x),z:finite(o?.z),r:clampNumber(o?.r,.2,20,1),h:clampNumber(o?.h,.2,40,1)}));}
+function sanitizeElevation(list){const kinds=new Set(['platform','ramp','stairs','overpass']);return (Array.isArray(list)?list:[]).map(o=>({kind:kinds.has(String(o?.kind))?String(o.kind):'platform',x:finite(o?.x),z:finite(o?.z),w:clampNumber(o?.w,2,80,8),d:clampNumber(o?.d,2,100,10),rise:clampNumber(o?.rise,.5,24,3),rot:normalizeRot(o?.rot),yOffset:clampNumber(o?.yOffset,-8,20,0)}));}
+function sanitizePyramids(list){return (Array.isArray(list)?list:[]).map(p=>({x:finite(p?.x),z:finite(p?.z),base:clampNumber(p?.base,2,60,8),h:clampNumber(p?.h,.5,30,4)}));}
+function sanitizeNatural(list){return (Array.isArray(list)?list:[]).map(o=>({type:['tree','bush','rock'].includes(String(o?.type))?String(o.type):'rock',x:finite(o?.x),z:finite(o?.z),r:clampNumber(o?.r,.2,12,1),h:clampNumber(o?.h,.2,40,1)}));}
 function sanitizeFlow(list){return (Array.isArray(list)?list:[]).map(p=>({x:finite(p?.x),z:finite(p?.z)}));}
 function sanitizeLadders(list){return (Array.isArray(list)?list:[]).map((l,i)=>{const rx=finite(l?.nx),rz=finite(l?.nz),len=Math.hypot(rx,rz);if(!Number.isFinite(len)||len<.25)return null;const nx=rx/len,nz=rz/len;return{id:String(l?.id||`ladder-${i+1}`),x:finite(l?.x),z:finite(l?.z),nx,nz,tx:-nz,tz:nx,width:clampNumber(l?.width,.5,4,1.2),bottomY:finite(l?.bottomY),topY:finite(l?.topY,3)};}).filter(l=>l&&l.topY>l.bottomY+.4);}
 function authoredMinimapLimit(def,arena){let extent=0;const take=(x,z,pad=0)=>{extent=Math.max(extent,Math.abs(finite(x))+pad,Math.abs(finite(z))+pad);};const rect=(o)=>take(o.x,o.z,Math.abs(finite(o.rot))>1e-6?Math.hypot(finite(o.w),finite(o.d))/2:Math.max(finite(o.w),finite(o.d))/2);for(const o of def?.roads||[])rect(o);for(const o of def?.staticBoxes||[])rect(o);for(const b of def?.buildings||[])rect(b);for(const e of def?.elevationObjects||def?.elevation||[])rect(e);for(const t of def?.terrain?.modifiers||def?.terrainModifiers||[])take(t.x,t.z,finite(t.radius));for(const p of def?.pyramids||[])take(p.x,p.z,finite(p.base)/2);for(const o of def?.naturalObstacles||[])take(o.x,o.z,finite(o.r));for(const team of Object.values(def?.spawnSets||{}))for(const p of Array.isArray(team)?team:[])if(Array.isArray(p)&&p.length>=2)take(p[0],p[1]);return Math.min(arena,Math.max(12,finite(def?.minimapLimit,arena),Math.min(arena,extent+6)));}
@@ -25,7 +27,7 @@ function terrainPresetHeight(preset,x,z){const key=String(preset||'flat').toLowe
 export function createAuthoredWorldGeometry(def={}){
   const PLAYER_HEIGHT = 1.7;
   const PLAYER_RADIUS = 0.38;
-  const ARENA_LIMIT = clampNumber(def?.arenaLimit,40,300,120);
+  const ARENA_LIMIT = clampNumber(def?.arenaLimit,30,300,120);
   const MINIMAP_LIMIT = authoredMinimapLimit(def,ARENA_LIMIT);
   const MAX_STEP_HEIGHT = 0.62;
   const CROUCH_WINDOW_STEP_HEIGHT = 0.86;
@@ -108,8 +110,15 @@ export function createAuthoredWorldGeometry(def={}){
     const addBox=(role,lx,lz,w,d,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({type:'box',role,x:p.x,z:p.z,w,d,rot:o.rot,minY:bottomY,maxY:topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:flags.supportTop!==false});};
     const addRound=(role,lx,lz,r,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({type:'round',role,x:p.x,z:p.z,r,minY:bottomY,maxY:topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop});};
     const kind=String(o.kind||'box'),longX=o.w>=o.d,length=Math.max(o.w,o.d),width=Math.min(o.w,o.d),boxDims=(L,W)=>longX?[L,W]:[W,L],axis=(v)=>longX?[v,0]:[0,v];
-    if(kind==='burntCar'){const [bw,bd]=boxDims(length*.96,width*.94),[cw,cd]=boxDims(length*.47,width*.84),[cx,cz]=axis(-length*.03);addBox('burntCarBody',0,0,bw,bd,base,base+o.h*.55,{supportTop:true});addBox('burntCarCabin',cx,cz,cw,cd,base+o.h*.50,base+o.h*.90,{supportTop:true});}
-    else if(kind==='burntBus'){const [bw,bd]=boxDims(length*.96,width*.94),[uw,ud]=boxDims(length*.90,width*.88);addBox('burntBusBody',0,0,bw,bd,base,base+o.h*.66,{supportTop:true});addBox('burntBusUpper',0,0,uw,ud,base+o.h*.62,base+o.h*.96,{supportTop:true});}
+    if(kind==='burntCar'||kind==='burntBus'){
+      const bus=kind==='burntBus',[bw,bd]=boxDims(length*.96,width*.94),[uw,ud]=boxDims(length*(bus?.90:.47),width*(bus?.88:.84)),[ux,uz]=axis(bus?0:-length*.03);
+      addBox(bus?'burntBusBody':'burntCarBody',0,0,bw,bd,base,base+o.h*(bus?.66:.55),{supportTop:true});
+      addBox(bus?'burntBusUpper':'burntCarCabin',ux,uz,uw,ud,base+o.h*(bus?.62:.50),base+o.h*(bus?.96:.90),{supportTop:true});
+      // Wheels are visible solid bodywork too. Keep their collision derived from the same
+      // authored dimensions instead of leaving decorative wheels that players can enter.
+      const wheelR=bus?.42:.33,wheelW=bus?.26:.22,wheelX=length*(bus?.34:.32),wheelZ=width*.48;
+      for(const sx of [-1,1])for(const sz of [-1,1]){const [lx,lz]=longX?[sx*wheelX,sz*wheelZ]:[sz*wheelZ,sx*wheelX],dims=longX?[wheelR*1.8,wheelW]:[wheelW,wheelR*1.8];addBox(bus?'burntBusWheel':'burntCarWheel',lx,lz,dims[0],dims[1],base,base+wheelR*1.84,{supportTop:false});}
+    }
     else if(kind==='dumpster'){addBox('dumpsterBody',0,0,o.w,o.d,base,base+o.h*.84,{supportTop:true});addBox('dumpsterLid',0,0,o.w*1.02,o.d*1.03,base+o.h*.86,base+o.h*.98,{supportTop:true});}
     else if(kind==='fuelTank'){const radius=width*.46,segment=Math.max(.05,length-2*radius),[cw,cd]=boxDims(segment,radius*2),end=Math.max(0,length/2-radius),[ax,az]=axis(end),[bx,bz]=axis(-end);addBox('fuelTankCenter',0,0,cw,cd,base,base+o.h,{supportTop:false});addRound('fuelTankCap',ax,az,radius,base,base+o.h,{supportTop:false});addRound('fuelTankCap',bx,bz,radius,base,base+o.h,{supportTop:false});}
     else if(kind==='checkpoint'){addBox('checkpointBody',0,0,o.w,o.d,base,base+o.h*.92,{supportTop:true});addBox('checkpointRoof',0,0,o.w*1.10,o.d*1.10,base+o.h*.92,base+o.h+0.20,{supportTop:true});}
@@ -199,7 +208,7 @@ export function createAuthoredWorldGeometry(def={}){
   }
   
   function buildingPlan(b){
-    const wallT=.36,levels=Math.max(2,Math.min(6,Math.floor(b.levels||2)));
+    const wallT=.36,levels=Math.max(1,Math.min(8,Math.floor(b.levels||2)));
     // One simple straight flight connects each pair of floors. In tall buildings
     // successive flights are deliberately placed on opposite sides of the room,
     // so reaching a new floor never feeds directly into a U-turn/switchback.
@@ -209,7 +218,7 @@ export function createAuthoredWorldGeometry(def={}){
     const laneInset=Math.max(stairW/2+.72,Math.min(b.d*.255,b.d/2-stairW/2-.78));
     const backLane=clamp(b.z+laneInset,b.z-b.d/2+stairW/2+.72,b.z+b.d/2-stairW/2-.72);
     const frontLane=clamp(b.z-laneInset,b.z-b.d/2+stairW/2+.72,b.z+b.d/2-stairW/2-.72);
-    const stairZs=Array.from({length:Math.max(1,levels-1)},(_,story)=>story%2===0?backLane:frontLane);
+    const stairZs=Array.from({length:Math.max(0,levels-1)},(_,story)=>story%2===0?backLane:frontLane);
     // The opening ends exactly at the flight ends. Previous extra padding left a
     // support gap at the top edge that could make a player fall or fail to climb.
     const holes=stairZs.map(z=>({left:lowX,right:highX,minZ:z-stairW/2-.06,maxZ:z+stairW/2+.06}));
@@ -218,7 +227,7 @@ export function createAuthoredWorldGeometry(def={}){
     // balcony put its side rails directly through those window openings. The
     // balcony now spans the openings with real player clearance on both sides.
     const balconyW=b.w*.80;
-    return{wallT,stairW,runLen,lowX,highX,backLane,frontLane,stairZs,holes,front,balconyOverlap,balconyD,balconyZ,balconyOutsideZ,balconyW};
+    return{wallT,stairW,runLen,lowX,highX,backLane,frontLane,stairZs,holes,front,balconyOverlap,balconyD,balconyZ,balconyOutsideZ,balconyW,hasBalcony:b.balcony>.05};
   }
   
   function addBox(parts,role,x,z,w,d,bottomY,topY,flags={}){
@@ -243,7 +252,7 @@ export function createAuthoredWorldGeometry(def={}){
   }
   
   function makeBuildingGeometry(b){
-    const levels=Math.max(2,Math.min(6,Math.floor(b.levels||2))),base=terrainHeight(b.x,b.z)+b.yOffset,plan=buildingPlan(b),parts=[],supports=[],horizontalSolids=[],playerRamps=[];
+    const levels=Math.max(1,Math.min(8,Math.floor(b.levels||2))),base=terrainHeight(b.x,b.z)+b.yOffset,plan=buildingPlan(b),parts=[],supports=[],horizontalSolids=[],playerRamps=[];
     const t=plan.wallT;
     const addWallX=(z,level,side)=>{
       const openings=buildingWallOpenings(b,level,side);
@@ -275,13 +284,15 @@ export function createAuthoredWorldGeometry(def={}){
         supports.push({type:'rect',x:panel.x,z:panel.z,w:panel.w,d:panel.d,y:floorY});
         horizontalSolids.push({x:panel.x,z:panel.z,w:panel.w,d:panel.d,bottomY:floorY-.18,topY:floorY});
       }
-      addBox(parts,'floor',b.x,plan.balconyZ,plan.balconyW,plan.balconyD,floorY-.188,floorY-.008,{supportTop:true});
-      supports.push({type:'rect',x:b.x,z:plan.balconyZ,w:plan.balconyW,d:plan.balconyD,y:floorY});
-      horizontalSolids.push({x:b.x,z:plan.balconyZ,w:plan.balconyW,d:plan.balconyD,bottomY:floorY-.188,topY:floorY-.008});
-      const railBottom=floorY+.08,outerZ=plan.front-b.balcony+.06;
-      addBox(parts,'rail',b.x,outerZ,plan.balconyW,.14,railBottom,railBottom+.82,{});
-      addBox(parts,'rail',b.x-plan.balconyW/2,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82,{});
-      addBox(parts,'rail',b.x+plan.balconyW/2,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82,{});
+      if(plan.hasBalcony){
+        addBox(parts,'floor',b.x,plan.balconyZ,plan.balconyW,plan.balconyD,floorY-.188,floorY-.008,{supportTop:true});
+        supports.push({type:'rect',x:b.x,z:plan.balconyZ,w:plan.balconyW,d:plan.balconyD,y:floorY});
+        horizontalSolids.push({x:b.x,z:plan.balconyZ,w:plan.balconyW,d:plan.balconyD,bottomY:floorY-.188,topY:floorY-.008});
+        const railBottom=floorY+.08,outerZ=plan.front-b.balcony+.06;
+        addBox(parts,'rail',b.x,outerZ,plan.balconyW,.14,railBottom,railBottom+.82,{});
+        addBox(parts,'rail',b.x-plan.balconyW/2,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82,{});
+        addBox(parts,'rail',b.x+plan.balconyW/2,plan.balconyOutsideZ,.14,b.balcony,railBottom,railBottom+.82,{});
+      }
   
       const guardY=floorY+.05,guardH=.76;
       // Guard the long edges only. The bottom and top of every straight flight
@@ -341,7 +352,7 @@ export function createAuthoredWorldGeometry(def={}){
   const BUILDING_PARTS = [...BUILDING_GEOMETRY.flatMap(g=>g.parts),...ELEVATION_GEOMETRY.flatMap(g=>g.parts)];
   
   const BUILDING_WINDOW_PORTALS = Object.freeze(BUILDINGS.flatMap((b,buildingIndex)=>{
-    const base=terrainHeight(b.x,b.z)+b.yOffset,plan=buildingPlan(b),levels=Math.max(2,Math.min(6,Math.floor(b.levels||2))),portals=[];
+    const base=terrainHeight(b.x,b.z)+b.yOffset,plan=buildingPlan(b),levels=Math.max(1,Math.min(8,Math.floor(b.levels||2))),portals=[];
     const sides=[
       {side:'front',nx:0,nz:-1,tx:1,tz:0,x:b.x,z:b.z-b.d/2+plan.wallT/2},
       {side:'back',nx:0,nz:1,tx:1,tz:0,x:b.x,z:b.z+b.d/2-plan.wallT/2},
