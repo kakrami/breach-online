@@ -26,3 +26,12 @@ export function resolveAsset(o={},family='building'){
 }
 
 export const BUILDING_MATERIALS=Object.freeze({"plaster": [11972514, 5986129, 7367524], "brick": [9069909, 4209464, 6708567], "stone": [9211011, 4541001, 6776930], "office": [9542045, 3423555, 6449773], "industrial": [7765890, 3160125, 5594464], "warehouse": [9343891, 4147019, 6054499], "tower": [7299664, 3879465, 5984581], "utility": [9007963, 5325622, 5984581]});
+
+// Parametric structural assets rebuild openings/supports as well as their visible mesh.
+// Vehicles and detailed props retain their proportions instead of exposing stretch handles.
+export function assetResizeMode(o={}){
+ if(['road','building','elevation','mound'].includes(o.type))return 'parametric';
+ if(o.type!=='prop')return 'fixed';
+ const kind=String(o.assetId||o.kind||'').split('/').pop().toLowerCase();
+ return ['crate','barrier','lowwall','pillar','concrete','brokenwall','ruins','doorway','windowwall'].includes(kind)?'parametric':'fixed';
+}
