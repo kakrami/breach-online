@@ -1,4 +1,4 @@
-import { resolveAsset } from './object-catalog.js?v=1.74.0';
+import { resolveAsset } from './object-catalog.js?v=2.0.0';
 const finite=(v,f=0)=>Number.isFinite(Number(v))?Number(v):f;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const clampNumber=(v,a,b,f)=>clamp(finite(v,f),a,b);
@@ -79,11 +79,21 @@ export function createAuthoredWorldGeometry(def={}){
   const TERRAIN_HALF = TERRAIN_SIZE / 2;
   const TERRAIN_STEP = TERRAIN_SIZE / TERRAIN_SEGMENTS;
   
+  // Conservative spatial buckets retain source order, including equal-weight pad ties.
+  // The exact influence formula below remains the canonical terrain definition.
+  function terrainProfileIndex(profiles,road=false){
+    const cells=new Map(),size=32;
+    for(const profile of profiles){if(!road&&!profile.active)continue;const o=profile.o,a=normalizeRot(o.rot)*Math.PI/180,c=Math.abs(Math.cos(a)),sn=Math.abs(Math.sin(a)),w=o.w/2+(road?profile.endBlend:profile.blend),d=o.d/2+(road?profile.shoulder:profile.blend),hx=w*c+d*sn+1e-6,hz=w*sn+d*c+1e-6;
+      for(let ix=Math.floor((o.x-hx)/size);ix<=Math.floor((o.x+hx)/size);ix++)for(let iz=Math.floor((o.z-hz)/size);iz<=Math.floor((o.z+hz)/size);iz++){const key=ix+','+iz;if(!cells.has(key))cells.set(key,[]);cells.get(key).push(profile);}
+    }
+    return (x,z)=>cells.get(Math.floor(x/size)+','+Math.floor(z/size))||[];
+  }
+  const nearbySupportProfiles=terrainProfileIndex(supportProfiles),nearbyRoadProfiles=terrainProfileIndex(roadProfiles,true);
   function sourceTerrainHeight(x,z){
     const raw=rawTerrainHeight(x,z);let ground=raw,roadWeight=0,roadSum=0,maxRoadWeight=0;
-    for(const p of roadProfiles){const q=localPoint(p.o,x,z),ox=Math.max(Math.abs(q.x)-p.o.w/2,0),oz=Math.max(Math.abs(q.z)-p.o.d/2,0);if(ox>=p.endBlend||oz>=p.shoulder)continue;const tx=ox<=0?1:1-clamp(ox/p.endBlend,0,1),tz=oz<=0?1:1-clamp(oz/p.shoulder,0,1),wx=tx*tx*(3-2*tx),wz=tz*tz*(3-2*tz),w=wx*wz;if(w<=0)continue;const t=clamp(q.x/p.o.w+.5,0,1),target=p.h0+(p.h1-p.h0)*t;roadSum+=target*w;roadWeight+=w;maxRoadWeight=Math.max(maxRoadWeight,w);}
+    for(const p of nearbyRoadProfiles(x,z)){const q=localPoint(p.o,x,z),ox=Math.max(Math.abs(q.x)-p.o.w/2,0),oz=Math.max(Math.abs(q.z)-p.o.d/2,0);if(ox>=p.endBlend||oz>=p.shoulder)continue;const tx=ox<=0?1:1-clamp(ox/p.endBlend,0,1),tz=oz<=0?1:1-clamp(oz/p.shoulder,0,1),wx=tx*tx*(3-2*tx),wz=tz*tz*(3-2*tz),w=wx*wz;if(w<=0)continue;const t=clamp(q.x/p.o.w+.5,0,1),target=p.h0+(p.h1-p.h0)*t;roadSum+=target*w;roadWeight+=w;maxRoadWeight=Math.max(maxRoadWeight,w);}
     if(roadWeight>0)ground=raw+(roadSum/roadWeight-raw)*clamp(maxRoadWeight,0,1);
-    let best=null,bestWeight=0;for(const p of supportProfiles){if(!p.active)continue;const q=localPoint(p.o,x,z),ox=Math.max(Math.abs(q.x)-p.o.w/2,0),oz=Math.max(Math.abs(q.z)-p.o.d/2,0),dist=Math.hypot(ox,oz);if(dist>=p.blend)continue;const t=clamp(dist/p.blend,0,1),w=1-(t*t*(3-2*t));if(w>bestWeight){bestWeight=w;best=p;}}
+    let best=null,bestWeight=0;for(const p of nearbySupportProfiles(x,z)){if(!p.active)continue;const q=localPoint(p.o,x,z),ox=Math.max(Math.abs(q.x)-p.o.w/2,0),oz=Math.max(Math.abs(q.z)-p.o.d/2,0),dist=Math.hypot(ox,oz);if(dist>=p.blend)continue;const t=clamp(dist/p.blend,0,1),w=1-(t*t*(3-2*t));if(w>bestWeight){bestWeight=w;best=p;}}
     return best?ground+(best.level-ground)*bestWeight:ground;
   }
   
