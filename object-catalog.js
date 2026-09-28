@@ -30,6 +30,7 @@ export const BUILDING_MATERIALS=Object.freeze({"plaster": [11972514, 5986129, 73
 // Parametric structural assets rebuild openings/supports as well as their visible mesh.
 // Vehicles and detailed props retain their proportions instead of exposing stretch handles.
 export function assetResizeMode(o={}){
+ if(!o)return 'fixed';
  if(['road','building','elevation','mound'].includes(o.type))return 'parametric';
  if(o.type!=='prop')return 'fixed';
  const kind=String(o.assetId||o.kind||'').split('/').pop().toLowerCase();
