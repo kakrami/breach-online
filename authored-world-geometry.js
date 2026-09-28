@@ -1,4 +1,5 @@
-import { resolveAsset } from './object-catalog.js?v=2.1.0';
+import { roadSegments } from './road-path.js';
+import { resolveAsset } from './object-catalog.js?v=2.2.0';
 const finite=(v,f=0)=>Number.isFinite(Number(v))?Number(v):f;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const clampNumber=(v,a,b,f)=>clamp(finite(v,f),a,b);
@@ -19,7 +20,7 @@ export const AUTHORED_ROAD_MARKING_POLICY=Object.freeze({renderOrder:100,surface
 export function authoredRoadSurfacePolicy(kind='street'){return AUTHORED_ROAD_SURFACE_POLICY[String(kind)]||AUTHORED_ROAD_SURFACE_POLICY.street;}
 function canonicalPropKind(value){const raw=String(value||'').trim();return PROP_KIND_ALIASES[raw]||raw||'crate';}
 function sanitizeStaticBoxes(list){return (Array.isArray(list)?list:[]).map(o=>resolveAsset(o,'prop')).map(o=>({assetId:o.assetId,x:finite(o?.x),z:finite(o?.z),w:clampNumber(o?.w,.3,80,2),d:clampNumber(o?.d,.3,80,2),h:clampNumber(o?.h,.2,40,2),rot:normalizeRot(o?.rot),yOffset:clampNumber(o?.yOffset,-12,30,0),kind:canonicalPropKind(o?.kind)}));}
-function sanitizeRoads(list){const kinds=new Set(['street','alley','service','dirt','sidewalk','crosswalk']);return (Array.isArray(list)?list:[]).map(o=>{let w=clampNumber(o?.w,2,600,20),d=clampNumber(o?.d,1,40,8),rot=normalizeRot(o?.rot);if(o?.rot==null&&d>w){[w,d]=[d,w];rot=90;}return{kind:kinds.has(String(o?.kind))?String(o.kind):'street',x:finite(o?.x),z:finite(o?.z),w,d,rot};});}
+function sanitizeRoads(list){const kinds=new Set(['street','alley','service','dirt','sidewalk','crosswalk']);return (Array.isArray(list)?list:[]).map(o=>{let w=clampNumber(o?.w,2,600,20),d=clampNumber(o?.d,1,40,8),rot=normalizeRot(o?.rot);if(o?.rot==null&&d>w){[w,d]=[d,w];rot=90;}return{...(Array.isArray(o?.path)?{path:o.path,smooth:!!o.smooth}:{}),kind:kinds.has(String(o?.kind))?String(o.kind):'street',x:finite(o?.x),z:finite(o?.z),w,d,rot};});}
 function sanitizeBuildings(list){return (Array.isArray(list)?list:[]).map(o=>resolveAsset(o,'building')).map(b=>{const balcony=clampNumber(b?.balcony,0,10,0),levels=Math.max(1,Math.min(8,Math.round(finite(b?.levels,2))));return{assetId:b.assetId,archetype:b.archetype,x:finite(b?.x),z:finite(b?.z),w:clampNumber(b?.w,8,80,18),d:clampNumber(b?.d,6,80,14),floorH:clampNumber(b?.floorH,2.2,5,3.1),balcony,levels,rot:normalizeRot(b?.rot),yOffset:clampNumber(b?.yOffset,-12,30,0),...((b?.tall||levels>=4)?{tall:true}:{}),style:String(b?.style||'industrial')};});}
 function sanitizeTerrainModifiers(list){const kinds=new Set(['hill','valley','plateau','pit']);return (Array.isArray(list)?list:[]).map(o=>({kind:kinds.has(String(o?.kind))?String(o.kind):'hill',x:finite(o?.x),z:finite(o?.z),radius:clampNumber(o?.radius,3,100,16),height:clampNumber(o?.height,-24,30,(o?.kind==='valley'||o?.kind==='pit')?-3:3)}));}
 function sanitizeAuthoredHeightfield(raw,arena){if(!raw||typeof raw!=='object')return null;const size=Math.max(9,Math.min(129,Math.round(finite(raw.size,0)))),extent=clampNumber(raw.extent,20,arena,arena),values=Array.isArray(raw.values)?raw.values:null;if(!values||values.length!==size*size)return null;return Object.freeze({size,extent,values:Object.freeze(values.map(v=>clampNumber(v,-30,30,0)))});}
@@ -43,7 +44,7 @@ export function createAuthoredWorldGeometry(def={}){
   const MAX_STEP_HEIGHT = 0.62;
   const CROUCH_WINDOW_STEP_HEIGHT = 0.86;
   
-  const ROADS = sanitizeRoads(def?.roads);
+  const ROADS = sanitizeRoads(def?.roads).flatMap((r,i)=>roadSegments(r).map(s=>({...s,sourceRoad:i})));
   
   const STATIC_BOXES = sanitizeStaticBoxes(def?.staticBoxes);
   
