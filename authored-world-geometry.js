@@ -1,5 +1,6 @@
+import { supportProfile as canonicalSupportProfile, supportWeight } from './terrain-support.js';
 import { roadSegments } from './road-path.js';
-import { resolveAsset } from './object-catalog.js?v=2.2.0';
+import { resolveAsset } from './object-catalog.js?v=2.3.0';
 const finite=(v,f=0)=>Number.isFinite(Number(v))?Number(v):f;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const clampNumber=(v,a,b,f)=>clamp(finite(v,f),a,b);
@@ -71,9 +72,10 @@ export function createAuthoredWorldGeometry(def={}){
   function localPoint(o,x,z){const a=-normalizeRot(o.rot)*Math.PI/180,c=Math.cos(a),ss=Math.sin(a),dx=x-o.x,dz=z-o.z;return{x:dx*c-dz*ss,z:dx*ss+dz*c};}
   function worldPoint(o,lx,lz){const a=normalizeRot(o.rot)*Math.PI/180,c=Math.cos(a),ss=Math.sin(a);return{x:o.x+lx*c-lz*ss,z:o.z+lx*ss+lz*c};}
   function median(values){const a=[...values].sort((x,y)=>x-y),m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2;}
-  function supportProfile(o,isBuilding=false){const pts=[[0,0],[-.5,-.5],[.5,-.5],[.5,.5],[-.5,.5],[0,-.5],[.5,0],[0,.5],[-.5,0]].map(([u,v])=>worldPoint(o,u*o.w,v*o.d)),hs=pts.map(p=>rawTerrainHeight(p.x,p.z)),level=median(hs),blend=isBuilding?clamp(Math.max(o.w,o.d)*.18,2.5,6):clamp(Math.max(o.w,o.d)*.14,1.25,3.5);return{o,level,blend,active:Math.abs(o.yOffset)<.05};}
-  function roadProfile(o){const a=worldPoint(o,-o.w/2,0),b=worldPoint(o,o.w/2,0);return{o,h0:rawTerrainHeight(a.x,a.z),h1:rawTerrainHeight(b.x,b.z),shoulder:clamp(o.d*.28,1.2,3),endBlend:clamp(o.d*.2,.8,2)};}
-  const supportProfiles=[...STATIC_BOXES.map(o=>supportProfile(o,false)),...BUILDINGS.map(o=>supportProfile(o,true))],roadProfiles=ROADS.map(roadProfile);
+  function supportProfile(o,isBuilding=false){return canonicalSupportProfile(o,rawTerrainHeight,isBuilding,Math.max(244,ARENA_LIMIT*2+4)/128*Math.SQRT2);}
+
+  const spawnPoints=[...new Map(Object.values(def?.spawnSets||{}).flat().filter(p=>Array.isArray(p)).map(p=>[p[0]+','+p[1],{x:p[0],z:p[1],w:2.4,d:2.4,yOffset:0}])).values()];
+  const supportProfiles=[...spawnPoints.map(o=>supportProfile(o,false)),...STATIC_BOXES.map(o=>supportProfile(o,false)),...BUILDINGS.map(o=>supportProfile(o,true))];
   
   const TERRAIN_SIZE = Math.max(244,ARENA_LIMIT*2+4);
   const TERRAIN_SEGMENTS = 128;
@@ -84,17 +86,15 @@ export function createAuthoredWorldGeometry(def={}){
   // The exact influence formula below remains the canonical terrain definition.
   function terrainProfileIndex(profiles,road=false){
     const cells=new Map(),size=32;
-    for(const profile of profiles){if(!road&&!profile.active)continue;const o=profile.o,a=normalizeRot(o.rot)*Math.PI/180,c=Math.abs(Math.cos(a)),sn=Math.abs(Math.sin(a)),w=o.w/2+(road?profile.endBlend:profile.blend),d=o.d/2+(road?profile.shoulder:profile.blend),hx=w*c+d*sn+1e-6,hz=w*sn+d*c+1e-6;
+    for(const profile of profiles){if(!road&&!profile.active)continue;const o=profile.o,a=normalizeRot(o.rot)*Math.PI/180,c=Math.abs(Math.cos(a)),sn=Math.abs(Math.sin(a)),w=o.w/2+(road?profile.endBlend:profile.blend+(profile.margin||0)),d=o.d/2+(road?profile.shoulder:profile.blend+(profile.margin||0)),hx=w*c+d*sn+1e-6,hz=w*sn+d*c+1e-6;
       for(let ix=Math.floor((o.x-hx)/size);ix<=Math.floor((o.x+hx)/size);ix++)for(let iz=Math.floor((o.z-hz)/size);iz<=Math.floor((o.z+hz)/size);iz++){const key=ix+','+iz;if(!cells.has(key))cells.set(key,[]);cells.get(key).push(profile);}
     }
     return (x,z)=>cells.get(Math.floor(x/size)+','+Math.floor(z/size))||[];
   }
-  const nearbySupportProfiles=terrainProfileIndex(supportProfiles),nearbyRoadProfiles=terrainProfileIndex(roadProfiles,true);
+  const nearbySupportProfiles=terrainProfileIndex(supportProfiles);
   function sourceTerrainHeight(x,z){
-    const raw=rawTerrainHeight(x,z);let ground=raw,roadWeight=0,roadSum=0,maxRoadWeight=0;
-    for(const p of nearbyRoadProfiles(x,z)){const q=localPoint(p.o,x,z),ox=Math.max(Math.abs(q.x)-p.o.w/2,0),oz=Math.max(Math.abs(q.z)-p.o.d/2,0);if(ox>=p.endBlend||oz>=p.shoulder)continue;const tx=ox<=0?1:1-clamp(ox/p.endBlend,0,1),tz=oz<=0?1:1-clamp(oz/p.shoulder,0,1),wx=tx*tx*(3-2*tx),wz=tz*tz*(3-2*tz),w=wx*wz;if(w<=0)continue;const t=clamp(q.x/p.o.w+.5,0,1),target=p.h0+(p.h1-p.h0)*t;roadSum+=target*w;roadWeight+=w;maxRoadWeight=Math.max(maxRoadWeight,w);}
-    if(roadWeight>0)ground=raw+(roadSum/roadWeight-raw)*clamp(maxRoadWeight,0,1);
-    let best=null,bestWeight=0;for(const p of nearbySupportProfiles(x,z)){if(!p.active)continue;const q=localPoint(p.o,x,z),ox=Math.max(Math.abs(q.x)-p.o.w/2,0),oz=Math.max(Math.abs(q.z)-p.o.d/2,0),dist=Math.hypot(ox,oz);if(dist>=p.blend)continue;const t=clamp(dist/p.blend,0,1),w=1-(t*t*(3-2*t));if(w>bestWeight){bestWeight=w;best=p;}}
+    const ground=rawTerrainHeight(x,z);let best=null,bestWeight=0;
+    for(const p of nearbySupportProfiles(x,z)){if(!p.active)continue;const w=supportWeight(p,x,z);if(w>bestWeight){bestWeight=w;best=p;}}
     return best?ground+(best.level-ground)*bestWeight:ground;
   }
   
@@ -278,6 +278,8 @@ export function createAuthoredWorldGeometry(def={}){
   function makeBuildingGeometry(b){
     const levels=Math.max(1,Math.min(8,Math.floor(b.levels||2))),base=terrainHeight(b.x,b.z)+b.yOffset,plan=buildingPlan(b),parts=[],supports=[],horizontalSolids=[],playerRamps=[];
     const t=plan.wallT;
+    if(Math.abs(b.yOffset)<.05){const support=supportProfile(b,true);if(base-support.min>.05){addBox(parts,'foundation',b.x,b.z,b.w,b.d,support.min-.2,base,{supportTop:true});supports.push({type:'rect',x:b.x,z:b.z,w:b.w,d:b.d,y:base});horizontalSolids.push({x:b.x,z:b.z,w:b.w,d:b.d,bottomY:support.min-.2,topY:base});}}
+
     const addWallX=(z,level,side)=>{
       const openings=buildingWallOpenings(b,level,side);
       for(const cell of splitWall(b.w,b.floorH,openings)){
@@ -364,7 +366,7 @@ export function createAuthoredWorldGeometry(def={}){
   function transformRamp(r,b){const a=rotatePoint(r.x1,r.z1??r.z,b.x,b.z,b.rot),c=rotatePoint(r.x2,r.z2??r.z,b.x,b.z,b.rot);return{...r,x1:a.x,z1:a.z,x2:c.x,z2:c.z,rot:normalizeRot((r.rot||0)+b.rot)};}
   function transformBuildingGeometry(g,b){if(!b.rot)return{...g,parts:g.parts.map(p=>({...p,rot:0})),supports:g.supports.map(s=>s.type==='ramp'?transformRamp(s,b):({...s,rot:0})),horizontalSolids:g.horizontalSolids.map(s=>({...s,rot:0})),playerRamps:g.playerRamps.map(r=>transformRamp(r,b))};return{...g,parts:g.parts.map(p=>transformRect(p,b)),supports:g.supports.map(s=>s.type==='ramp'?transformRamp(s,b):transformRect(s,b)),horizontalSolids:g.horizontalSolids.map(s=>transformRect(s,b)),playerRamps:g.playerRamps.map(r=>transformRamp(r,b))};}
   function makeAllBuildingGeometry(){return BUILDINGS.map(b=>transformBuildingGeometry(makeBuildingGeometry(b),b));}
-  function makeElevationGeometry(o){const base=terrainHeight(o.x,o.z)+o.yOffset,parts=[],supports=[],horizontalSolids=[],playerRamps=[],toWorld=(lx,lz)=>rotatePoint(o.x+lx,o.z+lz,o.x,o.z,o.rot),addRect=(role,lx,lz,w,d,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({role,x:p.x,z:p.z,w,d,bottomY,topY,rot:o.rot,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:false,decorative:false});};
+  function makeElevationGeometry(o){const lowPoint=worldPoint(o,0,-o.d/2),base=terrainHeight(...(['ramp','stairs'].includes(o.kind)?[lowPoint.x,lowPoint.z]:[o.x,o.z]))+o.yOffset,parts=[],supports=[],horizontalSolids=[],playerRamps=[],toWorld=(lx,lz)=>rotatePoint(o.x+lx,o.z+lz,o.x,o.z,o.rot),addRect=(role,lx,lz,w,d,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({role,x:p.x,z:p.z,w,d,bottomY,topY,rot:o.rot,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop,crouchStep:false,decorative:false});};
     if(o.kind==='platform'||o.kind==='overpass'){const thick=o.kind==='overpass'?.7:.5,top=base+o.rise;addRect(o.kind,0,0,o.w,o.d,top-thick,top,{supportTop:true});supports.push({type:'rect',x:o.x,z:o.z,w:o.w,d:o.d,y:top,rot:o.rot,role:o.kind});horizontalSolids.push({x:o.x,z:o.z,w:o.w,d:o.d,bottomY:top-thick,topY:top,rot:o.rot});if(o.kind==='overpass')for(const side of [-1,1])addRect('overpassSupport',side*(o.w/2-.45),0,.7,o.d*.94,base,top-thick,{supportTop:false});}
     else {const steps=Math.max(4,Math.ceil(o.rise/(o.kind==='stairs'?.34:.45))),stepD=o.d/steps;for(let i=0;i<steps;i++){const h=o.rise*(i+1)/steps,lz=-o.d/2+stepD*(i+.5);addRect(o.kind==='stairs'?'stairStep':'rampStep',0,lz,o.w,stepD+.04,base,base+h,{playerSolid:false,projectileSolid:true});}const low=toWorld(0,-o.d/2),high=toWorld(0,o.d/2),ramp={type:'ramp',x1:low.x,z1:low.z,x2:high.x,z2:high.z,w:o.w,bottomY:base,y0:base,y1:base+o.rise,role:o.kind==='stairs'?'stairRamp':'ramp',supportTop:true};supports.push(ramp);playerRamps.push(ramp);}
     return{parts,supports,horizontalSolids,playerRamps};}
