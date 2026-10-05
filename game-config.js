@@ -1,6 +1,6 @@
-export const APP_VERSION = '2.5.0';
-export const BUILD_ID = '20260929T180000Z';
-export const PROTOCOL_VERSION = 99;
+export const APP_VERSION = '2.6.0';
+export const BUILD_ID = '20261005T033000Z';
+export const PROTOCOL_VERSION = 100;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS_PER_TEAM = 8;
@@ -36,9 +36,10 @@ export function normalizeKillstreakSelection(value,{fill=true}={}){
   return KILLSTREAK_ORDER.filter(id=>picked.includes(id)).slice(0,KILLSTREAK_SELECTION_COUNT);
 }
 
-export const MAP_ORDER = ['highlands','depot','yard','rig','custom-map'];
+export const MAP_ORDER = ['highlands','depot','yard','rig','moon','custom-map'];
 export const DEFAULT_MAP_ID = 'highlands';
 export const MAPS = Object.freeze({
+  moon:Object.freeze({id:'moon',name:'LUNAR OUTPOST',short:'LUNAR OUTPOST'}),
   highlands:Object.freeze({id:'highlands',name:'HIGHLANDS',short:'HIGHLANDS'}),
   depot:Object.freeze({id:'depot',name:'FREIGHT DEPOT',short:'DEPOT'}),
   yard:Object.freeze({id:'yard',name:'CONTAINER YARD',short:'YARD'}),
@@ -244,12 +245,14 @@ export function defaultLoadoutClasses(baseLoadout=null){const out=[];for(let i=0
 export function normalizeLoadoutClasses(value,baseLoadout=null){const fallback=defaultLoadoutClasses(baseLoadout),raw=Array.isArray(value)?value:[];return LOADOUT_CLASS_IDS.map((id,i)=>{const source=raw.find(item=>String(item?.id||'')===id)||raw[i]||fallback[i],loadout=normalizeLoadoutDefinition(source,fallback[i]);return{id,name:normalizeLoadoutClassName(source?.name,i),...loadout};});}
 export function loadoutClassById(classes,id,baseLoadout=null){const normalized=normalizeLoadoutClasses(classes,baseLoadout),safeId=normalizeLoadoutClassId(id);return normalized.find(item=>item.id===safeId)||normalized[0];}
 
-export const GAME_MODE_ORDER = ['tdm','ffa','sandbox','zombies'];
+export const GAME_MODE_ORDER = ['tdm','ffa','moon','infection','zombies','sandbox'];
 export const DEFAULT_GAME_MODE = 'tdm';
 export const GAME_MODES = Object.freeze({
+  moon:Object.freeze({id:'moon',name:'MOON DEATHMATCH',short:'MOON DM',teamBased:false,scoreType:'player',scoreLimit:20,timeLimitMs:8*60*1000,mapId:'moon',mod:'moon'}),
+  infection:Object.freeze({id:'infection',name:'INFECTION',short:'INFECTION',teamBased:true,cooperative:false,scoreType:'survival',scoreLimit:0,timeLimitMs:120000}),
   tdm:Object.freeze({id:'tdm',name:'TEAM DEATHMATCH',short:'TDM',teamBased:true,scoreType:'team',scoreLimit:30,timeLimitMs:8*60*1000}),
   ffa:Object.freeze({id:'ffa',name:'FREE FOR ALL',short:'FFA',teamBased:false,scoreType:'player',scoreLimit:20,timeLimitMs:8*60*1000}),
-  zombies:Object.freeze({id:'zombies',name:'ZOMBIES',short:'ZOMBIES',teamBased:true,cooperative:true,scoreType:'waves',scoreLimit:0,timeLimitMs:0}),
+  zombies:Object.freeze({id:'zombies',name:'ZOMBIE WAVES',short:'WAVES',teamBased:true,cooperative:true,scoreType:'waves',scoreLimit:0,timeLimitMs:0}),
   sandbox:Object.freeze({id:'sandbox',name:'SANDBOX',short:'SANDBOX',teamBased:true,scoreType:'none',scoreLimit:0,timeLimitMs:0}),
 });
 export function normalizeGameMode(value){const id=String(value||'').toLowerCase();return Object.hasOwn(GAME_MODES,id)?id:DEFAULT_GAME_MODE;}
@@ -264,7 +267,7 @@ export function zombieWaveSpec(wave,players=1){
 export const MATCH_WARMUP_MS = 4000;
 export const MATCH_END_MS = 7000;
 
-export const GAME_MOD_ORDER = Object.freeze(['normal','moon']);
+export const GAME_MOD_ORDER = Object.freeze(['normal']);
 export const GAME_MODS = Object.freeze({
   normal:Object.freeze({id:'normal',name:'Normal',gravityScale:1,jumpHeightScale:1,environment:'normal'}),
   moon:Object.freeze({id:'moon',name:'Moon',gravityScale:.35,jumpHeightScale:2,environment:'moon'}),
