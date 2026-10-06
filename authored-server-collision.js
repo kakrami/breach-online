@@ -1,5 +1,3 @@
-import { BOSS_WEAKPOINT } from './moon-boss-rules.js';
-import { actorScale } from './actor-rules.js';
 import { CROUCH_HEIGHT } from './game-config.js';
 import { segmentAabbFirstT, segmentCylinderFirstT, segmentPyramidFirstT, segmentEllipsoidFirstT } from './collision-primitives.js';
 
@@ -81,8 +79,6 @@ export function createAuthoredServerCollision(world){
   function projectileSegmentHitZone(target, x1, y1, z1, x2, y2, z2, projectileRadius = 0) {
     const tx = finite(target?.x), tz = finite(target?.z);
     const ty = finite(target?.y, terrainHeight(tx, tz));
-    const bodyScale=actorScale(target);
-    if(bodyScale!==1){x1=tx+(x1-tx)/bodyScale;y1=ty+(y1-ty)/bodyScale;z1=tz+(z1-tz)/bodyScale;x2=tx+(x2-tx)/bodyScale;y2=ty+(y2-ty)/bodyScale;z2=tz+(z2-tz)/bodyScale;projectileRadius/=bodyScale;}
     const scaleY = target?.crouched ? CROUCH_HEIGHT / PLAYER_HEIGHT : 1, pr = Math.max(0, finite(projectileRadius, 0));
     const headT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx, ty + 1.66 * scaleY, tz, 0.30 + pr, 0.30 * scaleY + pr, 0.30 + pr);
     const torsoT = segmentEllipsoidFirstT(x1, y1, z1, x2, y2, z2, tx, ty + 0.99 * scaleY, tz, 0.52 + pr, 0.59 * scaleY + pr, 0.42 + pr);
@@ -103,15 +99,6 @@ export function createAuthoredServerCollision(world){
       leftArmT == null ? null : { zone:'arm', t:leftArmT },
       rightArmT == null ? null : { zone:'arm', t:rightArmT },
     ]) if (hit && (bodyHit == null || hit.t < bodyHit.t)) bodyHit = hit;
-    // The visible chest aperture has a real sphere at the same local position
-    // as the rendered core. Closed armor is an ordinary upper-body hit; only
-    // the server's recovery-time flag permits bonus damage.
-    if(target?.boss&&(target.bossKind==='abomination'||target.bossKind==='ravager')){
-      const chestX=tx+Math.sin(yaw)*BOSS_WEAKPOINT.z,chestZ=tz+Math.cos(yaw)*BOSS_WEAKPOINT.z,chestY=ty+BOSS_WEAKPOINT.y*scaleY;
-      const chestT=segmentEllipsoidFirstT(x1,y1,z1,x2,y2,z2,chestX,chestY,chestZ,BOSS_WEAKPOINT.radius+pr,BOSS_WEAKPOINT.radius*scaleY+pr,BOSS_WEAKPOINT.radius+pr);
-      const nearest=Math.min(headT??Infinity,bodyHit?.t??Infinity);
-      if(chestT!=null&&chestT<=nearest+.001)return {zone:target.weakpointActive?'weakpoint':'upper',t:chestT};
-    }
     if (headT != null && (bodyHit == null || headT <= bodyHit.t + 0.012)) return { zone:'head', t:headT };
     if (bodyHit != null) return bodyHit;
     if (headT != null) return { zone:'head', t:headT };

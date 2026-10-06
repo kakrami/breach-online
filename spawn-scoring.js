@@ -1,7 +1,7 @@
 import { normalizeTeam, otherTeam } from './team-model.js';
 const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
 const finite=(value,fallback=0)=>Number.isFinite(Number(value))?Number(value):fallback;
-const modeId=value=>String(value||'').toLowerCase()==='moon'?'ffa':String(value||'').toLowerCase();
+const modeId=value=>String(value||'').toLowerCase();
 const actorId=actor=>String(actor?.id||actor?.clientId||'');
 const distance2d=(a,b)=>Math.hypot(finite(a?.x)-finite(b?.x),finite(a?.z)-finite(b?.z));
 const alive=(actor,now)=>!!actor&&finite(actor.hp,100)>0&&now>=finite(actor.wastedUntil,0)&&!actor.replaced;

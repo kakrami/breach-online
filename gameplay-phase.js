@@ -14,8 +14,8 @@ export function normalizeMatchStatus(value){
 
 export function matchAllowsLobbyEdits(value){return normalizeMatchStatus(value?.status??value)===MATCH_STATUS.WAITING;}
 export function matchAllowsMovement(value){return normalizeMatchStatus(value?.status??value)===MATCH_STATUS.ACTIVE;}
-export function matchAllowsCombat(value){return normalizeMatchStatus(value?.status??value)===MATCH_STATUS.ACTIVE&&(value?.mode!=='infection'||value?.infectionPhase==='active');}
-export function matchAllowsRespawn(value){return normalizeMatchStatus(value?.status??value)===MATCH_STATUS.ACTIVE&&value?.mode!=='infection';}
+export function matchAllowsCombat(value){return normalizeMatchStatus(value?.status??value)===MATCH_STATUS.ACTIVE;}
+export function matchAllowsRespawn(value){return normalizeMatchStatus(value?.status??value)===MATCH_STATUS.ACTIVE;}
 export function matchPreservesReconnectPosition(value){const status=normalizeMatchStatus(value?.status??value);return status===MATCH_STATUS.ACTIVE||status===MATCH_STATUS.ENDED;}
 export function matchIsFrozen(value){return !matchAllowsMovement(value);}
 
