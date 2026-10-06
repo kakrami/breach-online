@@ -2,7 +2,7 @@ import { normalizeTeam, otherTeam } from './team-model.js';
 const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
 const finite=(value,fallback=0)=>Number.isFinite(Number(value))?Number(value):fallback;
 const modeId=value=>String(value||'').toLowerCase()==='moon'?'ffa':String(value||'').toLowerCase();
-const actorId=actor=>String(actor?.id||actor?.clientId||'');
+const actorId=actor=>String(actor?.clientId||actor?.id||'');
 const distance2d=(a,b)=>Math.hypot(finite(a?.x)-finite(b?.x),finite(a?.z)-finite(b?.z));
 const alive=(actor,now)=>!!actor&&finite(actor.hp,100)>0&&now>=finite(actor.wastedUntil,0)&&!actor.replaced;
 const isEnemy=(mode,team,actor)=>modeId(mode)==='ffa'||normalizeTeam(actor?.team)!==normalizeTeam(team);
@@ -139,6 +139,7 @@ export function scoreSpawnCandidate(policy,{
   const hardDanger=occupied||minEnemy<finite(policy.minEnemyDistance,20)||minProjectedEnemy<finite(policy.minProjectedEnemyDistance,finite(policy.minEnemyDistance,20)*.68)||visibleEnemies>0||projectile.critical>0||throwable.critical>0;
   const safe=!hardDanger;
   let score=safe?1_000_000:0;
+  if(Number.isFinite(policy.idealEnemyDistance)&&enemies.length)score-=Math.abs(minEnemy-policy.idealEnemyDistance)*1500;
   const enemyDistanceWeight=finite(policy.enemyDistanceWeight,150)*(ffa?1.30:1),exposureScale=ffa?1.16:1;
   score+=Math.min(minEnemy,enemyCap)*enemyDistanceWeight+Math.min(minAny,anyCap)*finite(policy.anyDistanceWeight,5);
   score-=visibleEnemies*finite(policy.visibleEnemyPenalty,45_000)*exposureScale+facingEnemies*finite(policy.facingEnemyPenalty,12_000)*exposureScale+approachingEnemies*finite(policy.approachingEnemyPenalty,18_000)*(ffa?1.10:1)+nearEnemies*finite(policy.nearEnemyPenalty,6_000)*(ffa?1.12:1);
@@ -151,19 +152,25 @@ export function scoreSpawnCandidate(policy,{
 }
 
 export function chooseSafeSpawnFromPoints(policy,teamPoints,ffaPoints,{
-  mode,team,actors=[],index=0,excludeId='',recentDeaths=[],recentSpawns=[],recentGunfire=[],recentExplosions=[],projectiles=[],throwables=[],now=Date.now(),terrainHeight,blockedAt,lineOfSight,
+  mode,team,actors=[],index=0,excludeId='',recentDeaths=[],recentSpawns=[],recentGunfire=[],recentExplosions=[],projectiles=[],throwables=[],now=Date.now(),terrainHeight,blockedAt,lineOfSight,strict=false,includeAllPoints=false,extraPoints=[],validAt,policyOverride={},candidateOrder,maxSafeCandidates=0,
 }){
+  policy={...policy,...policyOverride};
   const normalizedMode=modeId(mode),normalizedTeam=normalizeTeam(team),homePoints=teamPoints[normalizedTeam],awayPoints=teamPoints[otherTeam(normalizedTeam)];
   const catalog=normalizedMode==='ffa'
     ?ffaPoints.map(p=>({p,cluster:'ffa'}))
     :(policy.allowTeamFlip?[...homePoints.map(p=>({p,cluster:'home'})),...awayPoints.map(p=>({p,cluster:'away'}))]:homePoints.map(p=>({p,cluster:'home'})));
+  if(includeAllPoints)catalog.push(...ffaPoints.map(p=>({p,cluster:'ffa'})),...awayPoints.map(p=>({p,cluster:'away'})));
+  catalog.push(...extraPoints.map(p=>({p,cluster:'route'})));
+  if(strict){const unique=new Map(catalog.map(e=>[e.p.join(','),e]));catalog.splice(0,catalog.length,...unique.values());}
+  if(candidateOrder)catalog.sort((a,b)=>candidateOrder(a.p)-candidateOrder(b.p));
   const start=Math.abs(Math.floor(finite(index,0)))%Math.max(1,catalog.length);
-  let bestSafe=null,bestUnsafe=null;
+  let bestSafe=null,bestUnsafe=null,safeCount=0;
   for(let offset=0;offset<catalog.length;offset++){
-    const entry=catalog[(start+offset)%catalog.length],p=entry.p,x=p[0],z=p[1],y=finite(terrainHeight?.(x,z),0)+finite(p[2],0);if(blockedAt?.(x,z,y))continue;
+    const entry=catalog[(start+offset)%catalog.length],p=entry.p,x=p[0],z=p[1],y=finite(terrainHeight?.(x,z),0)+finite(p[2],0);if(blockedAt?.(x,z,y)||validAt&&!validAt(x,y,z))continue;
     const detail=scoreSpawnCandidate(policy,{mode,team,x,y,z,actors,excludeId,candidateCluster:entry.cluster,recentDeaths,recentSpawns,recentGunfire,recentExplosions,projectiles,throwables,now,lineOfSight});
     const candidate={score:detail.score-offset*.01,x,y,z,yaw:clearSpawnYaw(x,y,z,blockedAt),cluster:entry.cluster,detail,emergency:!detail.safe};
-    if(detail.safe){if(!bestSafe||candidate.score>bestSafe.score)bestSafe=candidate;}else if(!bestUnsafe||candidate.score>bestUnsafe.score)bestUnsafe=candidate;
+    if(detail.safe){if(!bestSafe||candidate.score>bestSafe.score)bestSafe=candidate;if(maxSafeCandidates&&++safeCount>=maxSafeCandidates)break;}else if(!bestUnsafe||candidate.score>bestUnsafe.score)bestUnsafe=candidate;
   }
+  if(strict)return bestSafe;
   return bestSafe||bestUnsafe||{...spawnForModeFromPoints(mode,team,index,terrainHeight,teamPoints,ffaPoints),cluster:normalizedMode==='ffa'?'ffa':'home',score:-Infinity,detail:null,emergency:true};
 }

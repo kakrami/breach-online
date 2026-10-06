@@ -9,5 +9,7 @@ export function actorDimensions(actor,{height,radius,crouchHeight}){
   return {scale,height:(actor?.crouched?crouchHeight:height)*scale,radius:radius*scale};
 }
 export function roleMovement(base,mode,actor,infectionSpeed=1.2){
-  return mode==='infection'&&actor?.infected?{...base,walkSpeed:base.walkSpeed*infectionSpeed,runSpeed:base.runSpeed*infectionSpeed}:base;
+  if(mode!=='infection'||!actor?.infected)return base;
+  const speed=actor.shielding?.58:actor.infectionWeapon==='mutation'?.88:infectionSpeed;
+  return {...base,walkSpeed:base.walkSpeed*speed,runSpeed:base.runSpeed*speed};
 }
