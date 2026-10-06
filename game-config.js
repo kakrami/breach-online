@@ -1,5 +1,5 @@
-export const APP_VERSION = '2.10.0';
-export const BUILD_ID = '20261006T170613Z';
+export const APP_VERSION = '2.11.0';
+export const BUILD_ID = '20261006T190535Z';
 export const PROTOCOL_VERSION = 104;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
@@ -105,6 +105,11 @@ export function resolveWeaponAccuracy(weapon,attachments={}){
   const safe=Object.prototype.hasOwnProperty.call(WEAPON_ACCURACY,weapon)?weapon:'pistol',out={...WEAPON_ACCURACY[safe]};
   for(const id of attachmentIdsForWeapon(safe,attachments))applyNumericMods(out,attachmentAccuracyModsForWeapon(ATTACHMENTS[id],safe));
   return out;
+}
+export function resolveWeaponRules(settings,weapon,attachments={}){
+  const safe=Object.prototype.hasOwnProperty.call(WEAPON_SPECS,weapon)?weapon:'pistol',base=WEAPON_SPECS[safe],spec=resolveWeaponSpec(safe,attachments),defaults=DEFAULT_WORLD_SETTINGS.weapons[safe],rules=settings?.weapons?.[safe]||defaults;
+  const value=key=>Number.isFinite(Number(rules[key]))?Number(rules[key]):defaults[key];
+  return {...rules,spec,mag:spec.mag,damage:value('damage')*spec.damage/base.damage,speed:value('speed')*spec.bulletSpeed/base.bulletSpeed,reloadMs:value('reloadMs')*spec.reloadMs/base.reloadMs,cooldownMs:value('cooldownMs')*spec.cooldownMs/base.cooldownMs};
 }
 export function attachmentSoundScale(weapon,attachments={}){let scale=1;for(const id of attachmentIdsForWeapon(weapon,attachments)){const value=Number(ATTACHMENTS[id]?.soundScale);if(Number.isFinite(value))scale*=value;}return Math.max(.2,Math.min(1,scale));}
 export const WEAPON_SPECS = {
