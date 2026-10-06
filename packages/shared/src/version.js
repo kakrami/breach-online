@@ -1,3 +1,3 @@
-export const BREACH_VERSION = "1.45.0-alpha.4.3";
-export const BUILD_LABEL = "phase4.1-hardware-validation-worker-migration-safe";
-export const PROTOCOL_VERSION = 101;
+export const BREACH_VERSION = "2.9.0";
+export const BUILD_LABEL = "native-menu-integration";
+export const PROTOCOL_VERSION = 102;
