@@ -1845,7 +1845,11 @@ export class GameRoom {
     if (payload.t === "chat") {
       const text = safeChatText(payload.text);
       if (!text) return;
-      this.broadcast({ t:"chat", id:me.clientId, name:safeName(me.name), team:normalizeTeam(me.team), text, at:now });
+      const channel=payload.channel==='team'&&matchUsesTeams(meta.match)?'team':'all';
+      const message={t:'chat',id:me.clientId,name:safeName(me.name),team:normalizeTeam(me.team),channel,text,at:now};
+      if(channel==='team'){
+        for(const target of this.liveSockets())if(normalizeTeam(target.deserializeAttachment()?.team)===message.team)sendJson(target,message);
+      }else this.broadcast(message);
       return;
     }
 
