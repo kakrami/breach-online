@@ -238,6 +238,8 @@ function safeChatText(value) {
     .slice(0, 120);
 }
 
+function round3(value){return Math.round(value*1000)/1000;}
+
 function finiteNumber(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -1128,7 +1130,7 @@ export class GameRoom {
   prepareRound(meta,now=Date.now()){
     this.clearMoonSupply(meta);
     const old=meta.match,mode=matchMode(old);
-    meta.match={...defaultMatchState(now,old),round:1,status:MATCH_STATUS.WARMUP,warmupEndsAt:now+MATCH_WARMUP_MS,mode,scoreLimit:old.scoreLimit,timeLimitMs:old.timeLimitMs,minimapRevealAll:!!old.minimapRevealAll,minimapDirectional:!!old.minimapDirectional};
+    meta.match={...defaultMatchState(now,old),round:1,status:mode==='infection'?MATCH_STATUS.ACTIVE:MATCH_STATUS.WARMUP,startedAt:mode==='infection'?now:0,warmupEndsAt:mode==='infection'?0:now+MATCH_WARMUP_MS,mode,scoreLimit:old.scoreLimit,timeLimitMs:old.timeLimitMs,minimapRevealAll:!!old.minimapRevealAll,minimapDirectional:!!old.minimapDirectional};
     this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.killstreakEffects.length=0;this.recentDeaths=[];this.recentSpawns=[];this.recentGunfire=[];this.recentExplosions=[];const players=[],assigned=[];let index=0;
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;
@@ -1140,6 +1142,7 @@ export class GameRoom {
       const spawn=this.selectSpawn(mode,team,[...assigned,...this.bots],botSpawnIndex,`bot-${team}-${i+1}`,now);
       const bot=makeBot(this.world,team,i,mode,botSpawnIndex++,spawn);if(mode==='infection')bot.team='blue';this.bots.push(bot);
     }
+    if(mode==='infection'){if(!this.infection.begin(meta,now,{publish:false}))return false;players.splice(0,players.length,...this.liveSockets().map(s=>publicPlayer(s.deserializeAttachment())));}
     this.matchDirty=true;
     this.broadcast({t:'matchReset',match:publicMatchState(meta.match,now),players,bots:this.bots.map(publicBot),mapId:meta.mapId,customMapDefinition:this.roomCustomMapPayload(meta),customMapName:meta.customMap?.name||undefined,settings:normalizeWorldSettings(meta.settings),botConfig:{blueBots:meta.blueBots||0,redBots:meta.redBots||0,difficulty:safeBotDifficulty(meta.botDifficulty)},custom:this.isCustomMatch(meta)});
     return true;
@@ -1253,7 +1256,7 @@ export class GameRoom {
   beginInfectionRound(meta,now){return this.infection.begin(meta,now);}
   stepInfection(meta,now){return this.infection.step(meta,now);}
   infectionClaw(entry,now){return this.infection.claw(entry,now);}
-  refillInfectionAmmo(actor){actor.ammo=freshAmmo();}
+  refillInfectionAmmo(actor,weapon=''){const full=freshAmmo();actor.ammo=weapon?{...actor.ammo,[weapon]:full[weapon]}:full;}
   makeInfectionBot(now){
     const bot=makeBot(this.world,'red',this.bots.length,'infection');
     bot.id=`infected-backfill-${now}`;bot.name='Infected reinforcement';bot.infectionBackfill=true;
@@ -1661,9 +1664,10 @@ export class GameRoom {
 
     if(matchMode(meta.match)==='infection'){
       if(payload.t==='infectionHeal'){const accepted=matchAllowsCombat(meta.match)&&now<meta.match.infectionPhaseEndsAt&&!me.infected&&me.hp>0&&me.hp<100&&me.medkits>0;if(accepted){me.medkits--;me.hp=Math.min(100,me.hp+40);socket.serializeAttachment(me);}sendJson(socket,{t:'infectionHeal',accepted,player:publicPlayer(me)});return;}
+      if(payload.t==='infectionShop'){const accepted=this.infection.shop({actor:me,socket},payload.open===true,now);sendJson(socket,{t:'infectionShop',accepted,player:publicPlayer(socket.deserializeAttachment())});return;}
       if(payload.t==='infectionBuy'){
         const result=this.infection.purchase({actor:me,socket},String(payload.item||''),now);
-        sendJson(socket,{t:'infectionBuy',...result,player:publicPlayer(me)});return;
+        sendJson(socket,{t:'infectionBuy',item:String(payload.item||''),...result,player:publicPlayer(me)});return;
       }
       if(payload.t==='infectionAction'){
         const accepted=this.infection.action({actor:me,socket},String(payload.action||''),now);

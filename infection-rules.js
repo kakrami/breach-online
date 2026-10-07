@@ -4,13 +4,13 @@ export const INFECTION_ARMS = Object.freeze({mag:24,shotMs:130,damage:14,velocit
 export const INFECTION_SHOP = Object.freeze({
  heal:{cost:300,label:'MEDKIT',role:'survivor',detail:'Restore 40 health · carry 2',art:'medkit'},
  armor:{cost:600,label:'ARMOR',role:'survivor',detail:'+50 armor · max 100',art:'armor'},
- smg:{cost:1200,label:'UMP SMG',role:'survivor',weapon:'ump',detail:'Fast handling · close range'},
- sniper:{cost:1600,label:'SNIPER',role:'survivor',weapon:'sniper',detail:'Long range · deliberate shots'},
- assault:{cost:2200,label:'ASSAULT RIFLE',role:'survivor',weapon:'assault',detail:'Versatile · medium range'},
+ smg:{cost:1200,label:'UMP SMG',role:'survivor',weapon:'ump',detail:'Close range · replaces primary weapon'},
+ sniper:{cost:1600,label:'SNIPER',role:'survivor',weapon:'sniper',detail:'Long range · replaces primary weapon'},
+ assault:{cost:1800,label:'ASSAULT RIFLE',role:'survivor',weapon:'assault',detail:'Medium range · replaces primary weapon'},
  frag:{cost:400,label:'FRAG GRENADE',role:'survivor',detail:'Explosive defense · carry 3',art:'frag'},
- claws:{cost:0,label:'CLAWS',role:'infected',detail:'Free · fast melee attacks',art:'claws'},
- toxic:{cost:500,label:'INFECTED BOMB',role:'infected',detail:'Toxic cloud · carry 2 · 8s cooldown',art:'toxic'},
- mutation:{cost:1800,label:'MUTATION GUN',role:'infected',detail:'24 shots · overheats · slower movement',art:'mutation'},
+ claws:{cost:0,label:'CLAWS',role:'infected',detail:'Close-range attacks · lethal claw hits infect',art:'claws'},
+ toxic:{cost:500,label:'INFECTED BOMB',role:'infected',detail:'Weakens survivors · cannot kill or infect · carry 2',art:'toxic'},
+ mutation:{cost:3500,label:'MUTATION GUN',role:'infected',detail:'Earned upgrade · weakens only · claws finish the hunt',art:'mutation'},
  shield:{cost:1400,label:'HEAVY SHIELD',role:'infected',detail:'400 durability · sides exposed',art:'shield'},
  screech:{cost:900,label:'SCREECH',role:'infected',detail:'Brief nearby reveal · 18s cooldown',art:'screech'},
  carapace:{cost:700,label:'CARAPACE',role:'infected',detail:'+50 max health · once per match',art:'carapace'}
@@ -19,7 +19,7 @@ export function infectionShopItems(infected){return Object.entries(INFECTION_SHO
 export function infectionCash(value,amount=0){return Math.min(INFECTION.cashCap,Math.max(0,Math.floor(Number(value)||0)+amount));}
 // A dead infected remains a participant. Respawn queues never decide victory.
 export function infectionOutcome(actors,now,endsAt){if(!actors.length)return '';if(!actors.some(a=>!a.infected))return 'red';return now>=endsAt?'blue':'';}
-export function infectionPublicState(a={}){return {infectionRound:a.infectionRound||0,infectionPending:!!a.infectionPending,infectionGear:a.infectionGear||{},infectionWeapon:a.infectionWeapon||'claws',infectionReadyAt:a.infectionReadyAt||0,toxicBombs:a.toxicBombs||0,bombReadyAt:a.bombReadyAt||0,mutationAmmo:a.mutationAmmo??INFECTION_ARMS.mag,mutationHeat:a.mutationHeat||0,mutationHeatAt:a.mutationHeatAt||0,mutationShotAt:a.mutationShotAt||0,mutationReloadAt:a.mutationReloadAt||0,mutationHotUntil:a.mutationHotUntil||0,shieldHp:a.shieldHp||0,shielding:!!a.shielding,screechReadyAt:a.screechReadyAt||0,infectionStats:a.infectionStats||{conversions:0,assists:0,damage:0,supplies:0},survivalMs:a.survivalMs||0,infectionTotals:a.infectionTotals||{conversions:0,assists:0,damage:0,supplies:0},survivalTotalMs:a.survivalTotalMs||0};}
+export function infectionPublicState(a={}){return {infectionRound:a.infectionRound||0,infectionPending:!!a.infectionPending,infectionShopping:!!a.infectionShopping,infectionGear:a.infectionGear||{},infectionWeapon:a.infectionWeapon||'claws',infectionReadyAt:a.infectionReadyAt||0,toxicBombs:a.toxicBombs||0,bombReadyAt:a.bombReadyAt||0,mutationAmmo:a.mutationAmmo??INFECTION_ARMS.mag,mutationHeat:a.mutationHeat||0,mutationHeatAt:a.mutationHeatAt||0,mutationShotAt:a.mutationShotAt||0,mutationReloadAt:a.mutationReloadAt||0,mutationHotUntil:a.mutationHotUntil||0,shieldHp:a.shieldHp||0,shielding:!!a.shielding,screechReadyAt:a.screechReadyAt||0,infectionStats:a.infectionStats||{conversions:0,assists:0,damage:0,supplies:0},survivalMs:a.survivalMs||0,infectionTotals:a.infectionTotals||{conversions:0,assists:0,damage:0,supplies:0},survivalTotalMs:a.survivalTotalMs||0};}
 export function infectionPurchaseAvailability(actor,item,phase,atSupply=false){
  const spec=INFECTION_SHOP[item],a=actor||{},gear=a.infectionGear||{};
  let reason=!spec?'unavailable':spec.role!==(a.infected?'infected':'survivor')?'wrong_role':!['buy','active'].includes(phase)?'phase_locked':phase==='active'?(a.infected?(a.hp>0?'respawn_only':''):!atSupply?'supply_required':a.hp<=0?'not_alive':''):'';

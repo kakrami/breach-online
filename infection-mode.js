@@ -21,23 +21,22 @@ export class InfectionDirector {
   if(this.match.infectionRound===1){a.infectionTotals={conversions:0,assists:0,damage:0,supplies:0};a.survivalTotalMs=0;}
   Object.assign(a,freshInfectionInventory(infected,first),{infectionRound:this.match.infectionRound,infectionMatchStartedAt:this.match.startedAt,infectionPending:true,hp:0,wastedUntil:now,spawnAttemptAt:0,spawnProtectedUntil:0,roundSpent:0,infectionResumeHp:0,cash:R.startCash,regenAt:0,shielding:false,infectionStats:{conversions:0,assists:0,damage:0,supplies:0},survivalMs:0,contributions:{},damageRewards:{},killRewards:{},supplyClaims:[],roundStartRole:infected?'infected':'survivor',pendingTeam:'',pendingLoadout:null,killstreakAvailable:[],killstreakEarned:[],traversal:null,ladder:null});
  }
- begin(meta,now){
+ begin(meta,now,{publish=true}={}){
   const m=meta.match;if(m.infectionPhase||m.status!=='active')return false;m.startedAt=m.startedAt||now;m.infectionRound=1;this.finalMinute=false;Object.assign(m,{infectionPhase:'buy',infectionPhaseEndsAt:now+R.buyMs,infectionWinner:'',endsAt:0,updatedAt:now});
-  this.room.bullets.clear();this.room.throwables.clear();this.room.smokeClouds.clear();this.clearEffects();this.room.infectionPickups=[];this.room.broadcast({t:'infectionPickups',pickups:[]});this.nextSupplyAt=now+R.buyMs+10000;
-  let entries=this.entries();if(entries.length<2){this.room.makeInfectionBot(now);entries=this.entries();this.notice('PRACTICE OPPONENT ADDED','An infected bot keeps solo matches playable.');}
+  this.room.bullets.clear();this.room.throwables.clear();this.room.smokeClouds.clear();this.effects=[];this.room.infectionPickups=[];if(publish){this.syncEffects();this.room.broadcast({t:'infectionPickups',pickups:[]});}this.nextSupplyAt=now+R.buyMs+10000;
+  let entries=this.entries();if(entries.length<2){this.room.makeInfectionBot(now);entries=this.entries();if(publish)this.notice('PRACTICE OPPONENT ADDED','An infected bot keeps solo matches playable.');}
   const priorHistory=meta.infectionSeedHistory||{},history={...priorHistory},seedCount=Math.max(1,Math.min(entries.length-1,Math.floor(entries.length/10)||1));
   const seeds=new Set([...entries].sort((a,b)=>(history[idOf(a.actor)]||0)-(history[idOf(b.actor)]||0)||(Number(!!b.actor.infectionBackfill)-Number(!!a.actor.infectionBackfill))||String(idOf(a.actor)).localeCompare(String(idOf(b.actor)))).slice(0,seedCount).map(e=>idOf(e.actor)));
   for(const e of entries){const first=seeds.has(idOf(e.actor));if(first)history[idOf(e.actor)]=(history[idOf(e.actor)]||0)+1;this.resetActor(e.actor,now,first,first);if(e.socket)e.socket.serializeAttachment(e.actor);}
   meta.infectionSeedHistory=history;
   // Reserve infected positions first, then deploy every survivor outside
   // their distance and sight constraints. Preparation freezes both sides.
-  for(const e of entries.sort((a,b)=>Number(b.actor.infected)-Number(a.actor.infected))){this.spawn(e,now);if(!e.socket)this.botBuy(e,now);}
+  for(const e of entries.sort((a,b)=>Number(b.actor.infected)-Number(a.actor.infected))){this.spawn(e,now,publish);if(!e.socket)this.botBuy(e,now,publish);}
   if(this.entries().some(e=>e.actor.infectionPending)){
     meta.infectionSeedHistory=priorHistory;this.room.returnMatchToLobby(meta,now);
     this.room.broadcast({t:'infectionStartBlocked',message:'Not enough covered spawn space for this roster. Reduce bots or choose another map.'});return;
   }
-  this.room.matchDirty=true;this.room.broadcastMatch(meta,now);
-  this.notice('PREPARE FOR INFECTION','20 seconds to prepare · one round · infected respawn');
+  this.room.matchDirty=true;if(publish){this.room.broadcastMatch(meta,now);this.notice('PREPARE FOR INFECTION','20 seconds to prepare · one round · claws spread infection');}return true;
  }
  legalRoute(x,y,z){
   const room=this.room,g=room.world.geometry,c=room.world.worldCollision;
@@ -80,17 +79,17 @@ export class InfectionDirector {
    lineOfSight:(a,b)=>room.world.serverCollision.actorHasLineOfSight(a,b)||room.world.serverCollision.actorHasLineOfSight(b,a),recentDeaths:room.recentDeaths,recentSpawns:room.recentSpawns,recentGunfire:room.recentGunfire,recentExplosions:room.recentExplosions,projectiles:[...room.bullets.values()],throwables:[...room.throwables.values(),...this.effects]});
   return result?{x:result.x,y:result.y,z:result.z,yaw:result.yaw,cluster:result.cluster,spawnProtectedUntil:now+R.spawnProtectionMs}:null;
  }
- spawn(e,now){
-  const p=e.socket?e.socket.deserializeAttachment():e.actor;e.actor=p;if(!p.infectionPending||now<(p.wastedUntil||0)||now<(p.spawnAttemptAt||0))return false;
+ spawn(e,now,publish=true){
+  const p=e.socket?e.socket.deserializeAttachment():e.actor;e.actor=p;if(!p.infectionPending||p.infectionShopping||now<(p.wastedUntil||0)||now<(p.spawnAttemptAt||0))return false;
   const spawn=this.spot(p,now);p.spawnAttemptAt=now+R.spawnRetryMs;
-  if(!spawn){this.save(e);return false;}
+  if(!spawn){if(publish)this.save(e);else if(e.socket)e.socket.serializeAttachment(p);return false;}
   const resuming=p.infectionResumeHp>0;
   Object.assign(p,this.room.freezeHumanState(p,now),spawn,{hp:resuming?Math.min(p.maxHp,p.infectionResumeHp):p.maxHp||100,infectionResumeHp:0,wastedUntil:0,infectionPending:false,regenAt:now+6000,mutationAmmo:resuming?p.mutationAmmo:A.mag,mutationHeat:resuming?p.mutationHeat:0,mutationReloadAt:resuming?p.mutationReloadAt:0,mutationHotUntil:resuming?p.mutationHotUntil:0,shielding:false,shieldHp:resuming?p.shieldHp:p.infectionGear?.shield?A.shieldHp:0,nextClawAt:now+350,navX:spawn.x,navZ:spawn.z,navUntil:0,targetId:'',targetLockUntil:0,lastSeenTargetId:'',lastSeenAt:0,reactionReadyAt:0,aimYaw:spawn.yaw,aimPitch:0,aimNoiseUntil:0,burstShotsLeft:0,burstPauseUntil:0,patrolUntil:0,lastKnownX:spawn.x,lastKnownZ:spawn.z});
-  this.room.noteSpawn(spawn,p.team,idOf(p),now);this.room.recordCombatPose(p,now);this.save(e,'respawn');return true;
+  this.room.noteSpawn(spawn,p.team,idOf(p),now);this.room.recordCombatPose(p,now);if(publish)this.save(e,'respawn');else if(e.socket)e.socket.serializeAttachment(p);return true;
  }
  convert(e,now,first=false){
-  const p=e.actor;if(!p.infected){const stats=p.infectionStats,cash=p.cash,role=p.roundStartRole;Object.assign(p,freshInfectionInventory(true,first),{cash:Math.max(R.startCash,infectionCash(cash)),infectionStats:stats,roundStartRole:role,survivalMs:Math.max(0,now-(this.match.infectionPhaseEndsAt-this.match.timeLimitMs))});}
-  Object.assign(p,{hp:0,infectionPending:true,wastedUntil:now+R.respawnMs,spawnAttemptAt:0,spawnProtectedUntil:0,shielding:false,moveSpeed:0,velocityX:0,velocityZ:0,traversal:null,ladder:null,ads:false,mutationReloadAt:0});
+  const p=e.actor;if(!p.infected){const stats=p.infectionStats,cash=p.cash,role=p.roundStartRole;Object.assign(p,freshInfectionInventory(true,first),{cash:infectionCash(cash),infectionStats:stats,roundStartRole:role,survivalMs:Math.max(0,now-(this.match.infectionPhaseEndsAt-this.match.timeLimitMs))});}
+  Object.assign(p,{hp:0,infectionPending:true,infectionShopping:!!e.socket,wastedUntil:now+R.respawnMs,spawnAttemptAt:0,spawnProtectedUntil:0,shielding:false,moveSpeed:0,velocityX:0,velocityZ:0,traversal:null,ladder:null,ads:false,mutationReloadAt:0});
   this.save(e,'infectionRole');
  }
  step(meta,now){
@@ -118,22 +117,26 @@ export class InfectionDirector {
   for(const e of this.entries()){const p=e.actor;if(!p.infected)p.survivalMs=m.timeLimitMs;p.infectionTotals||={conversions:0,assists:0,damage:0,supplies:0};for(const key of ['conversions','assists','damage','supplies'])p.infectionTotals[key]+=(p.infectionStats?.[key]||0);p.survivalTotalMs=(p.survivalTotalMs||0)+(p.survivalMs||0);this.save(e);}
   this.room.matchDirty=true;this.room.finishMatch(meta,winner,winner==='blue'?'time':'infected',now);
  }
- atSupply(p){return (this.room.infectionPickups||[]).some(s=>distance(p,s)<=R.supplyRadius&&Math.abs(p.y-s.y)<1.5&&this.room.world.serverCollision.actorHasLineOfSight(p,s));}
- purchase(e,item,now){
+ shop(e,open,now){
+  const p=e.actor,m=this.match;if(m.status!=='active'||m.infectionPhase!=='active'||now>=m.infectionPhaseEndsAt||!p.infected||p.hp>0||!p.infectionPending)return false;
+  p.infectionShopping=!!open;this.save(e);if(!open)this.spawn(e,now);return true;
+ }
+ atSupply(p,now=Date.now()){return (this.room.infectionPickups||[]).some(s=>s.expiresAt>now&&distance(p,s)<=R.supplyRadius&&Math.abs(p.y-s.y)<1.5&&this.room.world.serverCollision.actorHasLineOfSight(p,s));}
+ purchase(e,item,now,publish=true){
   if(this.match.status!=='active'||now>=this.match.infectionPhaseEndsAt)return{accepted:false,reason:'phase_locked'};
-  const p=e.actor,status=infectionPurchaseAvailability(p,item,this.match.infectionPhase,this.atSupply(p));if(!status.accepted)return status;
+  const p=e.actor,status=infectionPurchaseAvailability(p,item,this.match.infectionPhase,this.atSupply(p,now));if(!status.accepted)return status;
   const s=SHOP[item];p.cash=infectionCash(p.cash,-s.cost);p.roundSpent=(p.roundSpent||0)+s.cost;p.infectionGear||={};p.equipment||={};
-  if(s.weapon){p.primaryOwned=true;p.primaryWeapon=p.weapon=s.weapon;this.room.refillInfectionAmmo(p);}
+  if(s.weapon){p.primaryOwned=true;p.primaryWeapon=p.weapon=s.weapon;p.primaryAttachments={};p.reloadAt=0;p.reloadWeapon='';p.weaponReadyAt=0;p.combatAction='ready';p.combatActionKind='';p.combatReadyAt=0;this.room.refillInfectionAmmo(p,s.weapon);}
   if(item==='heal')p.medkits=(p.medkits||0)+1;if(item==='armor')p.armor=Math.min(100,(p.armor||0)+50);if(item==='frag'){p.lethal='frag';p.equipment.frag=(p.equipment.frag||0)+1;}
   if(item==='toxic')p.toxicBombs=(p.toxicBombs||0)+1;if(item==='claws')p.infectionWeapon='claws';
   if(['mutation','shield','screech','carapace'].includes(item))p.infectionGear[item]=true;
   if(item==='mutation'){p.infectionWeapon='mutation';p.mutationAmmo=A.mag;}if(item==='shield')p.shieldHp=A.shieldHp;
   if(item==='carapace'){p.maxHp+=50;if(p.hp>0)p.hp+=50;}
-  this.save(e);this.room.matchDirty=true;return status;
+  if(publish)this.save(e);else if(e.socket)e.socket.serializeAttachment(p);this.room.matchDirty=true;return status;
  }
- botBuy(e,now){const p=e.actor;if(p.botBuyRound===p.infectionRound&&p.hp>0)return;
-  if(p.infected){const n=String(idOf(p)).split('').reduce((s,c)=>s+c.charCodeAt(0),0);for(const item of [n%2?'shield':'mutation','toxic','carapace'])this.purchase(e,item,now);}
-  else for(const item of ['smg','armor'])this.purchase(e,item,now);p.botBuyRound=p.infectionRound;if(e.socket)e.socket.serializeAttachment(p);
+ botBuy(e,now,publish=true){const p=e.actor;if(p.botBuyRound===p.infectionRound&&p.hp>0)return;
+  if(p.infected){const n=String(idOf(p)).split('').reduce((s,c)=>s+c.charCodeAt(0),0);for(const item of [n%2?'shield':'mutation','toxic','carapace'])this.purchase(e,item,now,publish);}
+  else for(const item of ['smg','armor'])this.purchase(e,item,now,publish);p.botBuyRound=p.infectionRound;if(e.socket)e.socket.serializeAttachment(p);
  }
  reward(e,amount){if(!e)return;e.actor.cash=infectionCash(e.actor.cash,amount);this.save(e);}
  damage(e,attackerId,amount,weapon,knockback,now,bulletId='',hitMeta={}){
@@ -147,16 +150,16 @@ export class InfectionDirector {
   if(p.shielding&&p.shieldHp>0&&hostile&&!hitMeta.blast&&!['toxic','frag','sticky'].includes(weapon)){
    const dx=(source?.x??p.x)-p.x,dz=(source?.z??p.z)-p.z,d=Math.hypot(dx,dz)||1;if((-Math.sin(p.yaw)*dx-Math.cos(p.yaw)*dz)/d>.55){const absorbed=Math.min(p.shieldHp,damage);p.shieldHp-=absorbed;damage-=absorbed;blockedDamage=absorbed;if(p.shieldHp<=0){p.shielding=false;this.room.broadcast({t:'infectionShieldBreak',id:idOf(p)});}}
   }
-  const armor=Math.min(p.armor||0,damage*.5);p.armor=Math.max(0,(p.armor||0)-armor);damage-=armor;const dealt=Math.min(p.hp,damage);p.hp=Math.max(0,p.hp-damage);if(dealt>0||armor>0)p.regenAt=now+6000;
+  const armor=Math.min(p.armor||0,damage*.5);p.armor=Math.max(0,(p.armor||0)-armor);damage-=armor;if(!p.infected&&infectedSource&&weapon!=='claw')damage=Math.min(damage,Math.max(0,p.hp-1));const dealt=Math.min(p.hp,damage);p.hp=Math.max(0,p.hp-damage);if(dealt>0||armor>0)p.regenAt=now+6000;
   if(dealt>0||armor>0){p.knockVelocityX=Math.max(-12,Math.min(12,(p.knockVelocityX||0)+(knockback?.x||0)));p.knockVelocityZ=Math.max(-12,Math.min(12,(p.knockVelocityZ||0)+(knockback?.z||0)));if(knockback?.y>0){p.verticalVelocity=Math.max(p.verticalVelocity||0,knockback.y);p.serverGrounded=false;p.lastVerticalAt=now;}}
   if(hostile&&a&&dealt>0){p.contributions||={};const prior=p.contributions[attackerId]||{damage:0,at:now};p.contributions[attackerId]={damage:prior.damage+dealt,at:now};a.infectionStats||={conversions:0,assists:0,damage:0,supplies:0};a.infectionStats.damage+=dealt;
-   a.damageRewards||={};const key=idOf(p),window=a.damageRewards[key],paid=window&&now-window.at<30000?window.paid:0,credit=Math.min(dealt,Math.max(0,150-paid));a.damageRewards[key]={paid:paid+credit,at:paid?window.at:now};a.cash=infectionCash(a.cash,Math.floor(credit));if(attacker.socket)attacker.socket.serializeAttachment(a);
+   a.damageRewards||={};const key=idOf(p),window=a.damageRewards[key],paid=window&&now-window.at<30000?window.paid:0,credit=Math.min(dealt,Math.max(0,150-paid));a.damageRewards[key]={paid:paid+credit,at:paid?window.at:now};a.cash=infectionCash(a.cash,Math.floor(credit));if(attacker.socket){attacker.socket.serializeAttachment(a);send(attacker.socket,{t:'infectionEconomy',id:idOf(a),cash:a.cash});}
   }
-  const dead=p.hp<=0,converted=dead&&!p.infected&&hostile&&infectedSource&&['claw','mutation','toxic'].includes(weapon);
+  const dead=p.hp<=0,converted=dead&&!p.infected&&hostile&&infectedSource&&weapon==='claw';
   if(dead){this.room.noteDeath(p,now);p.deaths=(p.deaths||0)+1;
    if(hostile&&a){a.kills=(a.kills||0)+1;if(converted)a.infectionStats.conversions++;a.killRewards||={};const lastReward=a.killRewards[idOf(p)]||0;if(now-lastReward>=30000){a.cash=infectionCash(a.cash,converted?300:200);a.killRewards[idOf(p)]=now;}this.save(attacker);}
    for(const [id,value]of Object.entries(hostile?p.contributions||{}:{})){if(id===attackerId||now-value.at>12000||value.damage<20)continue;const assist=this.entries().find(v=>idOf(v.actor)===id);if(assist&&assist.actor.team!==p.team){assist.actor.killRewards||={};if(now-(assist.actor.killRewards[idOf(p)]||0)>=30000){assist.actor.killRewards[idOf(p)]=now;assist.actor.infectionStats.assists++;this.reward(assist,150);}}}
-   if(converted)this.convert(e,now);else Object.assign(p,{infectionPending:true,wastedUntil:now+(p.infected&&this.finalMinute?3000:R.respawnMs),spawnAttemptAt:0,shielding:false,spawnProtectedUntil:0,traversal:null,ladder:null,mutationReloadAt:0});p.contributions={};
+   if(converted)this.convert(e,now);else Object.assign(p,{infectionPending:true,infectionShopping:false,wastedUntil:now+(p.infected&&this.finalMinute?3000:R.respawnMs),spawnAttemptAt:0,shielding:false,spawnProtectedUntil:0,traversal:null,ladder:null,mutationReloadAt:0});p.contributions={};
   }
   this.save(e);this.room.broadcast({t:'hit',attacker:attackerId,target:idOf(p),hp:p.hp,armor:p.armor,damage:dealt,weapon,bulletId,headshot:!!hitMeta.headshot,distance:hitMeta.distance||0,source,blockedDamage,blast:!!hitMeta.blast,directImpact:!!hitMeta.directImpact,wasted:dead,respawnAt:p.wastedUntil||0,knockback:knockback||ZERO});
   if(dead){this.room.broadcast(this.room.killEvent(attackerId,idOf(p),weapon,now,{headshot:!!hitMeta.headshot,distance:hitMeta.distance||0}));if(converted)this.room.broadcast({t:'infectionConverted',id:idOf(p),attacker:attackerId,weapon});}
@@ -199,7 +202,7 @@ export class InfectionDirector {
  }
  stepSupply(now){
   if(now>=this.nextSupplyAt){const legal=this.sites();if(legal.length){const index=(this.supplyIndex||0)%legal.length,n=legal[index];this.supplyIndex=index+Math.max(1,Math.floor(legal.length/3));const s={id:`supply-${now}`,kind:'supply',x:n.x,y:n.y,z:n.z,expiresAt:now+R.supplyMs};this.room.infectionPickups=[s];this.room.broadcast({t:'infectionPickups',pickups:[s]});this.notice('SUPPLY POINT ACTIVE','Survivors: collect $250 and ammo · shop nearby');}this.nextSupplyAt=now+R.supplyMs;}
-  for(const e of this.entries()){const p=e.actor,s=this.room.infectionPickups?.[0];if(p.infected||p.hp<=0||!s||!this.atSupply(p)||(p.supplyClaims||[]).includes(s.id))continue;p.supplyClaims=[s.id];p.infectionStats.supplies++;this.room.refillInfectionAmmo(p);this.reward(e,250);}
+  for(const e of this.entries()){const p=e.actor,s=this.room.infectionPickups?.[0];if(p.infected||p.hp<=0||!s||!this.atSupply(p,now)||(p.supplyClaims||[]).includes(s.id))continue;p.supplyClaims=[s.id];p.infectionStats.supplies++;this.room.refillInfectionAmmo(p);this.reward(e,250);}
  }
  botAct(bot,target,now,moveToward,settings,profile=BOT_DIFFICULTIES.normal,dt=1/30){
   if(!this.room.actorLineOfSight(bot,target,now))return;
@@ -208,7 +211,7 @@ export class InfectionDirector {
   const error=aimBotAtTarget(bot,target,now,dt,profile,1.2,target.crouched?.72:1.05);
   bot.yaw=approachAngle(bot.yaw,bot.aimYaw??bot.yaw,profile.aimTurnDegPerSec*Math.PI/180*dt);
   const reacted=now>=(bot.reactionReadyAt||0),aligned=reacted&&error<=botAimToleranceRadians(profile);
-  const wantsGun=!!(bot.infectionGear?.mutation&&d>5&&d<38),wantsShield=!!(bot.infectionGear?.shield&&bot.shieldHp>0&&d>3&&d<30&&!wantsGun);
+  const wantsGun=!!(bot.infectionGear?.mutation&&d>5&&d<38&&target.hp>35),wantsShield=!!(bot.infectionGear?.shield&&bot.shieldHp>0&&d>3&&d<30&&!wantsGun);
   if(bot.shielding&&!wantsShield)this.action(e,'shieldOff',now);
   if(reacted&&bot.infectionWeapon!==(wantsGun?'mutation':'claws'))this.action(e,'swap',now);
   if(reacted&&wantsShield&&!bot.shielding)this.action(e,'shield',now);
