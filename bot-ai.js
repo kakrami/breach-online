@@ -7,8 +7,8 @@ export const BOT_WEAPONS=Object.freeze(['assault','ump','machineGun','shotgun','
 export const BOT_DIFFICULTIES=Object.freeze({
   easy:Object.freeze({moveRun:.48,moveWalk:.62,strafe:.12,range:19,fireScale:1.16,reactionBase:430,reactionJitter:360,aimTurnDegPerSec:115,aimNoiseDeg:2.4,aimToleranceDeg:5.8,burstMin:2,burstMax:4,burstPauseMin:360,burstPauseMax:620,equipmentMinMs:18000,equipmentMaxMs:26000}),
   normal:Object.freeze({moveRun:.76,moveWalk:.90,strafe:.42,range:30,fireScale:1.00,reactionBase:185,reactionJitter:150,aimTurnDegPerSec:225,aimNoiseDeg:1.05,aimToleranceDeg:3.0,burstMin:3,burstMax:6,burstPauseMin:190,burstPauseMax:380,equipmentMinMs:13500,equipmentMaxMs:21000}),
-  hard:Object.freeze({moveRun:.96,moveWalk:1.02,strafe:.72,range:38,fireScale:.93,reactionBase:92,reactionJitter:75,aimTurnDegPerSec:325,aimNoiseDeg:.55,aimToleranceDeg:1.8,burstMin:4,burstMax:8,burstPauseMin:130,burstPauseMax:280,equipmentMinMs:11000,equipmentMaxMs:18000}),
-  elite:Object.freeze({moveRun:1.06,moveWalk:1.10,strafe:.92,range:46,fireScale:.88,reactionBase:58,reactionJitter:42,aimTurnDegPerSec:430,aimNoiseDeg:.30,aimToleranceDeg:1.15,burstMin:5,burstMax:10,burstPauseMin:95,burstPauseMax:220,equipmentMinMs:9000,equipmentMaxMs:15500}),
+  hard:Object.freeze({moveRun:.96,moveWalk:1,strafe:.72,range:38,fireScale:1,reactionBase:92,reactionJitter:75,aimTurnDegPerSec:325,aimNoiseDeg:.55,aimToleranceDeg:1.8,burstMin:4,burstMax:8,burstPauseMin:130,burstPauseMax:280,equipmentMinMs:11000,equipmentMaxMs:18000}),
+  elite:Object.freeze({moveRun:1,moveWalk:1,strafe:.92,range:46,fireScale:1,reactionBase:58,reactionJitter:42,aimTurnDegPerSec:430,aimNoiseDeg:.30,aimToleranceDeg:1.15,burstMin:5,burstMax:10,burstPauseMin:95,burstPauseMax:220,equipmentMinMs:9000,equipmentMaxMs:15500}),
 });
 
 export function safeBotDifficulty(value){const key=String(value||'normal').toLowerCase();return Object.prototype.hasOwnProperty.call(BOT_DIFFICULTIES,key)?key:'normal';}
@@ -60,3 +60,29 @@ export function botBurstPause(profile,random=Math.random){const p=profile||BOT_D
 export function botEquipmentDelay(profile,random=Math.random){const p=profile||BOT_DIFFICULTIES.normal,min=finite(p.equipmentMinMs,13000),max=Math.max(min,finite(p.equipmentMaxMs,21000));return Math.round(min+random()*(max-min));}
 export function botAimNoiseRadians(profile,ads=false){const deg=Math.max(0,finite(profile?.aimNoiseDeg,1))*(ads?.48:1);return deg*Math.PI/180;}
 export function botAimToleranceRadians(profile,ads=false){const deg=Math.max(.1,finite(profile?.aimToleranceDeg,3))*(ads?.82:1);return deg*Math.PI/180;}
+
+export function trackBotTarget(bot,target,now,profile,random=Math.random){
+  const id=String(target.clientId||target.id||'');
+  if(id!==bot.targetId||now-finite(bot.lastSeenAt,0)>250){
+    bot.targetId=id;bot.targetLockUntil=now+700+random()*650;
+    bot.reactionReadyAt=now+botReactionDelay(profile,random);
+    bot.burstShotsLeft=0;bot.burstPauseUntil=0;bot.aimNoiseUntil=0;
+  }
+  bot.lastSeenTargetId=id;bot.lastSeenAt=now;bot.lastKnownX=target.x;bot.lastKnownZ=target.z;
+}
+
+export function aimBotAtTarget(bot,target,now,dt,profile,eyeHeight=1.28,targetEyeHeight=1.05,random=Math.random){
+  if(now>=finite(bot.aimNoiseUntil,0)){
+    const noise=botAimNoiseRadians(profile,bot.ads);
+    bot.aimNoiseYaw=(random()*2-1)*noise;bot.aimNoisePitch=(random()*2-1)*noise*.68;
+    bot.aimNoiseUntil=now+320+random()*360;
+  }
+  const dx=target.x-bot.x,dz=target.z-bot.z,dy=target.y+targetEyeHeight-bot.y-eyeHeight;
+  const yaw=Math.atan2(-dx,-dz),pitch=Math.atan2(dy,Math.hypot(dx,dz));
+  if(now>=finite(bot.reactionReadyAt,0)){
+    const step=profile.aimTurnDegPerSec*Math.PI/180*Math.max(0,dt);
+    bot.aimYaw=approachAngle(bot.aimYaw??bot.yaw,yaw+finite(bot.aimNoiseYaw),step);
+    bot.aimPitch=approachValue(bot.aimPitch,pitch+finite(bot.aimNoisePitch),step*.72);
+  }
+  return Math.hypot(normalizeAngle(yaw-(bot.aimYaw??bot.yaw)),pitch-finite(bot.aimPitch));
+}

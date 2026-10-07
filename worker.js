@@ -1,7 +1,8 @@
 import {resolveWeaponRules} from './game-config.js';
+import {damageSource} from './combat-feedback.js';
 import { bossSpec, bossKindForWave, bossAttackGeometry, bossAttackContains, bossWeakpointActive, BOSS_WEAKPOINT, MOON_SUPPLY } from './moon-boss-rules.js';
 import { actorScale, actorDimensions, roleMovement } from './actor-rules.js';
-import { INFECTION, infectionCash, infectionPublicState } from './infection-rules.js';
+import { INFECTION, INFECTION_ARMS, infectionCash, infectionPublicState } from './infection-rules.js';
 import { InfectionDirector } from './infection-mode.js';
 import { infectionConnectionState } from './infection-inventory.js';
 import { PLAYER_HEIGHT, PLAYER_RADIUS, ARENA_LIMIT, MAX_STEP_HEIGHT } from './world-geometry.js';
@@ -34,7 +35,7 @@ import * as HighlandsWorldCollision from './world-collision.js';
 import * as DepotWorldCollision from './world-collision-depot.js';
 import * as YardWorldCollision from './world-collision-yard.js';
 import * as RigWorldCollision from './world-collision-rig.js';
-import { BOT_WEAPONS, BOT_DIFFICULTIES, safeBotDifficulty, approachAngle as botApproachAngle, approachValue as botApproachValue, botWeaponRole, chooseVisibleBotTarget, botReactionDelay, botBurstSize, botBurstPause, botEquipmentDelay, botAimNoiseRadians, botAimToleranceRadians } from './bot-ai.js';
+import { BOT_WEAPONS, BOT_DIFFICULTIES, safeBotDifficulty, approachAngle as botApproachAngle, approachValue as botApproachValue, botWeaponRole, chooseVisibleBotTarget, trackBotTarget, aimBotAtTarget, botBurstSize, botBurstPause, botEquipmentDelay, botAimNoiseRadians, botAimToleranceRadians } from './bot-ai.js';
 import { CUSTOM_MAP_DEFINITION } from './authored-map-custom.js';
 import { createAuthoredWorldGeometry } from './authored-world-geometry.js';
 import { createAuthoredWorldCollision } from './authored-world-collision.js';
@@ -1659,7 +1660,7 @@ export class GameRoom {
     socket.serializeAttachment(me);
 
     if(matchMode(meta.match)==='infection'){
-      if(payload.t==='infectionHeal'){const accepted=meta.match.infectionPhase==='active'&&!me.infected&&me.hp>0&&me.hp<100&&me.medkits>0;if(accepted){me.medkits--;me.hp=Math.min(100,me.hp+40);socket.serializeAttachment(me);}sendJson(socket,{t:'infectionHeal',accepted,player:publicPlayer(me)});return;}
+      if(payload.t==='infectionHeal'){const accepted=matchAllowsCombat(meta.match)&&now<meta.match.infectionPhaseEndsAt&&!me.infected&&me.hp>0&&me.hp<100&&me.medkits>0;if(accepted){me.medkits--;me.hp=Math.min(100,me.hp+40);socket.serializeAttachment(me);}sendJson(socket,{t:'infectionHeal',accepted,player:publicPlayer(me)});return;}
       if(payload.t==='infectionBuy'){
         const result=this.infection.purchase({actor:me,socket},String(payload.item||''),now);
         sendJson(socket,{t:'infectionBuy',...result,player:publicPlayer(me)});return;
@@ -1809,7 +1810,7 @@ export class GameRoom {
       if(requestedWeapon!==me.weapon){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'weapon_mismatch'});return;}
       const weapon=safeWeapon(me.weapon),attachments=attachmentsForPlayerWeapon(me,weapon),spec=effectiveWeaponRules(settings,me,weapon),resolvedSpec=spec.spec,unlimited=!!me.godMode,hand=weapon==='akimbo1887'?(payload.hand==='left'?'left':'right'):'';
       if(me.hp<=0||now<me.wastedUntil){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'dead'});return;}
-      if(me.traversal){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'traversing'});return;}
+      if(me.traversal||me.ladder){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'traversing'});return;}
       if(me.combatAction!=='ready'||now<finiteNumber(me.combatReadyAt,0)){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'equipment',retryAfterMs:Math.max(0,Math.ceil(finiteNumber(me.combatReadyAt,0)-now))});return;}
       const interruptShotgunReload=!unlimited&&!!me.reloadAt&&weapon==='shotgun'&&me.ammo.shotgun>0;
       if(!unlimited&&me.reloadAt&&!interruptShotgunReload){sendLoadout(socket,me,{action:'fire',accepted:false,reason:'reloading'});return;}
@@ -2337,11 +2338,11 @@ export class GameRoom {
     }
   }
 
-  spawnBullet({ mod='normal', ownerId, ownerTeam, damage, weapon, attachments={}, hand='', lifetimeMs, x, y, z, vx, vy, vz, now, shotAt=now, targetRewindMs=0, consumeAmmo=true, primaryShot=consumeAmmo }) {
+  spawnBullet({ mod='normal', ownerId, ownerTeam, damage, weapon, attachments={}, hand='', infectionSource=false, lifetimeMs, x, y, z, vx, vy, vz, now, shotAt=now, targetRewindMs=0, consumeAmmo=true, primaryShot=consumeAmmo }) {
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
     const safe = safeWeapon(weapon),bornAt=Math.min(now,sanitizeCombatTimestamp(shotAt,now));
     const normalizedAttachments=normalizeWeaponAttachments(safe,attachments),weaponSpec=resolveWeaponSpec(safe,normalizedAttachments),bullet = {
-      id, ownerId, ownerTeam: normalizeTeam(ownerTeam), damage, weapon: safe, attachments:normalizedAttachments, suppressed:normalizedAttachments.muzzle==='suppressor', hand:hand==='left'?'left':hand==='right'?'right':'',
+      id, ownerId, ownerTeam: normalizeTeam(ownerTeam), infectionSource:!!infectionSource, damage, weapon: safe, attachments:normalizedAttachments, suppressed:normalizedAttachments.muzzle==='suppressor', hand:hand==='left'?'left':hand==='right'?'right':'',
       penetrationEnergy:1,targetRewindMs:clamp(finiteNumber(targetRewindMs,0),0,MAX_TARGET_REWIND_MS),
       gravity:modGravity(Math.max(0,finiteNumber(weaponSpec.projectileGravity,0)),{mod}),projectileRadius:Math.max(0,finiteNumber(weaponSpec.projectileRadius,0)),explosionRadius:Math.max(0,finiteNumber(weaponSpec.explosionRadius,0)),explosionDamage:Math.max(0,finiteNumber(weaponSpec.explosionDamage,0)),
       hitTargets: new Set(),traveledDistance: 0,
@@ -2460,7 +2461,6 @@ export class GameRoom {
       .filter(({ target }) => target.clientId && !target.replaced && target.hp > 0 && now >= (target.wastedUntil || 0));
     const difficulty=safeBotDifficulty(meta?.botDifficulty),profile=BOT_DIFFICULTIES[difficulty],mode=matchMode(meta.match),flowNodes=Array.isArray(this.world.geometry.COMBAT_FLOW_NODES)?this.world.geometry.COMBAT_FLOW_NODES:[];
     const eyeY=(actor)=>finiteNumber(actor?.y,this.world.geometry.terrainHeight(actor?.x||0,actor?.z||0))+(actor?.crouched?CROUCH_HEIGHT*.67:1.05);
-    const botEyeY=(bot)=>bot.y+1.28;
     const startReload=(bot,weapon,weaponSettings)=>{if(bot.reloadAt)return;bot.reloadAt=now+weaponSettings.reloadMs;bot.reloadWeapon=weapon;bot.ads=false;bot.sprinting=false;};
 
     for (let i = 0; i < this.bots.length; i += 1) {
@@ -2500,7 +2500,7 @@ export class GameRoom {
       }
 
       const botWeapon=mode==='infection'?safeWeapon(bot.primaryOwned?bot.primaryWeapon:'pistol'):safeBotWeapon(bot.primaryWeapon||bot.weapon);if(mode!=='infection')bot.primaryWeapon=botWeapon;bot.weapon=botWeapon;
-      const weaponSettings=settings.weapons[botWeapon],resolvedWeapon=WEAPON_SPECS[botWeapon]||WEAPON_SPECS.assault;
+      const weaponSettings=effectiveWeaponRules(settings,bot,botWeapon),resolvedWeapon=weaponSettings.spec;
       if(bot.reloadAt&&now>=bot.reloadAt){if(botWeapon==='shotgun'){bot.ammo.shotgun=Math.min(resolvedWeapon.mag,(bot.ammo.shotgun||0)+1);if(bot.ammo.shotgun<resolvedWeapon.mag){bot.reloadAt=now+weaponSettings.reloadMs;bot.reloadWeapon='shotgun';}else{bot.reloadAt=0;bot.reloadWeapon='';}}else{bot.ammo[botWeapon]=resolvedWeapon.mag;bot.reloadAt=0;bot.reloadWeapon='';}}
       if(now<finiteNumber(bot.flashUntil,0)){
         bot.ads=false;bot.yaw=normalizeAngle(bot.yaw+dt*(bot.flashSpin||2.2));bot.aimYaw=bot.yaw;
@@ -2573,10 +2573,6 @@ export class GameRoom {
         }
         continue;
       }
-      if(mode==='infection'&&bot.infected){
-        const target=this.infectionActors().filter(e=>!e.actor.infected&&e.actor.hp>0).sort((a,b)=>Math.hypot(a.actor.x-bot.x,a.actor.z-bot.z)-Math.hypot(b.actor.x-bot.x,b.actor.z-bot.z))[0]?.actor;
-        if(target)this.infection.botAct(bot,target,now,moveToward,settings);continue;
-      }
       const targetCandidates=[];
       const consider=(kind,target,socket=null)=>{
         if(!target||target.hp<=0||combatantsAreFriendly(mode,bot.id,bot.team,target.id||target.clientId,target.team)||target.id===bot.id||target.clientId===bot.id)return;
@@ -2598,8 +2594,9 @@ export class GameRoom {
 
       if(!nearest){
         bot.ads=false;
+        if(mode==='infection'&&bot.infected){if(bot.shielding)this.infection.action({actor:bot,socket:null},'shieldOff',now);if(bot.infectionGear?.mutation&&bot.mutationAmmo<INFECTION_ARMS.mag*.42)this.infection.action({actor:bot,socket:null},'reload',now);}
         const memoryActive=bot.lastSeenAt&&now-bot.lastSeenAt<=BOT_TARGET_MEMORY_MS;
-        if(!memoryActive){bot.targetId='';bot.reactionReadyAt=0;bot.burstShotsLeft=0;if((bot.ammo[botWeapon]||0)<resolvedWeapon.mag*.42&&!bot.reloadAt)startReload(bot,botWeapon,weaponSettings);}
+        if(!memoryActive){bot.targetId='';bot.reactionReadyAt=0;bot.burstShotsLeft=0;if(!bot.infected&&(bot.ammo[botWeapon]||0)<resolvedWeapon.mag*.42&&!bot.reloadAt)startReload(bot,botWeapon,weaponSettings);}
         if(!memoryActive&&(now>=finiteNumber(bot.patrolUntil,0)||Math.hypot(bot.patrolX-bot.x,bot.patrolZ-bot.z)<1.2)){
           let picked=false,bestNode=null;
           for(let nodeIndex=0;nodeIndex<flowNodes.length;nodeIndex++){
@@ -2622,9 +2619,9 @@ export class GameRoom {
         continue;
       }
 
-      const target=nearest.target,targetId=nearest.id,d=Math.sqrt(nearest.d2)||.001,role=botWeaponRole(botWeapon,profile),ux=nearest.dx/d,uz=nearest.dz/d;
-      if(targetId!==bot.targetId){bot.targetId=targetId;bot.targetLockUntil=now+700+Math.random()*650;bot.reactionReadyAt=now+botReactionDelay(profile);bot.burstShotsLeft=0;bot.burstPauseUntil=0;bot.aimNoiseUntil=0;}
-      bot.lastSeenTargetId=targetId;bot.lastSeenAt=now;bot.lastKnownX=finiteNumber(target.x,bot.x);bot.lastKnownZ=finiteNumber(target.z,bot.z);
+      const target=nearest.target,d=Math.sqrt(nearest.d2)||.001,role=botWeaponRole(botWeapon,profile),ux=nearest.dx/d,uz=nearest.dz/d;
+      trackBotTarget(bot,target,now,profile);
+      if(mode==='infection'&&bot.infected){this.infection.botAct(bot,target,now,moveToward,settings,profile,dt);continue;}
 
       if(d>role.preferred*1.12){const speed=d>16?settings.movement.runSpeed*profile.moveRun:settings.movement.walkSpeed*profile.moveWalk;moveToward(target.x,target.z,speed,role.preferred);}
       else if(role.retreatBelow&&d<role.retreatBelow){moveToward(bot.x-ux*6,bot.z-uz*6,settings.movement.walkSpeed*profile.moveWalk,.5);}
@@ -2635,35 +2632,31 @@ export class GameRoom {
       }
 
       const wantsAds=now>=finiteNumber(bot.reactionReadyAt,0)&&d>=role.adsMin&&d<=role.engage&&!bot.sprinting&&!bot.reloadAt;bot.ads=!!wantsAds;
-      if(now>=finiteNumber(bot.aimNoiseUntil,0)){
-        const noise=botAimNoiseRadians(profile,bot.ads);bot.aimNoiseYaw=(Math.random()*2-1)*noise;bot.aimNoisePitch=(Math.random()*2-1)*noise*.68;bot.aimNoiseUntil=now+320+Math.random()*360;
-      }
-      const tx=finiteNumber(target.x,0)-bot.x,ty=eyeY(target)-botEyeY(bot),tz=finiteNumber(target.z,0)-bot.z,dist3=Math.hypot(tx,ty,tz)||1,trueYaw=Math.atan2(-tx,-tz),truePitch=Math.asin(clamp(ty/dist3,-1,1)),desiredYaw=normalizeAngle(trueYaw+finiteNumber(bot.aimNoiseYaw,0)),desiredPitch=clamp(truePitch+finiteNumber(bot.aimNoisePitch,0),-1.2,1.2),turnStep=profile.aimTurnDegPerSec*Math.PI/180*dt;
-      if(now>=finiteNumber(bot.reactionReadyAt,0)){bot.aimYaw=botApproachAngle(bot.aimYaw,desiredYaw,turnStep);bot.aimPitch=botApproachValue(bot.aimPitch,desiredPitch,turnStep*.72);}
+      const aimError=aimBotAtTarget(bot,target,now,dt,profile,PLAYER_HEIGHT,eyeY(target)-target.y);
       const bodyTarget=bot.ads?bot.aimYaw:(Number.isFinite(Number(bot.moveFacingYaw))?bot.moveFacingYaw:bot.aimYaw);bot.yaw=botApproachAngle(bot.yaw,bodyTarget,Math.PI*2.8*dt);
 
       const liveAllies=!gameModeSpec(mode).teamBased?[]:[...humans.map(({target})=>target),...this.bots].filter(actor=>actor&&actor!==bot&&actor.hp>0&&normalizeTeam(actor.team)===normalizeTeam(bot.team));
-      if(now>=finiteNumber(bot.nextEquipmentAt,0)&&now>=finiteNumber(bot.reactionReadyAt,0)&&!bot.reloadAt&&now>=finiteNumber(bot.combatRecoverUntil,0)){
+      if(!bot.traversal&&!bot.ladder&&now>=finiteNumber(bot.nextEquipmentAt,0)&&now>=finiteNumber(bot.reactionReadyAt,0)&&!bot.reloadAt&&now>=finiteNumber(bot.combatRecoverUntil,0)){
         let kind='';if((bot.equipment?.[bot.lethal]||0)>0&&d>=9&&d<=23)kind=bot.lethal;else if((bot.equipment?.[bot.tactical]||0)>0&&d>=8&&d<=20)kind=bot.tactical;
         if(kind){
           const explosive=kind==='frag'||kind==='sticky',dangerRadius=explosive?8:5,targetX=kind==='smoke'&&bot.hp<55?(bot.x+target.x)*.5:finiteNumber(target.x,bot.x),targetZ=kind==='smoke'&&bot.hp<55?(bot.z+target.z)*.5:finiteNumber(target.z,bot.z),friendlyNear=liveAllies.some(actor=>Math.hypot(finiteNumber(actor.x)-targetX,finiteNumber(actor.z)-targetZ)<dangerRadius);
-          if(!friendlyNear){const throwYaw=Math.atan2(-(targetX-bot.x),-(targetZ-bot.z)),throwPitch=clamp((d-12)*.006,-.02,.08),throwVelocity=tacticalThrowVelocity(throwYaw,throwPitch,TACTICAL_THROW_SPEED,TACTICAL_THROW_LOFT),id=`b${String(bot.id).replace(/[^a-z0-9]/gi,'').slice(-8)}${Math.floor(now%1e8).toString(36)}`.slice(0,24),g={id,kind,ownerId:bot.id,ownerTeam:normalizeTeam(bot.team),radius:equipmentCollisionRadius(kind),x:bot.x+throwVelocity.fx*.82,y:bot.y+PLAYER_HEIGHT-.22,z:bot.z+throwVelocity.fz*.82,vx:throwVelocity.vx,vy:throwVelocity.vy,vz:throwVelocity.vz,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:kind==='frag'?2300:kind==='smoke'?1300:1650),stuck:false,rolling:false,lastBroadcast:now};this.throwables.set(id,g);bot.equipment[kind]=Math.max(0,(bot.equipment[kind]||0)-1);bot.combatRecoverUntil=now+EQUIPMENT_WEAPON_RECOVER_MS;bot.nextEquipmentAt=now+botEquipmentDelay(profile);bot.ads=false;this.broadcast({t:'throwable',...g,at:now});}
+          if(!friendlyNear){const throwYaw=Math.atan2(-(targetX-bot.x),-(targetZ-bot.z)),throwPitch=clamp((d-12)*.006,-.02,.08),throwVelocity=tacticalThrowVelocity(throwYaw,throwPitch,TACTICAL_THROW_SPEED,TACTICAL_THROW_LOFT),id=`b${String(bot.id).replace(/[^a-z0-9]/gi,'').slice(-8)}${Math.floor(now%1e8).toString(36)}`.slice(0,24),g={id,kind,ownerId:bot.id,ownerTeam:normalizeTeam(bot.team),radius:equipmentCollisionRadius(kind),x:bot.x+throwVelocity.fx*.82,y:bot.y+PLAYER_HEIGHT-.22,z:bot.z+throwVelocity.fz*.82,vx:throwVelocity.vx,vy:throwVelocity.vy,vz:throwVelocity.vz,born:now,lastAt:now,fuseAt:now+(kind==='sticky'?1850:kind==='frag'?2300:kind==='smoke'?1300:1650),stuck:false,rolling:false,lastBroadcast:now};this.throwables.set(id,g);bot.equipment[kind]=Math.max(0,(bot.equipment[kind]||0)-1);bot.spawnProtectedUntil=0;bot.combatRecoverUntil=now+EQUIPMENT_WEAPON_RECOVER_MS;bot.nextEquipmentAt=now+botEquipmentDelay(profile);bot.ads=false;this.broadcast({t:'throwable',...g,at:now});}
           else bot.nextEquipmentAt=now+1200;
         }else bot.nextEquipmentAt=now+1000;
       }
 
-      const aimError=Math.hypot(normalizeAngle(trueYaw-bot.aimYaw),truePitch-bot.aimPitch),tolerance=botAimToleranceRadians(profile,bot.ads),automatic=!!resolvedWeapon.automatic;
+      const tolerance=botAimToleranceRadians(profile,bot.ads),automatic=!!resolvedWeapon.automatic;
       const reloadAllowsFire=!bot.reloadAt||(botWeapon==='shotgun'&&(bot.ammo.shotgun||0)>0);
-      if(d<=role.engage&&reloadAllowsFire&&now>=finiteNumber(bot.reactionReadyAt,0)&&now>=finiteNumber(bot.combatRecoverUntil,0)&&aimError<=tolerance&&(botWeapon!=='sniper'||bot.ads)&&now>=finiteNumber(bot.nextShotAt,0)&&now>=finiteNumber(bot.burstPauseUntil,0)){
+      if(!bot.traversal&&!bot.ladder&&d<=role.engage&&reloadAllowsFire&&now>=finiteNumber(bot.reactionReadyAt,0)&&now>=finiteNumber(bot.combatRecoverUntil,0)&&aimError<=tolerance&&(botWeapon!=='sniper'||bot.ads)&&now>=finiteNumber(bot.nextShotAt,0)&&now>=finiteNumber(bot.burstPauseUntil,0)){
         if((bot.ammo[botWeapon]||0)<=0){startReload(bot,botWeapon,weaponSettings);continue;}if(botWeapon==='shotgun'&&bot.reloadAt){bot.reloadAt=0;bot.reloadWeapon='';}
         if(automatic&&finiteNumber(bot.burstShotsLeft,0)<=0)bot.burstShotsLeft=botBurstSize(profile,d,botWeapon);
-        bot.spawnProtectedUntil=0;bot.nextShotAt=now+Math.max(70,weaponSettings.cooldownMs*profile.fireScale+(automatic?0:Math.random()*55));bot.ammo[botWeapon]-=1;if(bot.ammo[botWeapon]===0)startReload(bot,botWeapon,weaponSettings);
+        bot.spawnProtectedUntil=0;bot.nextShotAt=now+Math.max(70,weaponSettings.cooldownMs*Math.max(1,profile.fireScale)+(automatic?0:Math.random()*55));bot.ammo[botWeapon]-=1;if(bot.ammo[botWeapon]===0)startReload(bot,botWeapon,weaponSettings);
         const elapsedHeat=Math.max(0,now-finiteNumber(bot.fireHeatAt,now)),preShotHeat=weaponHeatAfterDelay(botWeapon,bot.fireHeat,elapsedHeat);bot.fireHeatAt=now;bot.fireHeat=weaponHeatAfterShot(botWeapon,preShotHeat);
         const adsAmount=bot.ads?1:0,weaponSpread=weaponSpreadRadians(botWeapon,bot.moveSpeed,settings.movement.runSpeed,adsAmount,false,false,preShotHeat,false,{}),skillSpread=botAimNoiseRadians(profile,bot.ads)*.18,pellets=Math.max(1,Math.floor(resolvedWeapon.pellets||1)),shotgunPattern=botWeapon==='shotgun'||botWeapon==='semiShotgun',baseYaw=normalizeAngle(bot.aimYaw+(Math.random()-.5)*skillSpread),basePitch=clamp(bot.aimPitch+(Math.random()-.5)*skillSpread*.65,-1.2,1.2),patternRotation=Math.random()*Math.PI*2;
         for(let pellet=0;pellet<pellets;pellet++){
           let shotYaw=baseYaw,shotPitch=basePitch;if(shotgunPattern){const a=shotgunPelletAngles(baseYaw,basePitch,weaponSpread,pellet,pellets,patternRotation);shotYaw=a.yaw;shotPitch=a.pitch;}else if(weaponSpread>0){const a=spreadShotAngles(baseYaw,basePitch,weaponSpread);shotYaw=a.yaw;shotPitch=a.pitch;}
-          const v=shotVector(shotYaw,shotPitch),centerScale=pellet===0?Math.max(1,finiteNumber(resolvedWeapon.centerPelletDamageScale,1)):1;
-          this.spawnBullet({mod:settings.mod,ownerId:bot.id,ownerTeam:normalizeTeam(bot.team),damage:weaponSettings.damage*centerScale,weapon:botWeapon,lifetimeMs:resolvedWeapon.lifetimeMs,x:bot.x+v.x*.55,y:bot.y+1.25,z:bot.z+v.z*.55,vx:v.x*weaponSettings.speed,vy:v.y*weaponSettings.speed,vz:v.z*weaponSettings.speed,now,consumeAmmo:pellet===0});
+          const launch=shotLaunchPose(bot,shotYaw,shotPitch,false,botWeapon,this.world.serverCollision.segmentFirstWorldHitT,resolvedWeapon.projectileRadius),centerScale=pellet===0?Math.max(1,finiteNumber(resolvedWeapon.centerPelletDamageScale,1)):1;
+          this.spawnBullet({mod:settings.mod,ownerId:bot.id,ownerTeam:normalizeTeam(bot.team),damage:weaponSettings.damage*centerScale,weapon:botWeapon,lifetimeMs:resolvedWeapon.lifetimeMs,x:launch.x,y:launch.y,z:launch.z,vx:launch.dx*weaponSettings.speed,vy:launch.dy*weaponSettings.speed,vz:launch.dz*weaponSettings.speed,now,consumeAmmo:pellet===0});
         }
         bot.aimPitch=clamp(bot.aimPitch+finiteNumber(resolvedWeapon.recoilPitch,0)*(.55+Math.random()*.32),-1.2,1.2);bot.aimYaw=normalizeAngle(bot.aimYaw+(Math.random()-.5)*finiteNumber(resolvedWeapon.recoilYaw,0)*1.25);
         if(automatic){bot.burstShotsLeft=Math.max(0,Math.floor(finiteNumber(bot.burstShotsLeft,1))-1);if(bot.burstShotsLeft<=0)bot.burstPauseUntil=now+botBurstPause(profile);}
@@ -2807,9 +2800,9 @@ export class GameRoom {
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced||p.hp<=0)continue;const self=p.clientId===g.ownerId;if(!self&&combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,p.clientId,p.team))continue;
       const dx=p.x-g.x,dz=p.z-g.z,d=Math.hypot(dx,p.y+1-g.y,dz);if(d>radius||!this.world.serverCollision.blastHasLineOfSight(g.x,g.y,g.z,p.x,p.y+1,p.z))continue;
-      let damage=this.blastDamage(maxDamage,d,radius,frag?.20:.18,frag?.30:.32);if(self)damage=Math.round(damage*(frag?.68:.72));const n=Math.hypot(dx,dz)||1,force=.28+.72*Math.sqrt(clamp(damage/maxDamage,0,1));this.damageHuman(socket,p,g.ownerId,damage,weapon,{x:dx/n*5.4*force,z:dz/n*5.4*force,y:1.1+2.4*force},now,g.id,settings,{distance:d,blast:true});
+      let damage=this.blastDamage(maxDamage,d,radius,frag?.20:.18,frag?.30:.32);if(self)damage=Math.round(damage*(frag?.68:.72));const n=Math.hypot(dx,dz)||1,force=.28+.72*Math.sqrt(clamp(damage/maxDamage,0,1));this.damageHuman(socket,p,g.ownerId,damage,weapon,{x:dx/n*5.4*force,z:dz/n*5.4*force,y:1.1+2.4*force},now,g.id,settings,{distance:d,blast:true,source:{x:g.x,y:g.y,z:g.z},sourceTeam:g.ownerTeam,infectionSource:false});
     }
-    for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,b.id,b.team))continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius||!this.world.serverCollision.blastHasLineOfSight(g.x,g.y,g.z,b.x,b.y+1,b.z))continue;const damage=this.blastDamage(maxDamage,d,radius,frag?.20:.18,frag?.30:.32),n=Math.hypot(dx,dz)||1,force=.28+.72*Math.sqrt(clamp(damage/maxDamage,0,1));this.damageBot(b,g.ownerId,damage,weapon,{x:dx/n*5.4*force,z:dz/n*5.4*force,y:1.1+2.4*force},now,g.id,settings,{distance:d,blast:true});}
+    for(const b of this.bots){if(b.hp<=0||b.id===g.ownerId||combatantsAreFriendly(matchMode(this.metaCache?.match),g.ownerId,g.ownerTeam,b.id,b.team))continue;const dx=b.x-g.x,dz=b.z-g.z,d=Math.hypot(dx,b.y+1-g.y,dz);if(d>radius||!this.world.serverCollision.blastHasLineOfSight(g.x,g.y,g.z,b.x,b.y+1,b.z))continue;const damage=this.blastDamage(maxDamage,d,radius,frag?.20:.18,frag?.30:.32),n=Math.hypot(dx,dz)||1,force=.28+.72*Math.sqrt(clamp(damage/maxDamage,0,1));this.damageBot(b,g.ownerId,damage,weapon,{x:dx/n*5.4*force,z:dz/n*5.4*force,y:1.1+2.4*force},now,g.id,settings,{distance:d,blast:true,source:{x:g.x,y:g.y,z:g.z},sourceTeam:g.ownerTeam,infectionSource:false});}
     this.noteExplosion({x:g.x,z:g.z,team:g.ownerTeam,id:g.id,kind:weapon},now);
     this.broadcast({t:'explosion',id:g.id,x:g.x,y:g.y,z:g.z,kind:weapon,radius,at:now});
   }
@@ -2817,7 +2810,7 @@ export class GameRoom {
 
   explodeProjectile(bullet,now,settings){
     const radius=Math.max(.1,finiteNumber(bullet.explosionRadius,0)),maxDamage=Math.max(1,finiteNumber(bullet.explosionDamage,0));if(radius<=.1)return;
-    const apply=(target,socket=null,isBot=false)=>{if(!target||target.hp<=0)return;const targetId=target.clientId||target.id,self=targetId===bullet.ownerId;if(!self&&combatantsAreFriendly(matchMode(this.metaCache?.match),bullet.ownerId,bullet.ownerTeam,targetId,target.team))return;const tx=target.x,ty=target.y+1,tz=target.z,dx=tx-bullet.x,dy=ty-bullet.y,dz=tz-bullet.z,d=Math.hypot(dx,dy,dz);if(d>radius||!this.world.serverCollision.blastHasLineOfSight(bullet.x,bullet.y,bullet.z,tx,ty,tz))return;let damage=this.blastDamage(maxDamage,d,radius,bullet.weapon==='rpg'?.22:.20,bullet.weapon==='rpg'?.34:.30);if(self)damage=Math.round(damage*.65);const horizontal=Math.hypot(dx,dz)||1,force=.28+.72*Math.sqrt(clamp(damage/maxDamage,0,1)),knockback={x:dx/horizontal*6.2*force,z:dz/horizontal*6.2*force,y:1.15+2.65*force};if(isBot)this.damageBot(target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d,blast:true});else this.damageHuman(socket,target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d,blast:true});};
+    const apply=(target,socket=null,isBot=false)=>{if(!target||target.hp<=0)return;const targetId=target.clientId||target.id,self=targetId===bullet.ownerId;if(!self&&combatantsAreFriendly(matchMode(this.metaCache?.match),bullet.ownerId,bullet.ownerTeam,targetId,target.team))return;const tx=target.x,ty=target.y+1,tz=target.z,dx=tx-bullet.x,dy=ty-bullet.y,dz=tz-bullet.z,d=Math.hypot(dx,dy,dz);if(d>radius||!this.world.serverCollision.blastHasLineOfSight(bullet.x,bullet.y,bullet.z,tx,ty,tz))return;let damage=this.blastDamage(maxDamage,d,radius,bullet.weapon==='rpg'?.22:.20,bullet.weapon==='rpg'?.34:.30);if(self)damage=Math.round(damage*.65);const horizontal=Math.hypot(dx,dz)||1,force=.28+.72*Math.sqrt(clamp(damage/maxDamage,0,1)),knockback={x:dx/horizontal*6.2*force,z:dz/horizontal*6.2*force,y:1.15+2.65*force};if(isBot)this.damageBot(target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d,blast:true,source:{x:bullet.x,y:bullet.y,z:bullet.z},sourceTeam:bullet.ownerTeam,infectionSource:bullet.infectionSource});else this.damageHuman(socket,target,bullet.ownerId,damage,bullet.weapon,knockback,now,bullet.id,settings,{distance:d,blast:true,source:{x:bullet.x,y:bullet.y,z:bullet.z},sourceTeam:bullet.ownerTeam,infectionSource:bullet.infectionSource});};
     for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;apply(p,socket,false);}for(const bot of this.bots)apply(bot,null,true);
     this.noteExplosion({x:bullet.x,z:bullet.z,team:bullet.ownerTeam,id:bullet.id,kind:bullet.weapon},now);
     this.broadcast({t:'explosion',id:bullet.id,x:bullet.x,y:bullet.y,z:bullet.z,kind:bullet.weapon,radius,at:now});
@@ -2913,15 +2906,18 @@ export class GameRoom {
             // admin Damage control meaningful without turning splash into a
             // client-side special case.
             const horizontal=Math.hypot(bullet.vx,bullet.vz)||1,directDamage=Math.max(0,finiteNumber(bullet.damage,0));
-            if(directDamage>0){const knockback={x:bullet.vx/horizontal*2.2,z:bullet.vz/horizontal*2.2,y:1.4};if(nearest.kind==='human')this.damageHuman(nearest.socket,target,bullet.ownerId,directDamage,bullet.weapon,knockback,now,bullet.id,settings,{distance:bullet.traveledDistance,directImpact:true});else this.damageBot(target,bullet.ownerId,directDamage,bullet.weapon,knockback,now,bullet.id,settings,{distance:bullet.traveledDistance,directImpact:true});}
+            if(directDamage>0){const knockback={x:bullet.vx/horizontal*2.2,z:bullet.vz/horizontal*2.2,y:1.4};if(nearest.kind==='human')this.damageHuman(nearest.socket,target,bullet.ownerId,directDamage,bullet.weapon,knockback,now,bullet.id,settings,{distance:bullet.traveledDistance,directImpact:true,source:{x:previousX,y:previousY,z:previousZ},sourceTeam:bullet.ownerTeam,infectionSource:bullet.infectionSource});else this.damageBot(target,bullet.ownerId,directDamage,bullet.weapon,knockback,now,bullet.id,settings,{distance:bullet.traveledDistance,directImpact:true,source:{x:previousX,y:previousY,z:previousZ},sourceTeam:bullet.ownerTeam,infectionSource:bullet.infectionSource});}
             this.explodeProjectile(bullet,now,settings);this.endBullet(id,'hit');ended=true;break;
           }
           bullet.hitTargets.add(targetId);
           const horizontal = Math.hypot(bullet.vx, bullet.vz) || 1,energy=clamp(finiteNumber(bullet.penetrationEnergy,1),0,1),hitZone=String(nearest.hit.zone||'upper');
           const weakpoint=hitZone==='weakpoint',zoneScale=weaponZoneDamageScale(bullet.weapon,weakpoint?'upper':hitZone)*(weakpoint?BOSS_WEAKPOINT.damageScale:1),baseDamage=Math.max(0,finiteNumber(bullet.damage,0))*energy*zoneScale,headshot=hitZone === 'head',hitDamage=weaponDamageAtDistance(bullet.weapon,baseDamage,bullet.traveledDistance,headshot,bullet.attachments);
           const knockback={x:bullet.vx/horizontal*2.4*energy,z:bullet.vz/horizontal*2.4*energy,y:(headshot?1.45:1.1)*Math.max(.35,energy)};
-          const damageApplied=nearest.kind==='human'?this.damageHuman(nearest.socket,target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,weakpoint,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy}):this.damageBot(target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,weakpoint,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy});
+          const shieldBefore=target.shieldHp||0;
+          const damageApplied=nearest.kind==='human'?this.damageHuman(nearest.socket,target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,weakpoint,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy,source:{x:previousX,y:previousY,z:previousZ},sourceTeam:bullet.ownerTeam,infectionSource:bullet.infectionSource}):this.damageBot(target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,weakpoint,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy,source:{x:previousX,y:previousY,z:previousZ},sourceTeam:bullet.ownerTeam,infectionSource:bullet.infectionSource});
           if(damageApplied)this.broadcast({t:'bulletImpact',id:bullet.id,ownerId:bullet.ownerId,targetId,weapon:bullet.weapon,kind:'player',headshot,x:bullet.x,y:bullet.y,z:bullet.z});
+
+          if((target.shieldHp||0)<shieldBefore){this.endBullet(id,'shield');ended=true;break;}
 
           // Every firearm uses the same player-penetration model. Energy loss is
           // determined by the weapon, never by the victim's remaining HP. World
@@ -3106,7 +3102,11 @@ export class GameRoom {
 
   damageHuman(socket, target, attackerId, damage, weapon, knockback, now, bulletId = "", settings = DEFAULT_WORLD_SETTINGS, hitMeta = {}) {
     if(matchMode(this.metaCache?.match)==='infection')return this.infection.damage({actor:target,socket},attackerId,damage,weapon,knockback,now,bulletId,hitMeta);
-    if(target.hp<=0)return false;
+    const match=this.metaCache?.match;
+    if(!matchAllowsCombat(match)||(match.endsAt&&now>=match.endsAt)||target.hp<=0)return false;
+    const attacker=this.findActorState(attackerId),sourceTeam=hitMeta.sourceTeam||attacker?.team;
+    if(sourceTeam&&combatantsAreFriendly(matchMode(match),attackerId,sourceTeam,target.clientId,target.team))return false;
+    damage=Math.max(0,Number(damage)||0);if(!damage)return false;
     if(attackerId!==target.clientId&&now<finiteNumber(target.spawnProtectedUntil,0))return false;
     if (target.godMode) return false;
     target.hp = Math.max(0, target.hp - damage);
@@ -3143,7 +3143,7 @@ export class GameRoom {
     const distance = Math.max(0, finiteNumber(hitMeta.distance, 0));
     socket.serializeAttachment(target);
     this.broadcast({
-      t: "hit", attacker: attackerId, target: target.clientId, hp: target.hp, damage, weapon, bulletId, headshot, weakpoint:!!hitMeta.weakpoint, distance, blast:!!hitMeta.blast, directImpact:!!hitMeta.directImpact,
+      t: "hit", attacker: attackerId, target: target.clientId, hp: target.hp, damage, weapon, bulletId, headshot, weakpoint:!!hitMeta.weakpoint, distance, source:damageSource(target,this.findActorState(attackerId),knockback,hitMeta), blast:!!hitMeta.blast, directImpact:!!hitMeta.directImpact,
       wasted, respawnAt: target.wastedUntil || 0,
       knockback: wasted ? { x: knockback.x * 1.35, z: knockback.z * 1.35, y: Math.max(3.8, knockback.y) } : knockback,
     });
@@ -3156,7 +3156,11 @@ export class GameRoom {
 
   damageBot(bot, attackerId, damage, weapon, knockback, now, bulletId = "", settings = DEFAULT_WORLD_SETTINGS, hitMeta = {}) {
     if(matchMode(this.metaCache?.match)==='infection')return this.infection.damage({actor:bot,socket:null},attackerId,damage,weapon,knockback,now,bulletId,hitMeta);
-    if(bot.hp<=0)return false;
+    const match=this.metaCache?.match;
+    if(!matchAllowsCombat(match)||(match.endsAt&&now>=match.endsAt)||bot.hp<=0)return false;
+    const attacker=this.findActorState(attackerId),sourceTeam=hitMeta.sourceTeam||attacker?.team;
+    if(sourceTeam&&combatantsAreFriendly(matchMode(match),attackerId,sourceTeam,bot.id,bot.team))return false;
+    damage=Math.max(0,Number(damage)||0);if(!damage)return false;
     if(attackerId!==bot.id&&now<finiteNumber(bot.spawnProtectedUntil,0))return false;
     bot.hp = Math.max(0, bot.hp - damage);
     bot.regenAt = now + settings.combat.regenDelayMs;
@@ -3182,7 +3186,7 @@ export class GameRoom {
     const distance = Math.max(0, finiteNumber(hitMeta.distance, 0));
     this.broadcast({
       t: "hit", attacker: attackerId, target: bot.id, hp: bot.hp,
-    ...infectionPublicState(bot),cash:infectionCash(bot.cash),armor:bot.armor||0,primaryOwned:bot.primaryOwned!==false,medkits:bot.medkits||0, damage, weapon, bulletId, headshot, weakpoint:!!hitMeta.weakpoint, distance,
+    ...infectionPublicState(bot),cash:infectionCash(bot.cash),armor:bot.armor||0,primaryOwned:bot.primaryOwned!==false,medkits:bot.medkits||0, damage, weapon, bulletId, headshot, weakpoint:!!hitMeta.weakpoint, distance, source:damageSource(bot,this.findActorState(attackerId),knockback,hitMeta),blast:!!hitMeta.blast,directImpact:!!hitMeta.directImpact,
       wasted, respawnAt: bot.wastedUntil || 0, knockback,
     });
     if (wasted) {

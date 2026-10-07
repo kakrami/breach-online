@@ -1,5 +1,5 @@
 // One authoritative contract for mode timing, role stores and equipment limits.
-export const INFECTION = Object.freeze({buyMs:20000,roundMs:360000,rounds:3,breakMs:7000,respawnMs:4000,spawnRetryMs:500,spawnProtectionMs:900,speed:1.2,reach:2.4,clawMs:650,clawDamage:40,startCash:2000,cashCap:16000,minSpawnDistance:24,spawnSightDistance:10000,supplyMs:45000,supplyRadius:3.5});
+export const INFECTION = Object.freeze({buyMs:20000,roundMs:360000,rounds:1,respawnMs:4000,spawnRetryMs:500,spawnProtectionMs:900,speed:1.2,reach:2.4,clawMs:650,clawDamage:40,startCash:2000,cashCap:16000,minSpawnDistance:24,spawnSightDistance:10000,supplyMs:45000,supplyRadius:3.5});
 export const INFECTION_ARMS = Object.freeze({mag:24,shotMs:130,damage:14,velocity:110,reloadMs:2400,heatPerShot:.095,coolPerSecond:.25,overheatMs:1800,shieldHp:400,shieldSlow:.58,bombRadius:5,bombSeconds:6,bombDps:12,bombCooldownMs:8000});
 export const INFECTION_SHOP = Object.freeze({
  heal:{cost:300,label:'MEDKIT',role:'survivor',detail:'Restore 40 health · carry 2',art:'medkit'},
@@ -13,7 +13,7 @@ export const INFECTION_SHOP = Object.freeze({
  mutation:{cost:1800,label:'MUTATION GUN',role:'infected',detail:'24 shots · overheats · slower movement',art:'mutation'},
  shield:{cost:1400,label:'HEAVY SHIELD',role:'infected',detail:'400 durability · sides exposed',art:'shield'},
  screech:{cost:900,label:'SCREECH',role:'infected',detail:'Brief nearby reveal · 18s cooldown',art:'screech'},
- carapace:{cost:700,label:'CARAPACE',role:'infected',detail:'+50 max health · once per round',art:'carapace'}
+ carapace:{cost:700,label:'CARAPACE',role:'infected',detail:'+50 max health · once per match',art:'carapace'}
 });
 export function infectionShopItems(infected){return Object.entries(INFECTION_SHOP).filter(([,s])=>s.role===(infected?'infected':'survivor'));}
 export function infectionCash(value,amount=0){return Math.min(INFECTION.cashCap,Math.max(0,Math.floor(Number(value)||0)+amount));}
