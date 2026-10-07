@@ -1,6 +1,6 @@
 import { supportProfile as canonicalSupportProfile, supportWeight } from './terrain-support.js';
 import { roadSegments } from './road-path.js';
-import { resolveAsset } from './object-catalog.js?v=2.13.0';
+import { resolveAsset } from './object-catalog.js?v=2.14.1';
 const finite=(v,f=0)=>Number.isFinite(Number(v))?Number(v):f;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const clampNumber=(v,a,b,f)=>clamp(finite(v,f),a,b);
@@ -158,7 +158,7 @@ export function createAuthoredWorldGeometry(def={}){
 
   // Standalone ladder anchors. Ladders are non-solid interaction volumes; the wall/roof
   // remains authoritative collision, while ladder mount/climb/dismount is validated separately.
-  const LADDERS = Object.freeze(sanitizeLadders(def?.ladders).map(l=>Object.freeze(l)));
+  const LADDER_ANCHORS = sanitizeLadders(def?.ladders);
   
   function terrainMinAround(x,z,r){
     let min=terrainHeight(x,z);
@@ -492,5 +492,11 @@ export function createAuthoredWorldGeometry(def={}){
     }
     return{y:resolved,hit};
   }
+  // Resolve ladder ends from the compiled surfaces used by rendering and movement.
+  const LADDERS=Object.freeze(LADDER_ANCHORS.map(l=>{
+    const bottomY=worldSupportHeight(l.x+l.nx*(PLAYER_RADIUS+.34),l.z+l.nz*(PLAYER_RADIUS+.34),l.bottomY+MAX_STEP_HEIGHT,false,PLAYER_RADIUS);
+    const topY=worldSupportHeight(l.x-l.nx*(PLAYER_RADIUS+.32),l.z-l.nz*(PLAYER_RADIUS+.32),l.topY,false,PLAYER_RADIUS);
+    return Object.freeze({...l,bottomY,topY});
+  }).filter(l=>l.topY>l.bottomY+.5));
   return {ELEVATION_GEOMETRY,PLAYER_HEIGHT,PLAYER_RADIUS,ARENA_LIMIT,MAX_STEP_HEIGHT,CROUCH_WINDOW_STEP_HEIGHT,ROADS,STATIC_BOXES,STATIC_GEOMETRY,STATIC_PARTS,STATIC_PROJECTILE_COLLIDERS,BUILDINGS,AUTHORED_HEIGHTFIELD,AUTHORED_MATERIAL_SURFACE,AUTHORED_ENVIRONMENT,groundMaterialCode,TERRAIN_MODIFIERS,ELEVATION_OBJECTS,PYRAMIDS,PYRAMID_PLAYER_COLLIDERS,NATURAL_OBSTACLES,COMBAT_FLOW_NODES,rawTerrainHeight,TERRAIN_SIZE,TERRAIN_SEGMENTS,terrainVertexHeight,terrainHeight,LADDERS,terrainMinAround,naturalGroundBase,buildingWallOpenings,splitWall,buildingPlan,makeBuildingGeometry,makeAllBuildingGeometry,BUILDING_GEOMETRY,BUILDING_SUPPORTS,BUILDING_HORIZONTAL_SOLIDS,BUILDING_PLAYER_RAMPS,BUILDING_PARTS,BUILDING_WINDOW_PORTALS,STATIC_SUPPORTS,STATIC_PLAYER_COLLIDERS,NATURAL_PLAYER_COLLIDERS,NATURAL_SUPPORTS,BUILDING_PLAYER_COLLIDERS,WORLD_PLAYER_COLLIDERS,worldSupportHeight,worldStepUpHeight,resolveCeilingCollision,MINIMAP_LIMIT};
 }
