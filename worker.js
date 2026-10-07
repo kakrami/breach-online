@@ -1,4 +1,3 @@
-import {resolveWeaponRules} from './game-config.js';
 import { bossSpec, bossKindForWave, bossAttackGeometry, bossAttackContains, bossWeakpointActive, BOSS_WEAKPOINT, MOON_SUPPLY } from './moon-boss-rules.js';
 import { actorScale, actorDimensions, roleMovement } from './actor-rules.js';
 import { INFECTION, infectionCash, infectionPublicState } from './infection-rules.js';
@@ -296,7 +295,7 @@ function safeTactical(value){return normalizeTactical(value);}
 function safeLethal(value){return normalizeLethal(value);}
 function normalizeLoadout(value,fallback={primaryWeapon:'assault',secondaryWeapon:'pistol',primaryAttachments:{},secondaryAttachments:{},tactical:'flash',lethal:'sticky'}){return normalizeLoadoutDefinition(value,fallback);}
 function attachmentsForPlayerWeapon(player,weapon){const safe=safeWeapon(weapon);return safe===safePrimaryWeapon(player?.primaryWeapon)?normalizeWeaponAttachments(safe,player?.primaryAttachments):safe===safeSecondaryWeapon(player?.secondaryWeapon)?normalizeWeaponAttachments(safe,player?.secondaryAttachments):normalizeWeaponAttachments(safe,{});}
-function effectiveWeaponRules(settings,player,weapon){const safe=safeWeapon(weapon);return resolveWeaponRules(settings,safe,attachmentsForPlayerWeapon(player,safe));}
+function effectiveWeaponRules(settings,player,weapon){const safe=safeWeapon(weapon),base=WEAPON_SPECS[safe],resolved=resolveWeaponSpec(safe,attachmentsForPlayerWeapon(player,safe)),rules=settings?.weapons?.[safe]||DEFAULT_WORLD_SETTINGS.weapons[safe];return{...rules,spec:resolved,damage:finiteNumber(rules.damage,base.damage)*(resolved.damage/base.damage),speed:finiteNumber(rules.speed,base.bulletSpeed)*(resolved.bulletSpeed/base.bulletSpeed),reloadMs:finiteNumber(rules.reloadMs,base.reloadMs)*(resolved.reloadMs/base.reloadMs),cooldownMs:finiteNumber(rules.cooldownMs,base.cooldownMs)*(resolved.cooldownMs/base.cooldownMs)};}
 function freshAmmo(player=null){return Object.fromEntries(WEAPON_ORDER.map(name=>[name,resolveWeaponSpec(name,player?attachmentsForPlayerWeapon(player,name):{}).mag]));}
 function normalizeFireReady(value){const v=value&&typeof value==='object'?value:{},out=Object.fromEntries(WEAPON_ORDER.map(name=>[name,Math.max(0,finiteNumber(v[name],0))]));out.akimbo1887Left=Math.max(0,finiteNumber(v.akimbo1887Left,0));out.akimbo1887Right=Math.max(0,finiteNumber(v.akimbo1887Right,0));return out;}
 function normalizeAmmo(value,player=null){const v=value&&typeof value==="object"?value:{};return Object.fromEntries(WEAPON_ORDER.map(name=>{const mag=resolveWeaponSpec(name,player?attachmentsForPlayerWeapon(player,name):{}).mag;return[name,clamp(Math.floor(finiteNumber(v[name],mag)),0,mag)]}));}
