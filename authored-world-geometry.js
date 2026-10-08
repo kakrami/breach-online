@@ -1,6 +1,6 @@
 import { supportProfile as canonicalSupportProfile, supportWeight } from './terrain-support.js';
 import { roadSegments } from './road-path.js';
-import { resolveAsset } from './object-catalog.js?v=2.15.0';
+import { resolveAsset } from './object-catalog.js?v=2.16.0';
 const finite=(v,f=0)=>Number.isFinite(Number(v))?Number(v):f;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const clampNumber=(v,a,b,f)=>clamp(finite(v,f),a,b);

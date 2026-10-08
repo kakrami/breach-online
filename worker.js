@@ -488,7 +488,7 @@ function makeBot(world,team, teamIndex, mode='tdm', spawnIndex=teamIndex, spawnO
   const label=teamLabel(team),tactical=roleIndex%3===0?'smoke':'flash',lethal=roleIndex%2===0?'frag':'sticky';
   return {
     id: `bot-${team}-${teamIndex + 1}`,
-    name: ffa?`Bot ${spawnIndex + 1}`:`${label} Bot ${teamIndex + 1}`,
+    name: ffa||mode==='infection'?`Bot ${spawnIndex + 1}`:`${label} Bot ${teamIndex + 1}`,
     team,
     ...spawn,
     yaw: finiteNumber(spawn.yaw,0),
@@ -2008,9 +2008,8 @@ export class GameRoom {
     }
 
     if (payload.t === "adminSettings") {
-      if (matchAllowsLobbyEdits(meta.match)) return;
       if (!isRoomAdmin(meta, me.clientId)) {
-        sendJson(socket,{t:"notice",tone:"error",text:"ADMIN REQUIRED"});
+        sendJson(socket,{t:"settings",accepted:false,reason:"HOST ACCESS REQUIRED",rev:payload.rev||0,by:me.clientId,settings:normalizeWorldSettings(meta.settings),custom:this.isCustomMatch(meta)});
         return;
       }
       const section = payload.section === 'advanced' ? 'advanced' : 'gameplay';
@@ -2022,7 +2021,7 @@ export class GameRoom {
       const nextSettings = normalizeWorldSettings({...merged,mod:matchMode(meta.match)==='moon'?'moon':'normal'});
       meta.settings = nextSettings;
       await this.putMeta(meta);
-      this.broadcast({ t: "settings", settings: nextSettings, section, by: me.clientId, custom:this.isCustomMatch(meta) });
+      this.broadcast({ t: "settings", settings: nextSettings, accepted:true, rev:payload.rev||0, section, by: me.clientId, custom:this.isCustomMatch(meta) });
       await this.updateDirectory(this.liveSockets().length, meta);
       return;
     }
