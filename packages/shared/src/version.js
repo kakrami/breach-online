@@ -1,3 +1,3 @@
-export const BREACH_VERSION = "2.18.0";
-export const BUILD_LABEL = "battle-rifle";
-export const PROTOCOL_VERSION = 112;
+export const BREACH_VERSION = "2.19.0";
+export const BUILD_LABEL = "arsenal";
+export const PROTOCOL_VERSION = 113;

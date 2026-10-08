@@ -1,3 +1,4 @@
+import {WEAPON_SPECS} from './game-config.js';
 // Shared Infection contract: identical authority and presentation rules.
 export const INFECTION = Object.freeze({buyMs:20000,roundMs:360000,rounds:1,respawnMs:4000,spawnRetryMs:500,spawnProtectionMs:1200,reach:1.65,clawMs:1000,clawDamage:100,startCash:8,cashCap:60,minSpawnDistance:24,spawnSightDistance:10000,damagePerPack:500,motherRatio:8,conversionGraceMs:2200,armorRecoveryMs:7000,knockbackCap:4.2,knockbackWindowMs:350,supplyIntervalMs:95000,supplyLifetimeMs:55000,barricadeHp:420,barricadeLimit:3});
 export const INFECTION_ARMS = Object.freeze({bombRadius:4,bombCooldownMs:8000,grenadeFuseMs:1500,fireSeconds:6,fireDps:45,frostMs:1800,frostRecoveryMs:8000,carapaceMs:2800,carapaceCooldownMs:22000,purgeMs:2500});
@@ -14,13 +15,13 @@ export function infectionStatusActive(actor,key,now=Date.now()){return Number(ac
 export function infectionInitialCount(count){return Math.max(1,Math.min(count-1,Math.ceil(count/INFECTION.motherRatio)));}
 export function infectionFirstHealth(count){return Math.min(1.8,1.2+Math.max(0,count-2)*.035);}
 export const INFECTION_SHOP = Object.freeze({
- smg:{cost:3,label:'UMP',role:'survivor',tab:'weapons',weapon:'ump',detail:'Free during preparation · close-range defense'},
- assault:{cost:3,label:'ASSAULT RIFLE',role:'survivor',tab:'weapons',weapon:'assault',detail:'Free during preparation · versatile defense'},
- shotgun:{cost:3,label:'SHOTGUN',role:'survivor',tab:'weapons',weapon:'shotgun',detail:'Free during preparation · strong close-range knockback'},
- auto:{cost:3,label:'AUTO SHOTGUN',role:'survivor',tab:'weapons',weapon:'semiShotgun',detail:'Free during preparation · close-range follow-up shots'},
- machine:{cost:3,label:'MACHINE GUN',role:'survivor',tab:'weapons',weapon:'machineGun',detail:'Free during preparation · sustained defensive fire'},
- battleRifle:{cost:3,label:'BATTLE RIFLE',role:'survivor',tab:'weapons',weapon:'battleRifle',detail:'Free during preparation · bolt-action precision'},
- sniper:{cost:3,label:'SNIPER',role:'survivor',tab:'weapons',weapon:'sniper',detail:'Free during preparation · powerful single shots'},
+ smg:{cost:3,label:WEAPON_SPECS.ump.name,role:'survivor',tab:'weapons',weapon:'ump',detail:'Free during preparation · close-range defense'},
+ assault:{cost:3,label:WEAPON_SPECS.assault.name,role:'survivor',tab:'weapons',weapon:'assault',detail:'Free during preparation · versatile defense'},
+ shotgun:{cost:3,label:WEAPON_SPECS.shotgun.name,role:'survivor',tab:'weapons',weapon:'shotgun',detail:'Free during preparation · strong close-range knockback'},
+ auto:{cost:3,label:WEAPON_SPECS.semiShotgun.name,role:'survivor',tab:'weapons',weapon:'semiShotgun',detail:'Free during preparation · close-range follow-up shots'},
+ machine:{cost:3,label:WEAPON_SPECS.machineGun.name,role:'survivor',tab:'weapons',weapon:'machineGun',detail:'Free during preparation · sustained defensive fire'},
+ battleRifle:{cost:3,label:WEAPON_SPECS.battleRifle.name,role:'survivor',tab:'weapons',weapon:'battleRifle',detail:'Free during preparation · bolt-action precision'},
+ sniper:{cost:3,label:WEAPON_SPECS.sniper.name,role:'survivor',tab:'weapons',weapon:'sniper',detail:'Free during preparation · powerful single shots'},
  armor:{cost:6,label:'INFECTION ARMOR',role:'survivor',tab:'gear',detail:'Absorbs 2 claws · replenish out of combat',art:'armor'},
  fire:{cost:3,label:'NAPALM',role:'survivor',tab:'gear',detail:'Burns and slows · carry 2',art:'fire'},
  frost:{cost:4,label:'FROST',role:'survivor',tab:'gear',detail:'Brief freeze · repeated freezes weaken',art:'frost'},
