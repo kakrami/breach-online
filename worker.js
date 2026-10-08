@@ -1218,7 +1218,7 @@ export class GameRoom {
     Object.assign(bot,{bossKind:rules.kind,bossAttackReach:rules.reach,bossAttackWidth:rules.width,bossWindupMs:rules.windupMs});
     const phase=(name,duration)=>{bot.bossPhase=name;bot.bossPhaseStartedAt=now;bot.bossPhaseEndsAt=duration?now+duration:0;bot.telegraphUntil=name==='windup'?now+duration:0;bot.weakpointUntil=name==='recovery'?now+duration:0;this.matchDirty=true;};
     const recover=()=>{phase('recovery',rules.recoveryMs);bot.nextMeleeAt=now+rules.recoveryMs+500;};
-    const hit=(shape)=>{for(const {socket} of humans){const p=socket.deserializeAttachment();if(p.hp<=0||bot.bossHitIds?.includes(p.clientId)||!bossAttackContains(shape,p)||!this.world.serverCollision.actorHasLineOfSight(bot,p))continue;bot.bossHitIds.push(p.clientId);const dx=p.x-bot.x,dz=p.z-bot.z,d=Math.hypot(dx,dz);this.damageHuman(socket,p,bot.id,rules.damage,'zombie',{x:dx/(d||1)*2,z:dz/(d||1)*2,y:0},now,'',settings,{distance:d});}};
+    const hit=(shape)=>{for(const {socket} of humans){const p=socket.deserializeAttachment();if(p.hp<=0||bot.bossHitIds?.includes(p.clientId)||!bossAttackContains(shape,p)||!this.world.serverCollision.actorHasLineOfSight(bot,p))continue;bot.bossHitIds.push(p.clientId);const dx=p.x-bot.x,dz=p.z-bot.z,d=Math.hypot(dx,dz);this.damageHuman(socket,p,bot.id,rules.damage,'zombie',{x:dx/(d||1)*2,z:dz/(d||1)*2,y:0},now,'',settings,{distance:d,source:{x:bot.x,y:bot.y+1,z:bot.z}});}};
     if(bot.bossPhase==='recovery'){if(now<bot.bossPhaseEndsAt)return;phase('chase',0);}
     if(bot.bossPhase==='windup'){
       bot.yaw=bot.aimYaw=bot.bossAttackYaw;
@@ -2349,7 +2349,8 @@ export class GameRoom {
       id, ownerId, ownerTeam: normalizeTeam(ownerTeam), infectionSource:!!infectionSource, damage, weapon: safe, attachments:normalizedAttachments, suppressed:normalizedAttachments.muzzle==='suppressor', hand:hand==='left'?'left':hand==='right'?'right':'',
       penetrationEnergy:1,targetRewindMs:clamp(finiteNumber(targetRewindMs,0),0,MAX_TARGET_REWIND_MS),
       gravity:modGravity(Math.max(0,finiteNumber(weaponSpec.projectileGravity,0)),{mod}),projectileRadius:Math.max(0,finiteNumber(weaponSpec.projectileRadius,0)),explosionRadius:Math.max(0,finiteNumber(weaponSpec.explosionRadius,0)),explosionDamage:Math.max(0,finiteNumber(weaponSpec.explosionDamage,0)),
-      hitTargets: new Set(),traveledDistance: 0,
+      // Preserve the launch origin across travel, penetration and shooter movement.
+      launchSource:Object.freeze({x,y,z}),hitTargets: new Set(),traveledDistance: 0,
       lifetimeMs: lifetimeMs || weaponSpec.lifetimeMs, x, y, z, vx, vy, vz, born: bornAt, lastAt: bornAt, lastBroadcast: now,
       rpgBaseSpeed:safe==='rpg'?Math.max(1,Math.hypot(vx,vy,vz)):0,rpgBaseYaw:safe==='rpg'?Math.atan2(-vx,-vz):0,rpgBasePitch:safe==='rpg'?Math.asin(clamp(vy/Math.max(1,Math.hypot(vx,vy,vz)),-1,1)):0,rpgWanderPhase:safe==='rpg'?Math.random()*Math.PI*2:0,
     };
@@ -2590,7 +2591,7 @@ export class GameRoom {
         if(d>rules.reach*.75||!visible||Math.abs(target.y-bot.y)>1.25)moveToward(target.x,target.z,rules.speed,.65);
         if(d<=rules.reach&&Math.abs(target.y-bot.y)<=1.25&&visible&&now>=finiteNumber(bot.nextMeleeAt,0)){
           bot.nextMeleeAt=now+rules.attackMs;bot.attackAt=now;
-          this.damageHuman(targetEntry.socket,target,bot.id,rules.damage,'zombie',{x:dx/(d||1)*1.4,z:dz/(d||1)*1.4,y:0},now,'',settings,{distance:d});
+          this.damageHuman(targetEntry.socket,target,bot.id,rules.damage,'zombie',{x:dx/(d||1)*1.4,z:dz/(d||1)*1.4,y:0},now,'',settings,{distance:d,source:{x:bot.x,y:bot.y+1,z:bot.z}});
         }
         continue;
       }
@@ -2928,7 +2929,7 @@ export class GameRoom {
             // admin Damage control meaningful without turning splash into a
             // client-side special case.
             const horizontal=Math.hypot(bullet.vx,bullet.vz)||1,directDamage=Math.max(0,finiteNumber(bullet.damage,0));
-            if(directDamage>0){const knockback={x:bullet.vx/horizontal*2.2,z:bullet.vz/horizontal*2.2,y:1.4};if(nearest.kind==='human')this.damageHuman(nearest.socket,target,bullet.ownerId,directDamage,bullet.weapon,knockback,now,bullet.id,settings,{distance:bullet.traveledDistance,directImpact:true,source:{x:previousX,y:previousY,z:previousZ},sourceTeam:bullet.ownerTeam,infectionSource:bullet.infectionSource});else this.damageBot(target,bullet.ownerId,directDamage,bullet.weapon,knockback,now,bullet.id,settings,{distance:bullet.traveledDistance,directImpact:true,source:{x:previousX,y:previousY,z:previousZ},sourceTeam:bullet.ownerTeam,infectionSource:bullet.infectionSource});}
+            if(directDamage>0){const knockback={x:bullet.vx/horizontal*2.2,z:bullet.vz/horizontal*2.2,y:1.4};if(nearest.kind==='human')this.damageHuman(nearest.socket,target,bullet.ownerId,directDamage,bullet.weapon,knockback,now,bullet.id,settings,{distance:bullet.traveledDistance,directImpact:true,source:bullet.launchSource,sourceTeam:bullet.ownerTeam,infectionSource:bullet.infectionSource});else this.damageBot(target,bullet.ownerId,directDamage,bullet.weapon,knockback,now,bullet.id,settings,{distance:bullet.traveledDistance,directImpact:true,source:bullet.launchSource,sourceTeam:bullet.ownerTeam,infectionSource:bullet.infectionSource});}
             this.explodeProjectile(bullet,now,settings);this.endBullet(id,'hit');ended=true;break;
           }
           bullet.hitTargets.add(targetId);
@@ -2936,7 +2937,7 @@ export class GameRoom {
           const weakpoint=hitZone==='weakpoint',zoneScale=weaponZoneDamageScale(bullet.weapon,weakpoint?'upper':hitZone)*(weakpoint?BOSS_WEAKPOINT.damageScale:1),baseDamage=Math.max(0,finiteNumber(bullet.damage,0))*energy*zoneScale,headshot=hitZone === 'head',hitDamage=weaponDamageAtDistance(bullet.weapon,baseDamage,bullet.traveledDistance,headshot,bullet.attachments);
           const knockback={x:bullet.vx/horizontal*2.4*energy,z:bullet.vz/horizontal*2.4*energy,y:(headshot?1.45:1.1)*Math.max(.35,energy)};
           const shieldBefore=target.shieldHp||0;
-          const damageApplied=nearest.kind==='human'?this.damageHuman(nearest.socket,target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,weakpoint,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy,source:{x:previousX,y:previousY,z:previousZ},sourceTeam:bullet.ownerTeam,infectionSource:bullet.infectionSource}):this.damageBot(target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,weakpoint,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy,source:{x:previousX,y:previousY,z:previousZ},sourceTeam:bullet.ownerTeam,infectionSource:bullet.infectionSource});
+          const damageApplied=nearest.kind==='human'?this.damageHuman(nearest.socket,target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,weakpoint,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy,source:bullet.launchSource,sourceTeam:bullet.ownerTeam,infectionSource:bullet.infectionSource}):this.damageBot(target,bullet.ownerId,hitDamage,bullet.weapon,knockback,now,bullet.id,settings,{headshot,weakpoint,hitZone,distance:bullet.traveledDistance,penetrationEnergy:energy,source:bullet.launchSource,sourceTeam:bullet.ownerTeam,infectionSource:bullet.infectionSource});
           if(damageApplied)this.broadcast({t:'bulletImpact',id:bullet.id,ownerId:bullet.ownerId,targetId,weapon:bullet.weapon,kind:'player',headshot,x:bullet.x,y:bullet.y,z:bullet.z});
 
           if((target.shieldHp||0)<shieldBefore){this.endBullet(id,'shield');ended=true;break;}
@@ -3019,7 +3020,7 @@ export class GameRoom {
       const actor=entry.actor,tx=finiteNumber(actor.x,0),ty=finiteNumber(actor.y,0)+1,tz=finiteNumber(actor.z,0),dx=tx-x,dy=ty-y,dz=tz-z,d=Math.hypot(dx,dy,dz);if(d>radius)continue;
       if(lineOfSight&&!this.world.serverCollision.blastHasLineOfSight(x,y,z,tx,ty,tz))continue;
       const damage=this.blastDamage(maxDamage,d,radius,.18,.28),horizontal=Math.hypot(dx,dz)||1,force=.36+.72*Math.sqrt(clamp(damage/maxDamage,0,1)),knockback={x:dx/horizontal*7.2*force,z:dz/horizontal*7.2*force,y:2.0+3.6*force};
-      if(entry.isBot)this.damageBot(actor,ownerId,damage,weapon,knockback,now,'',settings,{distance:d,blast:true});else this.damageHuman(entry.socket,actor,ownerId,damage,weapon,knockback,now,'',settings,{distance:d,blast:true});
+      if(entry.isBot)this.damageBot(actor,ownerId,damage,weapon,knockback,now,'',settings,{distance:d,blast:true,source:{x,y,z}});else this.damageHuman(entry.socket,actor,ownerId,damage,weapon,knockback,now,'',settings,{distance:d,blast:true,source:{x,y,z}});
     }
   }
 
@@ -3031,7 +3032,7 @@ export class GameRoom {
       }
       effect.nextAt=now+520;
     }
-    for(const abduction of effect.abductions){if(abduction.done||now<abduction.killAt)continue;abduction.done=true;const entry=this.mutableCombatant(abduction.targetId);if(!entry||entry.actor.hp<=0)continue;entry.actor.abductedUntil=0;entry.actor.abductedBy='';if(entry.isBot)this.damageBot(entry.actor,effect.ownerId,999,'ufo',{x:0,z:0,y:8.5},now,'',settings,{distance:0});else this.damageHuman(entry.socket,entry.actor,effect.ownerId,999,'ufo',{x:0,z:0,y:8.5},now,'',settings,{distance:0});}
+    for(const abduction of effect.abductions){if(abduction.done||now<abduction.killAt)continue;abduction.done=true;const entry=this.mutableCombatant(abduction.targetId);if(!entry||entry.actor.hp<=0)continue;entry.actor.abductedUntil=0;entry.actor.abductedBy='';if(entry.isBot)this.damageBot(entry.actor,effect.ownerId,999,'ufo',{x:0,z:0,y:8.5},now,'',settings,{distance:0,source:null});else this.damageHuman(entry.socket,entry.actor,effect.ownerId,999,'ufo',{x:0,z:0,y:8.5},now,'',settings,{distance:0,source:null});}
   }
 
   stepLightningKillstreak(effect,now,settings){
@@ -3045,7 +3046,7 @@ export class GameRoom {
     for(const entry of this.killstreakEnemies(effect.ownerId,effect.ownerTeam,now)){
       const actor=entry.actor,boltD=Math.hypot(finiteNumber(actor.x,0)-x,finiteNumber(actor.z,0)-z),structureD=rectDistance2D(actor.x,actor.z,structure),d=Math.min(boltD,structureD);if(d>radius)continue;
       const damage=this.blastDamage(150,d,radius,.24,.36),dx=finiteNumber(actor.x,0)-x,dz=finiteNumber(actor.z,0)-z,horizontal=Math.hypot(dx,dz)||1,force=.34+.68*Math.sqrt(clamp(damage/150,0,1)),knockback={x:dx/horizontal*5.8*force,z:dz/horizontal*5.8*force,y:2.4+3.2*force};
-      if(entry.isBot)this.damageBot(actor,effect.ownerId,damage,'lightning',knockback,now,'',settings,{distance:d,blast:true});else this.damageHuman(entry.socket,actor,effect.ownerId,damage,'lightning',knockback,now,'',settings,{distance:d,blast:true});
+      if(entry.isBot)this.damageBot(actor,effect.ownerId,damage,'lightning',knockback,now,'',settings,{distance:d,blast:true,source:{x,y,z}});else this.damageHuman(entry.socket,actor,effect.ownerId,damage,'lightning',knockback,now,'',settings,{distance:d,blast:true,source:{x,y,z}});
     }
     this.noteExplosion({x,z,team:effect.ownerTeam,id:effect.id,kind:'lightning'},now);effect.strikes++;effect.nextAt=now+650+Math.floor(Math.random()*190);
   }
@@ -3070,7 +3071,7 @@ export class GameRoom {
     if(effect.blasted||now<effect.blastAt)return;effect.blasted=true;
     for(const entry of this.killstreakEnemies(effect.ownerId,effect.ownerTeam,now)){
       const actor=entry.actor,dx=finiteNumber(actor.x,0),dz=finiteNumber(actor.z,0),horizontal=Math.hypot(dx,dz)||1,knockback={x:dx/horizontal*7.5,z:dz/horizontal*7.5,y:7.8};
-      if(entry.isBot)this.damageBot(actor,effect.ownerId,999,'solarnuke',knockback,now,'',settings,{distance:0,blast:true});else this.damageHuman(entry.socket,actor,effect.ownerId,999,'solarnuke',knockback,now,'',settings,{distance:0,blast:true});
+      if(entry.isBot)this.damageBot(actor,effect.ownerId,999,'solarnuke',knockback,now,'',settings,{distance:0,blast:true,source:null});else this.damageHuman(entry.socket,actor,effect.ownerId,999,'solarnuke',knockback,now,'',settings,{distance:0,blast:true,source:null});
     }
     this.broadcast({t:'killstreakFx',phase:'solarBlast',kind:'solarnuke',id:effect.id,ownerId:effect.ownerId,ownerTeam:effect.ownerTeam,at:now});
   }

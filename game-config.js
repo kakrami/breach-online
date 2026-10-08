@@ -1,5 +1,5 @@
-export const APP_VERSION = '2.20.0';
-export const BUILD_ID = '20261008T152743Z';
+export const APP_VERSION = '2.21.0';
+export const BUILD_ID = '20261008T190800Z';
 export const PROTOCOL_VERSION = 113;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;

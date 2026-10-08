@@ -181,7 +181,7 @@ export class InfectionDirector {
  }
  canAttack(p,now){return this.match.status==='active'&&this.match.infectionPhase==='active'&&now<this.match.infectionPhaseEndsAt&&p.hp>0&&now>=(p.infectionReadyAt||0)&&!p.infectionPending&&!p.traversal&&!p.ladder&&now>=(p.frozenUntil||0);}
  claw(e,now){const p=e.actor;if(!p.infected||!this.canAttack(p,now)||now<(p.nextClawAt||0))return false;p.spawnProtectedUntil=0;p.nextClawAt=now+R.clawMs;p.attackAt=now;this.save(e);this.room.broadcast({t:'infectionAttack',id:idOf(p),attackAt:now});
-  for(const v of this.entries().filter(e=>!e.actor.infected&&e.actor.hp>0).sort((a,b)=>distance(a.actor,p)-distance(b.actor,p))){const t=v.actor,d=distance(t,p);if(d>R.reach||Math.abs(t.y-p.y)>1.5||(-Math.sin(p.yaw)*(t.x-p.x)-Math.cos(p.yaw)*(t.z-p.z))/Math.max(.01,d)<.35||!this.room.world.serverCollision.actorHasLineOfSight(p,t))continue;const hit=this.damage(v,idOf(p),R.clawDamage,'claw',ZERO,now,'',{distance:d,sourceTeam:p.team,infectionSource:true});send(e.socket,{t:'infectionClawResult',accepted:true,hit,converted:t.infected});return hit;}
+  for(const v of this.entries().filter(e=>!e.actor.infected&&e.actor.hp>0).sort((a,b)=>distance(a.actor,p)-distance(b.actor,p))){const t=v.actor,d=distance(t,p);if(d>R.reach||Math.abs(t.y-p.y)>1.5||(-Math.sin(p.yaw)*(t.x-p.x)-Math.cos(p.yaw)*(t.z-p.z))/Math.max(.01,d)<.35||!this.room.world.serverCollision.actorHasLineOfSight(p,t))continue;const hit=this.damage(v,idOf(p),R.clawDamage,'claw',ZERO,now,'',{distance:d,source:{x:p.x,y:p.y+1,z:p.z},sourceTeam:p.team,infectionSource:true});send(e.socket,{t:'infectionClawResult',accepted:true,hit,converted:t.infected});return hit;}
   const hit=this.field.strike(p,now);send(e.socket,{t:'infectionClawResult',accepted:true,hit,converted:false});return hit;
  }
  action(e,action,now){if(action==='build')return this.field.build(e,now);if(action==='ping')return this.field.ping(e,now);const p=e.actor,purging=action==='equipment'&&p.infected&&p.infectionSelectedItem==='purge'&&p.hp>0&&!p.infectionPending&&now>=(p.infectionReadyAt||0)&&this.match.status==='active'&&this.match.infectionPhase==='active'&&now<this.match.infectionPhaseEndsAt;if(!purging&&!this.canAttack(p,now))return false;
@@ -201,7 +201,7 @@ export class InfectionDirector {
  stepBurns(now){
   for(const e of this.entries()){const p=e.actor;if(!p.infected||p.hp<=0||!(p.burningUntil>now)||!(p.burnNextTickAt>0)||now<p.burnNextTickAt)continue;
    const ticks=Math.min(12,1+Math.floor((now-p.burnNextTickAt)/500));p.burnNextTickAt+=ticks*500;
-   this.damage(e,p.burnOwnerId,ticks*A.fireDps*.5,'napalm',ZERO,now,'',{sourceTeam:p.burnSourceTeam,blast:false});
+   this.damage(e,p.burnOwnerId,ticks*A.fireDps*.5,'napalm',ZERO,now,'',{source:null,sourceTeam:p.burnSourceTeam,blast:false});
   }
  }
  syncEffects(){this.room.broadcast({t:'infectionEffects',effects:this.effects});}
@@ -212,7 +212,7 @@ export class InfectionDirector {
   }
   if(f.kind!=='projectile'&&f.kind!=='flare'&&now>=f.tickAt&&now<f.expiresAt){f.tickAt=now+500;const owner=this.entries().find(e=>idOf(e.actor)===f.ownerId);if(!owner||owner.actor.team!==f.sourceTeam)continue;
    for(const e of this.entries()){const p=e.actor;if(p.hp<=0||p.team===f.sourceTeam||distance(p,f)>f.radius||Math.abs(p.y-f.y)>3||!this.room.world.serverCollision.blastHasLineOfSight(f.x,f.y+.3,f.z,p.x,p.y+1,p.z)||now<(p.spawnProtectedUntil||0))continue;
-    if(f.kind==='fire'&&p.infected&&now>=(p.statusImmuneUntil||0)){p.burningUntil=now+A.fireSeconds*1000;p.burnOwnerId=f.ownerId;p.burnSourceTeam=f.sourceTeam;p.burnNextTickAt=now+500;this.damage(e,f.ownerId,A.fireDps*.5,'napalm',ZERO,now,'',{sourceTeam:f.sourceTeam,blast:true});}
+    if(f.kind==='fire'&&p.infected&&now>=(p.statusImmuneUntil||0)){p.burningUntil=now+A.fireSeconds*1000;p.burnOwnerId=f.ownerId;p.burnSourceTeam=f.sourceTeam;p.burnNextTickAt=now+500;this.damage(e,f.ownerId,A.fireDps*.5,'napalm',ZERO,now,'',{source:{x:f.x,y:f.y,z:f.z},sourceTeam:f.sourceTeam,blast:true});}
     if(f.kind==='frost'&&p.infected&&now>=(p.statusImmuneUntil||0)){const repeated=now<(p.frostRecoveryUntil||0);p.frozenUntil=Math.max(p.frozenUntil||0,now+(repeated?450:A.frostMs));p.frostRecoveryUntil=now+A.frostRecoveryMs;this.save(e);}
     if(f.kind==='bomb'&&!p.infected&&this.match.infectionChaos&&this.entries().filter(e=>!e.actor.infected).length>1)this.infectHit(e,owner,now,'infectionBomb');
    }
