@@ -1,6 +1,6 @@
 import { supportProfile as canonicalSupportProfile, supportWeight } from './terrain-support.js';
 import { roadSegments } from './road-path.js';
-import { resolveAsset } from './object-catalog.js?v=2.14.1';
+import { resolveAsset } from './object-catalog.js?v=2.15.0';
 const finite=(v,f=0)=>Number.isFinite(Number(v))?Number(v):f;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const clampNumber=(v,a,b,f)=>clamp(finite(v,f),a,b);
@@ -148,6 +148,7 @@ export function createAuthoredWorldGeometry(def={}){
     else if(kind==='brokenWall'){for(let i=0;i<5;i++)addBox('brokenWall',-o.w/2+o.w*(i+.5)/5,0,o.w/5,o.d,base,base+o.h*[1,.78,.45,.62,.88][i],{supportTop:true});}
     else if(kind==='ruins'){addBox('ruinBack',0,-o.d/2+.25,o.w,.5,base,base+o.h);addBox('ruinSide',-o.w/2+.25,0,.5,o.d,base,base+o.h*.65);addBox('ruinFragment',o.w/2-.25,o.d*.2,.5,o.d*.4,base,base+o.h*.4);}
     else if(kind==='doorway'||kind==='windowWall'){const openingW=Math.min(2,o.w*.5),openingH=Math.min(2.4,o.h*.8),sill=kind==='windowWall'?o.h*.32:0,top=Math.min(o.h-.2,sill+openingH),pier=(o.w-openingW)/2;for(const sign of [-1,1])addBox('openingPier',sign*(openingW/2+pier/2),0,pier,o.d,base,base+o.h);addBox('openingHeader',0,0,openingW,o.d,base+top,base+o.h);if(sill)addBox('windowSill',0,0,openingW,o.d,base,base+sill);}
+    else if(kind==='barricade'){for(const x of [-o.w*.44,o.w*.44])addBox('crate',x,0,.15,o.d,base,base+o.h,{supportTop:false});for(const h of [.22,.55,.88])addBox('crate',0,0,o.w,o.d*.55,base+o.h*h-.11,base+o.h*h+.11,{supportTop:false});}
     else if(kind==='barrier')addBox('barrier',0,0,o.w,o.d,base,base+o.h,{supportTop:false});
     else if(kind==='boundary')addBox('boundary',0,0,o.w,o.d,base,base+o.h,{supportTop:false});
     else addBox(kind,0,0,o.w,o.d,base,base+o.h,{supportTop:true});
@@ -498,5 +499,5 @@ export function createAuthoredWorldGeometry(def={}){
     const topY=worldSupportHeight(l.x-l.nx*(PLAYER_RADIUS+.32),l.z-l.nz*(PLAYER_RADIUS+.32),l.topY,false,PLAYER_RADIUS);
     return Object.freeze({...l,bottomY,topY});
   }).filter(l=>l.topY>l.bottomY+.5));
-  return {ELEVATION_GEOMETRY,PLAYER_HEIGHT,PLAYER_RADIUS,ARENA_LIMIT,MAX_STEP_HEIGHT,CROUCH_WINDOW_STEP_HEIGHT,ROADS,STATIC_BOXES,STATIC_GEOMETRY,STATIC_PARTS,STATIC_PROJECTILE_COLLIDERS,BUILDINGS,AUTHORED_HEIGHTFIELD,AUTHORED_MATERIAL_SURFACE,AUTHORED_ENVIRONMENT,groundMaterialCode,TERRAIN_MODIFIERS,ELEVATION_OBJECTS,PYRAMIDS,PYRAMID_PLAYER_COLLIDERS,NATURAL_OBSTACLES,COMBAT_FLOW_NODES,rawTerrainHeight,TERRAIN_SIZE,TERRAIN_SEGMENTS,terrainVertexHeight,terrainHeight,LADDERS,terrainMinAround,naturalGroundBase,buildingWallOpenings,splitWall,buildingPlan,makeBuildingGeometry,makeAllBuildingGeometry,BUILDING_GEOMETRY,BUILDING_SUPPORTS,BUILDING_HORIZONTAL_SOLIDS,BUILDING_PLAYER_RAMPS,BUILDING_PARTS,BUILDING_WINDOW_PORTALS,STATIC_SUPPORTS,STATIC_PLAYER_COLLIDERS,NATURAL_PLAYER_COLLIDERS,NATURAL_SUPPORTS,BUILDING_PLAYER_COLLIDERS,WORLD_PLAYER_COLLIDERS,worldSupportHeight,worldStepUpHeight,resolveCeilingCollision,MINIMAP_LIMIT};
+  return {compileProp:input=>makeStaticGeometry(sanitizeStaticBoxes([input])[0]),ELEVATION_GEOMETRY,PLAYER_HEIGHT,PLAYER_RADIUS,ARENA_LIMIT,MAX_STEP_HEIGHT,CROUCH_WINDOW_STEP_HEIGHT,ROADS,STATIC_BOXES,STATIC_GEOMETRY,STATIC_PARTS,STATIC_PROJECTILE_COLLIDERS,BUILDINGS,AUTHORED_HEIGHTFIELD,AUTHORED_MATERIAL_SURFACE,AUTHORED_ENVIRONMENT,groundMaterialCode,TERRAIN_MODIFIERS,ELEVATION_OBJECTS,PYRAMIDS,PYRAMID_PLAYER_COLLIDERS,NATURAL_OBSTACLES,COMBAT_FLOW_NODES,rawTerrainHeight,TERRAIN_SIZE,TERRAIN_SEGMENTS,terrainVertexHeight,terrainHeight,LADDERS,terrainMinAround,naturalGroundBase,buildingWallOpenings,splitWall,buildingPlan,makeBuildingGeometry,makeAllBuildingGeometry,BUILDING_GEOMETRY,BUILDING_SUPPORTS,BUILDING_HORIZONTAL_SOLIDS,BUILDING_PLAYER_RAMPS,BUILDING_PARTS,BUILDING_WINDOW_PORTALS,STATIC_SUPPORTS,STATIC_PLAYER_COLLIDERS,NATURAL_PLAYER_COLLIDERS,NATURAL_SUPPORTS,BUILDING_PLAYER_COLLIDERS,WORLD_PLAYER_COLLIDERS,worldSupportHeight,worldStepUpHeight,resolveCeilingCollision,MINIMAP_LIMIT};
 }

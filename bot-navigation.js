@@ -2,7 +2,7 @@ import {ladderBottomExitPoint,ladderTopExitPoint} from './movement-model.js';
 // Ground routes use the compiled world collision and support queries used by actors.
 // No separate obstacle approximation or invisible navigation walls.
 export function createBotNavigator(world){
- const g=world.geometry,c=world.worldCollision,step=1.5,radius=g.PLAYER_RADIUS||.34,height=g.PLAYER_HEIGHT||1.8,nodes=new Map(),edges=new Map();
+ const g=world.geometry,c=world.worldCollision,step=1.5,radius=g.PLAYER_RADIUS||.34,height=g.PLAYER_HEIGHT||1.8,nodes=new Map(),edges=new Map(),ladderConnections=new Map();
  const key=(x,z)=>x+','+z;
  function node(ix,iz){const k=key(ix,iz);if(nodes.has(k))return nodes.get(k);const x=ix*step,z=iz*step,ground=g.terrainHeight(x,z),y=g.worldSupportHeight(x,z,ground+.5,false,radius);const n=Math.abs(x)<g.ARENA_LIMIT-1&&Math.abs(z)<g.ARENA_LIMIT-1&&y-ground<.65&&!c.worldBlockedAt(x,z,y,height,radius)?{x,y,z,ix,iz,key:k}:null;nodes.set(k,n);return n;}
  function clear(a,b){const d=Math.hypot(b.x-a.x,b.z-a.z),count=Math.max(1,Math.ceil(d/.6));let px=a.x,py=a.y,pz=a.z;for(let i=1;i<=count;i++){const x=a.x+(b.x-a.x)*i/count,z=a.z+(b.z-a.z)*i/count,y=g.worldSupportHeight(x,z,py+.5,false,radius);if(Math.abs(y-py)>.65||c.worldMoveBlockedAt(x,z,y,px,pz,height,radius,py))return false;px=x;py=y;pz=z;}return Math.abs(py-b.y)<.8;}
@@ -18,14 +18,19 @@ export function createBotNavigator(world){
  }
  // Resolve vertical pursuit through authored ladders, using their real entry/exit points.
  function approach(from,to){
-  if(Math.abs((to.y||0)-(from.y||0))<1.3)return to;
+  if(Math.abs((to.y||0)-(from.y||0))<1.3||(Math.abs(from.y-g.terrainHeight(from.x,from.z))<.7&&Math.abs(to.y-g.terrainHeight(to.x,to.z))<.7)||clear(from,to))return to;
   let best=null;
   for(const ladder of g.LADDERS||[]){const up=to.y>from.y,bottom=ladderBottomExitPoint(ladder,radius),top=ladderTopExitPoint(ladder,radius),entry=up?bottom:top,exit=up?top:bottom;
-   if(Math.abs(entry.y-from.y)>1.2||Math.abs(exit.y-to.y)>1.3||!clear(exit,to))continue;
+   if(Math.abs(entry.y-from.y)>1.2||Math.abs(exit.y-to.y)>1.3)continue;
+   if(!clear(exit,to)){if(up)continue;const k=`${ladder.id}:${Math.round(to.x/3)},${Math.round(to.z/3)}`;if(!ladderConnections.has(k))ladderConnections.set(k,route(exit,to).length>0);if(!ladderConnections.get(k))continue;}if(!up&&!clear(from,entry))continue;
    const score=Math.hypot(entry.x-from.x,entry.z-from.z)+Math.hypot(exit.x-to.x,exit.z-to.z);
    if(!best||score<best.score)best={...entry,score,ladderDirX:up?-ladder.nx:ladder.nx,ladderDirZ:up?-ladder.nz:ladder.nz};
   }
   return best||to;
  }
- return {route,clear,approach};
+ function reachable(from,to){
+  if(clear(from,to))return true;const path=route(from,to),end=path.at(-1);if(end&&Math.hypot(end.x-to.x,end.z-to.z)<4&&Math.abs(end.y-to.y)<.8)return true;
+  for(const ladder of g.LADDERS||[]){const up=to.y>from.y,entry=up?ladderBottomExitPoint(ladder,radius):ladderTopExitPoint(ladder,radius),exit=up?ladderTopExitPoint(ladder,radius):ladderBottomExitPoint(ladder,radius);if(Math.abs(exit.y-to.y)<1.3&&clear(exit,to)&&(clear(from,entry)||route(from,entry).length))return true;}return false;
+ }
+ return {route,clear,approach,reachable};
 }
