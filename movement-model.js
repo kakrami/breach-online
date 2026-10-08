@@ -220,3 +220,36 @@ export function ladderClimbStep(ladder,y,input,dt){
   const low=Number(ladder?.bottomY),high=Number(ladder?.topY)-.10,current=Number(y);if(!Number.isFinite(low)||!Number.isFinite(high)||!Number.isFinite(current))return current;
   const step=Math.max(0,Math.min(.15,Number(dt)||0)),amount=Math.max(-1,Math.min(1,Number(input)||0));return Math.max(low,Math.min(high,current+amount*LADDER_CLIMB_SPEED*step));
 }
+
+// One attachment contract for authored maps, editor previews and generated approaches.
+export function resolveLadderAttachment(ladder,parent,topY,terrainHeight,radius=.38){
+  if(!parent||!['e','w','n','s'].includes(ladder.side)||!Number.isFinite(topY))return null;
+  const t=Math.max(-.45,Math.min(.45,Number(ladder.t)||0)),side=ladder.side;
+  const nx=side==='e'?1:side==='w'?-1:0,nz=side==='s'?1:side==='n'?-1:0;
+  const x=nx*(parent.w/2+.08)+(nz?t*parent.w:0),z=nz*(parent.d/2+.08)+(nx?t*parent.d:0);
+  const a=(parent.rot||0)*Math.PI/180,c=Math.cos(a),s=Math.sin(a),normalX=nx*c-nz*s,normalZ=nx*s+nz*c;
+  const out={...ladder,parentId:parent.id,side,t,x:parent.x+x*c-z*s,z:parent.z+x*s+z*c,nx:normalX,nz:normalZ,tx:-normalZ,tz:normalX,topY};
+  const foot=ladderBottomExitPoint(out,radius);out.bottomY=terrainHeight(foot.x,foot.z);return out;
+}
+export function ladderPathClear(ladder,geometry,collision){
+  const r=geometry.PLAYER_RADIUS,h=geometry.PLAYER_HEIGHT,l=ladder;
+  if(!ladderFrame(l)||!Number.isFinite(l.bottomY+l.topY)||l.topY-l.bottomY<=.5)return false;
+  const low=ladderBottomExitPoint(l,r),high=ladderTopExitPoint(l,r),climb=ladderClimbPoint(l,r);
+  const clear=(x,y,z)=>geometry.terrainHeight(x,z)<=y+.10&&!collision.worldBlockedAt(x,z,y,h,r);
+  const segment=(a,b)=>{const n=Math.max(1,Math.ceil(Math.hypot(b.x-a.x,b.y-a.y,b.z-a.z)/.12));for(let i=0;i<=n;i++){const t=i/n;if(!clear(a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t,a.z+(b.z-a.z)*t))return false;}return true;};
+  if(!segment(low,{...climb,y:l.bottomY})||!segment({...climb,y:l.bottomY},{...climb,y:l.topY})||!segment({...climb,y:l.topY},high))return false;
+  return Math.abs(geometry.worldSupportHeight(high.x,high.z,high.y)-high.y)<.08&&Math.abs(geometry.worldSupportHeight(low.x,low.z,low.y)-low.y)<.15;
+}
+
+// Older published maps omitted parent IDs. Recover only an unambiguous exterior
+// face match; an interior ladder or an arbitrary nearby object is not an anchor.
+export function legacyLadderAttachment(ladder,parents){
+ const f=ladderFrame(ladder);if(!f)return null;const matches=[];
+ for(const parent of parents){
+  const a=(parent.rot||0)*Math.PI/180,c=Math.cos(a),s=Math.sin(a),dx=ladder.x-parent.x,dz=ladder.z-parent.z,x=dx*c+dz*s,z=-dx*s+dz*c,nx=f.nx*c+f.nz*s,nz=-f.nx*s+f.nz*c;
+  for(const side of ['e','w','n','s']){const alongX=side==='n'||side==='s',normal=side==='e'?nx:side==='w'?-nx:side==='s'?nz:-nz,distance=side==='e'?x-parent.w/2:side==='w'?-x-parent.w/2:side==='s'?z-parent.d/2:-z-parent.d/2,t=alongX?x/parent.w:z/parent.d;
+   if(normal>.995&&distance>=.02&&distance<=.20&&Math.abs(t)<=.45)matches.push({...ladder,parentId:parent.id,side,t});
+  }
+ }
+ return matches.length===1?matches[0]:null;
+}

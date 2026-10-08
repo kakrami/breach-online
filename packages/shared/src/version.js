@@ -1,3 +1,3 @@
-export const BREACH_VERSION = "2.16.0";
-export const BUILD_LABEL = "flow-cleanup";
-export const PROTOCOL_VERSION = 110;
+export const BREACH_VERSION = "2.18.0";
+export const BUILD_LABEL = "battle-rifle";
+export const PROTOCOL_VERSION = 112;

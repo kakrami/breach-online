@@ -6,5 +6,5 @@ export const authoredYaw = degrees => -(Number(degrees)||0)*Math.PI/180;
 export function collisionDebugShapes(g,mode='player'){
  if(mode==='both')return [...collisionDebugShapes(g,'player').map(p=>({...p,channel:'player'})),...collisionDebugShapes(g,'projectile').map(p=>({...p,channel:'projectile'}))];
  if(mode==='player')return g.WORLD_PLAYER_COLLIDERS;
- return [...g.STATIC_PROJECTILE_COLLIDERS,...g.BUILDING_PARTS.filter(p=>p.projectileSolid).map(p=>({...p,type:'box',minY:p.bottomY,maxY:p.topY})),...g.PYRAMIDS.map(p=>({...p,type:'pyramid',minY:g.terrainHeight(p.x,p.z),maxY:g.terrainHeight(p.x,p.z)+p.h})),...g.NATURAL_OBSTACLES.map(o=>({...o,type:'round',minY:g.naturalGroundBase(o.type,o.x,o.z,o.r),maxY:g.naturalGroundBase(o.type,o.x,o.z,o.r)+o.h+.18}))];
+ return [...g.STATIC_PROJECTILE_COLLIDERS,...g.BUILDING_PARTS.filter(p=>p.projectileSolid).map(p=>({...p,type:'box',minY:p.bottomY,maxY:p.topY})),...g.PYRAMIDS.map(p=>({...p,type:'pyramid',minY:p.minY,maxY:p.maxY})),...g.NATURAL_OBSTACLES.map(o=>({...o,type:'round',minY:g.naturalGroundBase(o.type,o.x,o.z,o.r),maxY:g.naturalGroundBase(o.type,o.x,o.z,o.r)+o.h+.18}))];
 }

@@ -1,6 +1,8 @@
+import { createAuthoredWorldCollision } from './authored-world-collision.js';
+import { resolveLadderAttachment, ladderPathClear, legacyLadderAttachment } from './movement-model.js';
 import { supportProfile as canonicalSupportProfile, supportWeight } from './terrain-support.js';
 import { roadSegments } from './road-path.js';
-import { resolveAsset } from './object-catalog.js?v=2.16.0';
+import { resolveAsset } from './object-catalog.js';
 const finite=(v,f=0)=>Number.isFinite(Number(v))?Number(v):f;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const clampNumber=(v,a,b,f)=>clamp(finite(v,f),a,b);
@@ -20,9 +22,9 @@ export const AUTHORED_ROAD_SURFACE_POLICY=Object.freeze({
 export const AUTHORED_ROAD_MARKING_POLICY=Object.freeze({renderOrder:100,surfaceOffset:.020,polygonOffsetFactor:-2,polygonOffsetUnits:-16});
 export function authoredRoadSurfacePolicy(kind='street'){return AUTHORED_ROAD_SURFACE_POLICY[String(kind)]||AUTHORED_ROAD_SURFACE_POLICY.street;}
 function canonicalPropKind(value){const raw=String(value||'').trim();return PROP_KIND_ALIASES[raw]||raw||'crate';}
-function sanitizeStaticBoxes(list){return (Array.isArray(list)?list:[]).map(o=>resolveAsset(o,'prop')).map(o=>({assetId:o.assetId,x:finite(o?.x),z:finite(o?.z),w:clampNumber(o?.w,.3,80,2),d:clampNumber(o?.d,.3,80,2),h:clampNumber(o?.h,.2,40,2),rot:normalizeRot(o?.rot),yOffset:clampNumber(o?.yOffset,-12,30,0),kind:canonicalPropKind(o?.kind)}));}
+function sanitizeStaticBoxes(list){return (Array.isArray(list)?list:[]).map(o=>resolveAsset(o,'prop')).map((o,i)=>({id:String(o.id||`prop-${i+1}`),assetId:o.assetId,x:finite(o?.x),z:finite(o?.z),w:clampNumber(o?.w,.3,80,2),d:clampNumber(o?.d,.3,80,2),h:clampNumber(o?.h,.2,40,2),rot:normalizeRot(o?.rot),yOffset:clampNumber(o?.yOffset,-12,30,0),kind:canonicalPropKind(o?.kind)}));}
 function sanitizeRoads(list){const kinds=new Set(['street','alley','service','dirt','sidewalk','crosswalk']);return (Array.isArray(list)?list:[]).map(o=>{let w=clampNumber(o?.w,2,600,20),d=clampNumber(o?.d,1,40,8),rot=normalizeRot(o?.rot);if(o?.rot==null&&d>w){[w,d]=[d,w];rot=90;}return{...(Array.isArray(o?.path)?{path:o.path,smooth:!!o.smooth}:{}),kind:kinds.has(String(o?.kind))?String(o.kind):'street',x:finite(o?.x),z:finite(o?.z),w,d,rot};});}
-function sanitizeBuildings(list){return (Array.isArray(list)?list:[]).map(o=>resolveAsset(o,'building')).map(b=>{const balcony=clampNumber(b?.balcony,0,10,0),levels=Math.max(1,Math.min(8,Math.round(finite(b?.levels,2))));return{assetId:b.assetId,archetype:b.archetype,x:finite(b?.x),z:finite(b?.z),w:clampNumber(b?.w,8,80,18),d:clampNumber(b?.d,6,80,14),floorH:clampNumber(b?.floorH,2.2,5,3.1),balcony,levels,rot:normalizeRot(b?.rot),yOffset:clampNumber(b?.yOffset,-12,30,0),...((b?.tall||levels>=4)?{tall:true}:{}),style:String(b?.style||'industrial')};});}
+function sanitizeBuildings(list){return (Array.isArray(list)?list:[]).map(o=>resolveAsset(o,'building')).map((b,i)=>{const balcony=clampNumber(b?.balcony,0,10,0),levels=Math.max(1,Math.min(8,Math.round(finite(b?.levels,2))));return{id:String(b.id||`building-${i+1}`),assetId:b.assetId,archetype:b.archetype,x:finite(b?.x),z:finite(b?.z),w:clampNumber(b?.w,8,80,18),d:clampNumber(b?.d,6,80,14),floorH:clampNumber(b?.floorH,2.2,5,3.1),balcony,levels,rot:normalizeRot(b?.rot),yOffset:clampNumber(b?.yOffset,-12,30,0),...((b?.tall||levels>=4)?{tall:true}:{}),style:String(b?.style||'industrial')};});}
 function sanitizeTerrainModifiers(list){const kinds=new Set(['hill','valley','plateau','pit']);return (Array.isArray(list)?list:[]).map(o=>({kind:kinds.has(String(o?.kind))?String(o.kind):'hill',x:finite(o?.x),z:finite(o?.z),radius:clampNumber(o?.radius,3,100,16),height:clampNumber(o?.height,-24,30,(o?.kind==='valley'||o?.kind==='pit')?-3:3)}));}
 function sanitizeAuthoredHeightfield(raw,arena){if(!raw||typeof raw!=='object')return null;const size=Math.max(9,Math.min(129,Math.round(finite(raw.size,0)))),extent=clampNumber(raw.extent,20,arena,arena),values=Array.isArray(raw.values)?raw.values:null;if(!values||values.length!==size*size)return null;return Object.freeze({size,extent,values:Object.freeze(values.map(v=>clampNumber(v,-30,30,0)))});}
 function sampleAuthoredHeightfield(hf,x,z){if(!hf)return 0;const n=hf.size,e=hf.extent,u=clamp((finite(x)+e)/(e*2)*(n-1),0,n-1),v=clamp((finite(z)+e)/(e*2)*(n-1),0,n-1),x0=Math.floor(u),z0=Math.floor(v),x1=Math.min(n-1,x0+1),z1=Math.min(n-1,z0+1),tx=u-x0,tz=v-z0,a=hf.values[z0*n+x0],b=hf.values[z0*n+x1],c=hf.values[z1*n+x0],d=hf.values[z1*n+x1];return(a*(1-tx)+b*tx)*(1-tz)+(c*(1-tx)+d*tx)*tz;}
@@ -32,7 +34,7 @@ function sanitizeElevation(list){const kinds=new Set(['platform','ramp','stairs'
 function sanitizePyramids(list){return (Array.isArray(list)?list:[]).map(p=>({x:finite(p?.x),z:finite(p?.z),base:clampNumber(p?.base,2,60,8),h:clampNumber(p?.h,.5,30,4)}));}
 function sanitizeNatural(list){return (Array.isArray(list)?list:[]).map(o=>({type:['tree','bush','rock'].includes(String(o?.type))?String(o.type):'rock',x:finite(o?.x),z:finite(o?.z),r:clampNumber(o?.r,.2,12,1),h:clampNumber(o?.h,.2,40,1)}));}
 function sanitizeFlow(list){return (Array.isArray(list)?list:[]).map(p=>({x:finite(p?.x),z:finite(p?.z)}));}
-function sanitizeLadders(list){return (Array.isArray(list)?list:[]).map((l,i)=>{const rx=finite(l?.nx),rz=finite(l?.nz),len=Math.hypot(rx,rz);if(!Number.isFinite(len)||len<.25)return null;const nx=rx/len,nz=rz/len;return{id:String(l?.id||`ladder-${i+1}`),x:finite(l?.x),z:finite(l?.z),nx,nz,tx:-nz,tz:nx,width:clampNumber(l?.width,.5,4,1.2),bottomY:finite(l?.bottomY),topY:finite(l?.topY,3)};}).filter(l=>l&&l.topY>l.bottomY+.4);}
+function sanitizeLadders(list){return (Array.isArray(list)?list:[]).map((l,i)=>{const attached=!!l?.parentId&&['e','w','n','s'].includes(l?.side),rx=finite(l?.nx,attached?1:0),rz=finite(l?.nz),len=Math.hypot(rx,rz);if((!Number.isFinite(len)||len<.25)&&!attached)return null;const nx=len>=.25?rx/len:1,nz=len>=.25?rz/len:0;return{id:String(l?.id||`ladder-${i+1}`),parentId:String(l?.parentId||''),side:['e','w','n','s'].includes(l?.side)?l.side:'',t:clampNumber(l?.t,-.45,.45,0),x:finite(l?.x),z:finite(l?.z),nx,nz,tx:-nz,tz:nx,width:clampNumber(l?.width,.5,4,1.2),bottomY:finite(l?.bottomY),topY:finite(l?.topY,3)};}).filter(l=>l&&(l.parentId||l.topY>l.bottomY+.4));}
 function authoredMinimapLimit(def,arena){let extent=0;const take=(x,z,pad=0)=>{extent=Math.max(extent,Math.abs(finite(x))+pad,Math.abs(finite(z))+pad);};const rect=(o)=>take(o.x,o.z,Math.abs(finite(o.rot))>1e-6?Math.hypot(finite(o.w),finite(o.d))/2:Math.max(finite(o.w),finite(o.d))/2);for(const o of def?.roads||[])rect(o);for(const o of def?.staticBoxes||[])rect(o);for(const b of def?.buildings||[])rect(b);for(const e of def?.elevationObjects||def?.elevation||[])rect(e);for(const t of def?.terrain?.modifiers||def?.terrainModifiers||[])take(t.x,t.z,finite(t.radius));for(const p of def?.pyramids||[])take(p.x,p.z,finite(p.base)/2);for(const o of def?.naturalObstacles||[])take(o.x,o.z,finite(o.r));for(const team of Object.values(def?.spawnSets||{}))for(const p of Array.isArray(team)?team:[])if(Array.isArray(p)&&p.length>=2)take(p[0],p[1]);return Math.min(arena,Math.max(12,finite(def?.minimapLimit,arena),Math.min(arena,extent+6)));}
 
 function terrainPresetHeight(preset,x,z){const key=String(preset||'flat').toLowerCase();if(key==='highlands'){const rolling=.55+1.15*Math.sin(x*.031)*Math.cos(z*.027)+.72*Math.sin((x+z)*.021)+.48*Math.cos((x-z)*.018),westRidge=8.8*Math.exp(-((x+62)**2)/1150)*Math.exp(-((z-20)**2)/6200),northHill=10.5*Math.exp(-((x-34)**2+(z-68)**2)/1450),southHill=7.2*Math.exp(-((x+20)**2+(z+67)**2)/1200),eastRise=6.5*Math.exp(-((x-78)**2+(z+10)**2)/1750),centerKnoll=4.4*Math.exp(-((x-8)**2+(z-4)**2)/900),valley=4*Math.exp(-((x+12)**2+(z-34)**2)/1050);return clamp(rolling+westRidge+northHill+southHill+eastRise+centerKnoll-valley,-2.4,13.8);}if(key==='depot'||key==='freight-depot'){const slab=.42+.24*Math.sin(x*.026)*Math.cos(z*.024)+.18*Math.sin((x-z)*.018),west=2.8*Math.exp(-((x+98)**2)/520)*Math.exp(-(z*z)/7600),east=2.5*Math.exp(-((x-100)**2)/520)*Math.exp(-(z*z)/7600),north=2.2*Math.exp(-((z-103)**2)/620)*Math.exp(-(x*x)/8200),south=2.4*Math.exp(-((z+102)**2)/620)*Math.exp(-(x*x)/8200),rise=1.35*Math.exp(-((x+48)**2+(z-56)**2)/1250)+1.05*Math.exp(-((x-54)**2+(z+56)**2)/1100),drain=1.15*Math.exp(-((x-2)**2)/280)*Math.exp(-((z+2)**2)/6800);return clamp(slab+west+east+north+south+rise-drain,-1,5.2);}if(key==='yard'||key==='container-yard'){return clamp(.18+.035*Math.sin(x*.11)+.028*Math.cos(z*.09)+.018*Math.sin((x+z)*.07),.08,.30);}if(key==='rig'||key==='dust-rig'){const base=.22+.055*Math.sin(x*.055)*Math.cos(z*.047)+.032*Math.sin((x-z)*.071),edge=.42*Math.max(0,(Math.max(Math.abs(x),Math.abs(z))-43)/12);return clamp(base+edge,.10,.72);}return 0;}
@@ -66,7 +68,8 @@ export function createAuthoredWorldGeometry(def={}){
   const CEILING_HEAD_RADIUS = 0.22;
   
   function terrainStampWeight(m,x,z){const r=Math.max(2,m.radius),d=Math.hypot(x-m.x,z-m.z),t=clamp(d/r,0,1);if(t>=1)return 0;if(m.kind==='plateau'){if(t<=.55)return 1;const q=(t-.55)/.45;return 1-(q*q*(3-2*q));}const q=1-t;return q*q*(3-2*q);}
-  function rawTerrainHeight(x,z){let h=terrainPresetHeight(def?.terrain?.preset||def?.theme||'flat',x,z)+sampleAuthoredHeightfield(AUTHORED_HEIGHTFIELD,x,z);for(const m of TERRAIN_MODIFIERS)h+=m.height*terrainStampWeight(m,x,z);return clamp(h,-30,36);}
+  function baseTerrainHeight(x,z){let h=terrainPresetHeight(def?.terrain?.preset||def?.theme||'flat',x,z);for(const m of TERRAIN_MODIFIERS)h+=m.height*terrainStampWeight(m,x,z);return h;}
+  function rawTerrainHeight(x,z){return clamp(baseTerrainHeight(x,z)+sampleAuthoredHeightfield(AUTHORED_HEIGHTFIELD,x,z),-30,36);}
   function groundMaterialCode(x,z){return sampleAuthoredMaterial(AUTHORED_MATERIAL_SURFACE,x,z);}
   
   function localPoint(o,x,z){const a=-normalizeRot(o.rot)*Math.PI/180,c=Math.cos(a),ss=Math.sin(a),dx=x-o.x,dz=z-o.z;return{x:dx*c-dz*ss,z:dx*ss+dz*c};}
@@ -75,7 +78,7 @@ export function createAuthoredWorldGeometry(def={}){
   function supportProfile(o,isBuilding=false){return canonicalSupportProfile(o,rawTerrainHeight,isBuilding,Math.max(244,ARENA_LIMIT*2+4)/128*Math.SQRT2);}
 
   const spawnPoints=[...new Map(Object.values(def?.spawnSets||{}).flat().filter(p=>Array.isArray(p)).map(p=>[p[0]+','+p[1],{x:p[0],z:p[1],w:2.4,d:2.4,yOffset:0}])).values()];
-  const supportProfiles=[...spawnPoints.map(o=>supportProfile(o,false)),...STATIC_BOXES.map(o=>supportProfile(o,false)),...BUILDINGS.map(o=>supportProfile(o,true))];
+  const supportProfiles=[...spawnPoints.map(o=>supportProfile(o,false)),...BUILDINGS.map(o=>supportProfile(o,true))];
   
   const TERRAIN_SIZE = Math.max(244,ARENA_LIMIT*2+4);
   const TERRAIN_SEGMENTS = 128;
@@ -94,7 +97,7 @@ export function createAuthoredWorldGeometry(def={}){
   const nearbySupportProfiles=terrainProfileIndex(supportProfiles);
   function sourceTerrainHeight(x,z){
     const ground=rawTerrainHeight(x,z);let best=null,bestWeight=0;
-    for(const p of nearbySupportProfiles(x,z)){if(!p.active)continue;const w=supportWeight(p,x,z);if(w>bestWeight){bestWeight=w;best=p;}}
+    for(const p of nearbySupportProfiles(x,z)){if(!p.active)continue;const w=supportWeight(p,x,z);if(w>bestWeight||w===bestWeight&&w>0&&p.priority>(best?.priority||0)){bestWeight=w;best=p;}}
     return best?ground+(best.level-ground)*bestWeight:ground;
   }
   
@@ -126,11 +129,14 @@ export function createAuthoredWorldGeometry(def={}){
     return d+(1-fx)*(c-d)+(1-fz)*(b-d);
   }
   
+  for(const p of PYRAMIDS){const peak=terrainHeight(p.x,p.z)+p.h-.05,profile=canonicalSupportProfile({x:p.x,z:p.z,w:p.base,d:p.base},terrainHeight);p.minY=profile.min-.06;p.maxY=peak;p.h=peak-p.minY;}
+
   function makeStaticGeometry(o){
     const base=terrainHeight(o.x,o.z)+o.yOffset,parts=[];
     const toWorld=(lx,lz)=>worldPoint(o,lx,lz);
-    const addBox=(role,lx,lz,w,d,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({type:'box',role,x:p.x,z:p.z,w,d,rot:o.rot,minY:bottomY,maxY:topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:flags.supportTop!==false});};
-    const addRound=(role,lx,lz,r,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({type:'round',role,x:p.x,z:p.z,r,minY:bottomY,maxY:topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop});};
+    const groundedBottom=(shape,bottom)=>Math.abs(o.yOffset)<.05&&Math.abs(bottom-base)<.001?Math.min(bottom,canonicalSupportProfile(shape,terrainHeight).min-.02):bottom;
+    const addBox=(role,lx,lz,w,d,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({type:'box',role,x:p.x,z:p.z,w,d,rot:o.rot,minY:groundedBottom({x:p.x,z:p.z,w,d,rot:o.rot},bottomY),maxY:topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:flags.supportTop!==false});};
+    const addRound=(role,lx,lz,r,bottomY,topY,flags={})=>{const p=toWorld(lx,lz);parts.push({type:'round',role,x:p.x,z:p.z,r,minY:groundedBottom({x:p.x,z:p.z,w:r*2,d:r*2},bottomY),maxY:topY,playerSolid:flags.playerSolid!==false,projectileSolid:flags.projectileSolid!==false,supportTop:!!flags.supportTop});};
     const kind=String(o.kind||'box'),longX=o.w>=o.d,length=Math.max(o.w,o.d),width=Math.min(o.w,o.d),boxDims=(L,W)=>longX?[L,W]:[W,L],axis=(v)=>longX?[v,0]:[0,v];
     if(kind==='burntCar'||kind==='burntBus'){
       const bus=kind==='burntBus',[bw,bd]=boxDims(length*.96,width*.94),[uw,ud]=boxDims(length*(bus?.90:.47),width*(bus?.88:.84)),[ux,uz]=axis(bus?0:-length*.03);
@@ -156,6 +162,10 @@ export function createAuthoredWorldGeometry(def={}){
   }
   const STATIC_GEOMETRY=STATIC_BOXES.map(makeStaticGeometry);
   const STATIC_PARTS=STATIC_GEOMETRY.flatMap(g=>g.parts);
+  // Arena walls follow the full footprint, and are shared with collision.
+  const piece=ARENA_LIMIT*2/16,edge=ARENA_LIMIT+1;
+  for(let i=0;i<16;i++){const along=-ARENA_LIMIT+piece*(i+.5);for(const o of [{x:along,z:-edge,w:piece+.35,d:2},{x:along,z:edge,w:piece+.35,d:2},{x:-edge,z:along,w:2,d:piece+.35},{x:edge,z:along,w:2,d:piece+.35}]){const profile=canonicalSupportProfile(o,terrainHeight);STATIC_PARTS.push({...o,type:'box',rot:0,role:'arenaBoundary',minY:profile.min-.1,maxY:terrainHeight(o.x,o.z)+5,playerSolid:true,projectileSolid:true,supportTop:false});}}
+
 
   // Standalone ladder anchors. Ladders are non-solid interaction volumes; the wall/roof
   // remains authoritative collision, while ladder mount/climb/dismount is validated separately.
@@ -424,7 +434,7 @@ export function createAuthoredWorldGeometry(def={}){
   });
 
   const NATURAL_SUPPORTS = NATURAL_PLAYER_COLLIDERS.filter(c=>c.role==='rock').map(c=>({type:'round',x:c.x,z:c.z,r:c.supportRadius,y:c.maxY,role:'rock'}));
-  const PYRAMID_PLAYER_COLLIDERS = PYRAMIDS.map(p=>{const minY=terrainHeight(p.x,p.z)-.05;return{type:'pyramid',x:p.x,z:p.z,base:p.base,h:p.h,minY,maxY:minY+p.h,role:'mound',supportTop:true};});
+  const PYRAMID_PLAYER_COLLIDERS = PYRAMIDS.map(p=>({...p,type:'pyramid',role:'mound',supportTop:true}));
 
   const BUILDING_PLAYER_COLLIDERS = [
     ...BUILDING_PARTS.filter(p=>p.playerSolid).map(p=>{const a=orientedAabb(p.x,p.z,p.w,p.d,p.rot||0);return{type:'box',x:p.x,z:p.z,w:p.w,d:p.d,rot:p.rot||0,...a,minY:p.bottomY,maxY:p.topY,role:p.role,crouchStep:!!p.crouchStep,supportTop:!!p.supportTop}}),
@@ -493,11 +503,18 @@ export function createAuthoredWorldGeometry(def={}){
     }
     return{y:resolved,hit};
   }
-  // Resolve ladder ends from the compiled surfaces used by rendering and movement.
-  const LADDERS=Object.freeze(LADDER_ANCHORS.map(l=>{
-    const bottomY=worldSupportHeight(l.x+l.nx*(PLAYER_RADIUS+.34),l.z+l.nz*(PLAYER_RADIUS+.34),l.bottomY+MAX_STEP_HEIGHT,false,PLAYER_RADIUS);
-    const topY=worldSupportHeight(l.x-l.nx*(PLAYER_RADIUS+.32),l.z-l.nz*(PLAYER_RADIUS+.32),l.topY,false,PLAYER_RADIUS);
-    return Object.freeze({...l,bottomY,topY});
-  }).filter(l=>l.topY>l.bottomY+.5));
-  return {compileProp:input=>makeStaticGeometry(sanitizeStaticBoxes([input])[0]),ELEVATION_GEOMETRY,PLAYER_HEIGHT,PLAYER_RADIUS,ARENA_LIMIT,MAX_STEP_HEIGHT,CROUCH_WINDOW_STEP_HEIGHT,ROADS,STATIC_BOXES,STATIC_GEOMETRY,STATIC_PARTS,STATIC_PROJECTILE_COLLIDERS,BUILDINGS,AUTHORED_HEIGHTFIELD,AUTHORED_MATERIAL_SURFACE,AUTHORED_ENVIRONMENT,groundMaterialCode,TERRAIN_MODIFIERS,ELEVATION_OBJECTS,PYRAMIDS,PYRAMID_PLAYER_COLLIDERS,NATURAL_OBSTACLES,COMBAT_FLOW_NODES,rawTerrainHeight,TERRAIN_SIZE,TERRAIN_SEGMENTS,terrainVertexHeight,terrainHeight,LADDERS,terrainMinAround,naturalGroundBase,buildingWallOpenings,splitWall,buildingPlan,makeBuildingGeometry,makeAllBuildingGeometry,BUILDING_GEOMETRY,BUILDING_SUPPORTS,BUILDING_HORIZONTAL_SOLIDS,BUILDING_PLAYER_RAMPS,BUILDING_PARTS,BUILDING_WINDOW_PORTALS,STATIC_SUPPORTS,STATIC_PLAYER_COLLIDERS,NATURAL_PLAYER_COLLIDERS,NATURAL_SUPPORTS,BUILDING_PLAYER_COLLIDERS,WORLD_PLAYER_COLLIDERS,worldSupportHeight,worldStepUpHeight,resolveCeilingCollision,MINIMAP_LIMIT};
+  const ladderWorld={ARENA_LIMIT,PLAYER_HEIGHT,PLAYER_RADIUS,WORLD_PLAYER_COLLIDERS,BUILDING_WINDOW_PORTALS,worldSupportHeight,worldStepUpHeight,terrainHeight,resolveCeilingCollision};
+  const ladderCollision=createAuthoredWorldCollision(ladderWorld),LADDER_ISSUES=[];
+  const LADDERS=Object.freeze(LADDER_ANCHORS.flatMap(anchor=>{
+    const l=!anchor.parentId&&!ladderPathClear(anchor,ladderWorld,ladderCollision)?legacyLadderAttachment(anchor,[...BUILDINGS,...STATIC_BOXES])||anchor:anchor;
+    let resolved=l;
+    if(l.parentId){
+      const bi=BUILDINGS.findIndex(b=>b.id===l.parentId),pi=STATIC_BOXES.findIndex(p=>p.id===l.parentId),parent=bi>=0?BUILDINGS[bi]:STATIC_BOXES[pi];
+      const top=bi>=0?BUILDING_GEOMETRY[bi].base+parent.floorH*parent.levels:pi>=0?Math.max(...STATIC_GEOMETRY[pi].parts.filter(p=>p.supportTop).map(p=>p.maxY)):NaN;
+      resolved=resolveLadderAttachment(l,parent,top,terrainHeight,PLAYER_RADIUS);
+    }
+    if(!resolved||!ladderPathClear(resolved,ladderWorld,ladderCollision)){LADDER_ISSUES.push({id:l.id,reason:resolved?'Ladder path or landing is obstructed.':'Ladder attachment is missing.'});return [];}
+    return [Object.freeze(resolved)];
+  }));
+  return {TERRAIN_THEME:String(def?.theme||def?.terrain?.preset||'flat'),LADDER_ISSUES,compileProp:input=>makeStaticGeometry(sanitizeStaticBoxes([input])[0]),ELEVATION_GEOMETRY,PLAYER_HEIGHT,PLAYER_RADIUS,ARENA_LIMIT,MAX_STEP_HEIGHT,CROUCH_WINDOW_STEP_HEIGHT,ROADS,STATIC_BOXES,STATIC_GEOMETRY,STATIC_PARTS,STATIC_PROJECTILE_COLLIDERS,BUILDINGS,AUTHORED_HEIGHTFIELD,AUTHORED_MATERIAL_SURFACE,AUTHORED_ENVIRONMENT,groundMaterialCode,TERRAIN_MODIFIERS,ELEVATION_OBJECTS,PYRAMIDS,PYRAMID_PLAYER_COLLIDERS,NATURAL_OBSTACLES,COMBAT_FLOW_NODES,baseTerrainHeight,rawTerrainHeight,TERRAIN_SIZE,TERRAIN_SEGMENTS,terrainVertexHeight,terrainHeight,LADDERS,terrainMinAround,naturalGroundBase,buildingWallOpenings,splitWall,buildingPlan,makeBuildingGeometry,makeAllBuildingGeometry,BUILDING_GEOMETRY,BUILDING_SUPPORTS,BUILDING_HORIZONTAL_SOLIDS,BUILDING_PLAYER_RAMPS,BUILDING_PARTS,BUILDING_WINDOW_PORTALS,STATIC_SUPPORTS,STATIC_PLAYER_COLLIDERS,NATURAL_PLAYER_COLLIDERS,NATURAL_SUPPORTS,BUILDING_PLAYER_COLLIDERS,WORLD_PLAYER_COLLIDERS,worldSupportHeight,worldStepUpHeight,resolveCeilingCollision,MINIMAP_LIMIT};
 }

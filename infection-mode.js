@@ -139,7 +139,7 @@ export class InfectionDirector {
   if(item==='antidote'){const cash=p.cash,stats=p.infectionStats,cls=p.infectionNextClass,preferred=p.infectionPreferredWeapon||'ump';Object.assign(p,freshInfectionInventory(false,false,cls,preferred),{cash,infectionStats:stats,hp:100,antidoteUsed:true,spawnProtectedUntil:now+R.conversionGraceMs,infectionReadyAt:now+R.conversionGraceMs,infectionPending:false});this.room.refillInfectionAmmo(p);this.save(e,'infectionRole');}
   if(publish)this.save(e);else if(e.socket)e.socket.serializeAttachment(p);this.room.matchDirty=true;return result;
  }
- botBuy(e,now,publish=true){const p=e.actor;if(this.match.infectionPhase!=='buy')return;const n=String(idOf(p)).split('').reduce((s,c)=>s+c.charCodeAt(0),0);p.infectionNextClass=Object.keys(INFECTION_CLASSES)[n%4];this.purchase(e,['smg','assault','shotgun','machine','sniper','auto'][n%6],now,publish);this.purchase(e,n%2?'frost':'fire',now,publish);}
+ botBuy(e,now,publish=true){const p=e.actor;if(this.match.infectionPhase!=='buy')return;const n=String(idOf(p)).split('').reduce((s,c)=>s+c.charCodeAt(0),0);p.infectionNextClass=Object.keys(INFECTION_CLASSES)[n%4];const weapons=Object.keys(SHOP).filter(id=>SHOP[id].weapon);this.purchase(e,weapons[n%weapons.length],now,publish);this.purchase(e,n%2?'frost':'fire',now,publish);}
  reward(e,n){if(!e)return;e.actor.cash=infectionCash(e.actor.cash,n);this.save(e);}
  damage(e,attackerId,amount,weapon,knockback,now,bulletId='',hitMeta={}){
   const p=e.actor,aEntry=this.entries().find(v=>idOf(v.actor)===attackerId),a=aEntry?.actor,m=this.match;

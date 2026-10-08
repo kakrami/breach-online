@@ -19,6 +19,7 @@ export const INFECTION_SHOP = Object.freeze({
  shotgun:{cost:3,label:'SHOTGUN',role:'survivor',tab:'weapons',weapon:'shotgun',detail:'Free during preparation · strong close-range knockback'},
  auto:{cost:3,label:'AUTO SHOTGUN',role:'survivor',tab:'weapons',weapon:'semiShotgun',detail:'Free during preparation · close-range follow-up shots'},
  machine:{cost:3,label:'MACHINE GUN',role:'survivor',tab:'weapons',weapon:'machineGun',detail:'Free during preparation · sustained defensive fire'},
+ battleRifle:{cost:3,label:'BATTLE RIFLE',role:'survivor',tab:'weapons',weapon:'battleRifle',detail:'Free during preparation · bolt-action precision'},
  sniper:{cost:3,label:'SNIPER',role:'survivor',tab:'weapons',weapon:'sniper',detail:'Free during preparation · powerful single shots'},
  armor:{cost:6,label:'INFECTION ARMOR',role:'survivor',tab:'gear',detail:'Absorbs 2 claws · replenish out of combat',art:'armor'},
  fire:{cost:3,label:'NAPALM',role:'survivor',tab:'gear',detail:'Burns and slows · carry 2',art:'fire'},

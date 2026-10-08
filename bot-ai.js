@@ -2,7 +2,7 @@ const TAU=Math.PI*2;
 const finite=(v,fallback=0)=>Number.isFinite(Number(v))?Number(v):fallback;
 const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
 
-export const BOT_WEAPONS=Object.freeze(['assault','ump','machineGun','shotgun','semiShotgun','sniper']);
+export const BOT_WEAPONS=Object.freeze(['assault','ump','machineGun','shotgun','semiShotgun','battleRifle','sniper']);
 
 export const BOT_DIFFICULTIES=Object.freeze({
   easy:Object.freeze({moveRun:.48,moveWalk:.62,strafe:.12,range:19,fireScale:1.16,reactionBase:430,reactionJitter:360,aimTurnDegPerSec:115,aimNoiseDeg:2.4,aimToleranceDeg:5.8,burstMin:2,burstMax:4,burstPauseMin:360,burstPauseMax:620,equipmentMinMs:18000,equipmentMaxMs:26000}),
@@ -23,6 +23,7 @@ export function botWeaponRole(weapon,profile){
     case 'machineGun':return{preferred:14,engage:Math.max(32,range*1.12),adsMin:9,retreatBelow:7.5};
     case 'shotgun':return{preferred:4.5,engage:Math.min(18,range),adsMin:6.5,retreatBelow:0};
     case 'semiShotgun':return{preferred:6.2,engage:Math.min(21,range),adsMin:7.5,retreatBelow:0};
+    case 'battleRifle':return{preferred:21,engage:Math.max(36,range*1.15),adsMin:7,retreatBelow:10};
     case 'sniper':return{preferred:25,engage:Math.max(40,range*1.30),adsMin:11,retreatBelow:13};
     default:return{preferred:11,engage:Math.max(30,range),adsMin:7,retreatBelow:5.5};
   }

@@ -844,7 +844,7 @@ export class MapLibrary {
       const owner=await this.ownerHash(body.client,body.auth),id=this.safeId(body.mapId),index=await this.index(),entry=index[id];
       if(!owner||!entry||entry.ownerClientId!==owner.id||entry.ownerAuthHash!==owner.hash)return new Response(JSON.stringify({error:'Map not found.'}),{status:404,headers:{'content-type':'application/json'}});
       const draft=await this.ctx.storage.get(`map:${id}:draft`);if(!draft)return new Response(JSON.stringify({error:'Save a draft first.'}),{status:409,headers:{'content-type':'application/json'}});
-      const revision=Math.max(0,Math.floor(Number(entry.publishedRevision)||0))+1,def=sanitizeUploadedMapDefinition(draft);await this.ctx.storage.put(`map:${id}:rev:${revision}`,def);
+      const revision=Math.max(0,Math.floor(Number(entry.publishedRevision)||0))+1,def=sanitizeUploadedMapDefinition(draft),issues=createAuthoredWorldGeometry(def).LADDER_ISSUES;if(issues.length)return new Response(JSON.stringify({error:issues[0].reason,issues}),{status:400,headers:{'content-type':'application/json'}});await this.ctx.storage.put(`map:${id}:rev:${revision}`,def);
       entry.publishedRevision=revision;entry.updatedAt=Date.now();entry.hasDraft=true;entry.publishedFingerprint=customMapFingerprint(def);index[id]=entry;await this.putIndex(index);
       return new Response(JSON.stringify({ok:true,map:this.publicMeta(entry),revision}),{headers:{'content-type':'application/json; charset=utf-8'}});
     }
@@ -2506,7 +2506,7 @@ export class GameRoom {
       }
 
       const closeInfectionThreat=mode==='infection'&&!bot.infected&&now-(bot.lastSeenAt||0)<2000&&Math.hypot(bot.x-bot.lastKnownX,bot.z-bot.lastKnownZ)<12;
-      const botWeapon=mode==='infection'?safeWeapon(bot.primaryOwned&&!(bot.primaryWeapon==='sniper'&&closeInfectionThreat)?bot.primaryWeapon:'pistol'):safeBotWeapon(bot.primaryWeapon||bot.weapon);if(mode!=='infection')bot.primaryWeapon=botWeapon;bot.weapon=botWeapon;
+      const botWeapon=mode==='infection'?safeWeapon(bot.primaryOwned&&!(['sniper','battleRifle'].includes(bot.primaryWeapon)&&closeInfectionThreat)?bot.primaryWeapon:'pistol'):safeBotWeapon(bot.primaryWeapon||bot.weapon);if(mode!=='infection')bot.primaryWeapon=botWeapon;bot.weapon=botWeapon;
       const weaponSettings=effectiveWeaponRules(settings,bot,botWeapon),resolvedWeapon=weaponSettings.spec;
       if(bot.reloadAt&&now>=bot.reloadAt){if(botWeapon==='shotgun'){bot.ammo.shotgun=Math.min(resolvedWeapon.mag,(bot.ammo.shotgun||0)+1);if(bot.ammo.shotgun<resolvedWeapon.mag){bot.reloadAt=now+weaponSettings.reloadMs;bot.reloadWeapon='shotgun';}else{bot.reloadAt=0;bot.reloadWeapon='';}}else{bot.ammo[botWeapon]=resolvedWeapon.mag;bot.reloadAt=0;bot.reloadWeapon='';}}
       if(now<finiteNumber(bot.flashUntil,0)){
@@ -2669,7 +2669,7 @@ export class GameRoom {
 
       const tolerance=botAimToleranceRadians(profile,bot.ads),automatic=!!resolvedWeapon.automatic;
       const reloadAllowsFire=!bot.reloadAt||(botWeapon==='shotgun'&&(bot.ammo.shotgun||0)>0);
-      if(!bot.traversal&&!bot.ladder&&d<=role.engage&&reloadAllowsFire&&now>=finiteNumber(bot.reactionReadyAt,0)&&now>=finiteNumber(bot.combatRecoverUntil,0)&&aimError<=tolerance&&(botWeapon!=='sniper'||bot.ads)&&now>=finiteNumber(bot.nextShotAt,0)&&now>=finiteNumber(bot.burstPauseUntil,0)){
+      if(!bot.traversal&&!bot.ladder&&d<=role.engage&&reloadAllowsFire&&now>=finiteNumber(bot.reactionReadyAt,0)&&now>=finiteNumber(bot.combatRecoverUntil,0)&&aimError<=tolerance&&(!['sniper','battleRifle'].includes(botWeapon)||bot.ads)&&now>=finiteNumber(bot.nextShotAt,0)&&now>=finiteNumber(bot.burstPauseUntil,0)){
         if((bot.ammo[botWeapon]||0)<=0){startReload(bot,botWeapon,weaponSettings);continue;}if(botWeapon==='shotgun'&&bot.reloadAt){bot.reloadAt=0;bot.reloadWeapon='';}
         if(automatic&&finiteNumber(bot.burstShotsLeft,0)<=0)bot.burstShotsLeft=botBurstSize(profile,d,botWeapon);
         bot.spawnProtectedUntil=0;bot.nextShotAt=now+Math.max(70,weaponSettings.cooldownMs*Math.max(1,profile.fireScale)+(automatic?0:Math.random()*55));bot.ammo[botWeapon]-=1;if(bot.ammo[botWeapon]===0)startReload(bot,botWeapon,weaponSettings);
