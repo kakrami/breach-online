@@ -1,6 +1,6 @@
-export const APP_VERSION = '2.21.0';
-export const BUILD_ID = '20261008T190800Z';
-export const PROTOCOL_VERSION = 113;
+export const APP_VERSION = '2.22.0';
+export const BUILD_ID = '20261009T005120Z';
+export const PROTOCOL_VERSION = 114;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS_PER_TEAM = 8;
@@ -256,7 +256,7 @@ export const GAME_MODE_ORDER = ['tdm','ffa','moon','infection','zombies','sandbo
 export const DEFAULT_GAME_MODE = 'tdm';
 export const GAME_MODES = Object.freeze({
   moon:Object.freeze({id:'moon',name:'MOON DEATHMATCH',short:'MOON DM',teamBased:false,scoreType:'player',scoreLimit:20,timeLimitMs:8*60*1000,mapId:'moon',mod:'moon'}),
-  infection:Object.freeze({id:'infection',name:'INFECTION',short:'INFECTION',teamBased:true,cooperative:false,scoreType:'survival',scoreLimit:0,timeLimitMs:360000}),
+  infection:Object.freeze({id:'infection',name:'INFECTION',short:'INFECTION',teamBased:true,cooperative:false,scoreType:'survival',scoreLimit:0,timeLimitMs:180000}),
   tdm:Object.freeze({id:'tdm',name:'TEAM DEATHMATCH',short:'TDM',teamBased:true,scoreType:'team',scoreLimit:30,timeLimitMs:8*60*1000}),
   ffa:Object.freeze({id:'ffa',name:'FREE FOR ALL',short:'FFA',teamBased:false,scoreType:'player',scoreLimit:20,timeLimitMs:8*60*1000}),
   zombies:Object.freeze({id:'zombies',name:'ZOMBIE WAVES',short:'WAVES',teamBased:true,cooperative:true,scoreType:'waves',scoreLimit:0,timeLimitMs:0}),

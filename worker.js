@@ -1,9 +1,10 @@
+import {actorDetour} from './bot-steering.js';
 import {createBotNavigator} from './bot-navigation.js';
 import {resolveWeaponRules} from './game-config.js';
 import {damageSource} from './combat-feedback.js';
 import { bossSpec, bossKindForWave, bossAttackGeometry, bossAttackContains, bossWeakpointActive, BOSS_WEAKPOINT, MOON_SUPPLY } from './moon-boss-rules.js';
 import { actorScale, actorDimensions, roleMovement } from './actor-rules.js';
-import {isInfectionPrimaryWeapon, INFECTION, infectionCash, infectionPublicState } from './infection-rules.js';
+import {isInfectionPrimaryWeapon, infectionAbilityActive, INFECTION_ROUND_INTENTS, INFECTION, infectionCash, infectionPublicState } from './infection-rules.js';
 import { InfectionDirector } from './infection-mode.js';
 import { infectionConnectionState } from './infection-inventory.js';
 import { PLAYER_HEIGHT, PLAYER_RADIUS, ARENA_LIMIT, MAX_STEP_HEIGHT } from './world-geometry.js';
@@ -309,7 +310,7 @@ function freshEquipment(tactical='flash',lethal='sticky'){return equipmentForLoa
 function normalizeEquipment(v){v=v&&typeof v==="object"?v:{};return Object.fromEntries(Object.entries(EQUIPMENT_CAPS).map(([name,cap])=>[name,clamp(Math.floor(finiteNumber(v[name],cap)),0,cap)]));}
 function refreshUnlimitedResources(me){
   if(!me?.godMode)return;
-  me.ammo=freshAmmo(me);me.equipment=freshEquipment(me.tactical,me.lethal);me.reloadAt=0;me.reloadWeapon='';
+  me.ammo=freshAmmo(me);me.equipment=me.infectionRound>0?{flash:0,smoke:0,sticky:0,frag:0}:freshEquipment(me.tactical,me.lethal);me.reloadAt=0;me.reloadWeapon='';
 }
 
 function clamp(value, min, max) {
@@ -471,7 +472,7 @@ function spawnForMode(world,mode,team,index){return world.spawns.spawnForMode(no
 function spawnedPlayerState(player,spawn,team,now,{resetStats=false}={}){
   const classes=normalizeLoadoutClasses(player?.loadoutClasses,player),nextClassId=player?.pendingClassId?normalizeLoadoutClassId(player.pendingClassId):normalizeLoadoutClassId(player?.activeClassId),classLoadout=loadoutClassById(classes,nextClassId,player),active=normalizeLoadout(player?.pendingLoadout||classLoadout,player);
   const next={
-    ...player,...spawn,team,yaw:finiteNumber(spawn?.yaw,finiteNumber(player?.yaw,0)),pitch:0,spawnProtectedUntil:Math.max(0,finiteNumber(spawn?.spawnProtectedUntil,0)),pendingTeam:'',loadoutClasses:classes,activeClassId:nextClassId,pendingClassId:'',pendingLoadout:null,primaryWeapon:active.primaryWeapon,secondaryWeapon:active.secondaryWeapon,primaryAttachments:active.primaryAttachments,secondaryAttachments:active.secondaryAttachments,tactical:active.tactical,lethal:active.lethal,hp:100,wastedUntil:0,regenAt:0,
+    ...player,...spawn,actorDetour:null,botAirborne:false,team,yaw:finiteNumber(spawn?.yaw,finiteNumber(player?.yaw,0)),pitch:0,spawnProtectedUntil:Math.max(0,finiteNumber(spawn?.spawnProtectedUntil,0)),pendingTeam:'',loadoutClasses:classes,activeClassId:nextClassId,pendingClassId:'',pendingLoadout:null,primaryWeapon:active.primaryWeapon,secondaryWeapon:active.secondaryWeapon,primaryAttachments:active.primaryAttachments,secondaryAttachments:active.secondaryAttachments,tactical:active.tactical,lethal:active.lethal,hp:100,wastedUntil:0,regenAt:0,
     weapon:active.primaryWeapon,ammo:freshAmmo(active),equipment:freshEquipment(active.tactical,active.lethal),reloadAt:0,reloadWeapon:'',
     fireReadyAt:normalizeFireReady(),weaponReadyAt:0,equipmentReadyAt:0,combatAction:'ready',combatActionKind:'',combatReadyAt:0,sprintFireReadyAt:0,ads:false,adsAmount:0,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,
     verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,lastMovementClientAt:now,lastStateSeq:0,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,
@@ -531,7 +532,7 @@ function reconcileBots(world,existing, blueBots, redBots, mode='tdm') {
   return makeBots(world,blueBots, redBots, mode).map((fresh) => {
     const old = prior.get(fresh.id);
     if (!old) return fresh;
-    const previousWeapon=safeBotWeapon(old.primaryWeapon||old.weapon||fresh.primaryWeapon),primaryWeapon=safeBotWeapon(fresh.primaryWeapon),weaponChanged=previousWeapon!==primaryWeapon,candidateX=clamp(finiteNumber(old.x,fresh.x),-ARENA_LIMIT,ARENA_LIMIT),candidateZ=clamp(finiteNumber(old.z,fresh.z),-ARENA_LIMIT,ARENA_LIMIT),candidateY=world.geometry.worldSupportHeight(candidateX,candidateZ,finiteNumber(old.y,fresh.y),false,.34),poseValid=!world.worldCollision.worldBlockedAt(candidateX,candidateZ,candidateY,PLAYER_HEIGHT,.34),x=poseValid?candidateX:fresh.x,z=poseValid?candidateZ:fresh.z,y=poseValid?candidateY:fresh.y;
+    const previousWeapon=safeBotWeapon(old.primaryWeapon||old.weapon||fresh.primaryWeapon),primaryWeapon=safeBotWeapon(fresh.primaryWeapon),weaponChanged=previousWeapon!==primaryWeapon,candidateX=clamp(finiteNumber(old.x,fresh.x),-world.geometry.ARENA_LIMIT,world.geometry.ARENA_LIMIT),candidateZ=clamp(finiteNumber(old.z,fresh.z),-world.geometry.ARENA_LIMIT,world.geometry.ARENA_LIMIT),candidateY=world.geometry.worldSupportHeight(candidateX,candidateZ,finiteNumber(old.y,fresh.y),false,.34),poseValid=!world.worldCollision.worldBlockedAt(candidateX,candidateZ,candidateY,PLAYER_HEIGHT,.34),x=poseValid?candidateX:fresh.x,z=poseValid?candidateZ:fresh.z,y=poseValid?candidateY:fresh.y;
     return {
       ...fresh,
       ...old,
@@ -962,7 +963,9 @@ export class GameRoom {
     meta.adminClientIds = normalizeAdminIds(meta);
     meta.clientAuthHashes=normalizeClientAuthHashes(meta);meta.mapId=normalizeMapId(meta.mapId);if(this.world?.id!==meta.mapId)this.world=worldBundle(meta.mapId,this.customMapDefinition);delete meta.mode;delete meta.custom;
     this.metaCache=meta;
-    await this.ctx.storage.put("meta", meta);
+    if(matchMode(meta.match)==='infection'&&this.infectionDirector){
+      await this.ctx.storage.put({meta,bots:this.bots||[],infectionSnapshot:this.infectionDirector.snapshot()});
+    }else await this.ctx.storage.put("meta",meta);
   }
 
   liveSockets(exceptSocket = null) {
@@ -975,6 +978,7 @@ export class GameRoom {
 
   isCustomMatch(meta) {
     if (!meta) return false;
+    if(meta.match?.cheatsUsed)return true;
     if (!worldSettingsAreDefault(meta.settings) || !matchRulesAreDefault(meta.match)) return true;
     return this.liveSockets().some((socket) => !!(socket.deserializeAttachment() || {}).godMode);
   }
@@ -1054,7 +1058,12 @@ export class GameRoom {
       meta.match.waveSpawned=Math.max(0,Math.min(meta.match.waveTotal,meta.match.waveTotal-meta.match.waveRemaining+alive));
       this.lastSimAt=Date.now();this.simAccumulatorMs=0;return;
     }
-    if(mode==='infection'&&Array.isArray(stored)&&meta.match.status===MATCH_STATUS.ACTIVE){this.bots=stored;this.lastSimAt=Date.now();this.simAccumulatorMs=0;return;}
+    if(mode==='infection'&&meta.match.status===MATCH_STATUS.ACTIVE){
+      this.bots=Array.isArray(stored)?stored:[];
+      const snapshot=await this.ctx.storage.get('infectionSnapshot');
+      this.infection.restore(snapshot,Date.now());
+      this.lastSimAt=Date.now();this.simAccumulatorMs=0;return;
+    }
     const rosterValid = botRosterMatchesConfig(this.world,stored, counts.blueBots, counts.redBots, mode);
     this.bots = reconcileBots(this.world,stored, counts.blueBots, counts.redBots, mode);
     if (!rosterValid) await this.ctx.storage.put("bots", this.bots);
@@ -1118,7 +1127,7 @@ export class GameRoom {
     Object.assign(match,{status:MATCH_STATUS.ENDED,endedAt:now,restartAt:now+MATCH_END_MS,winner:['blue','red','draw'].includes(result.winner)?result.winner:'',winnerId:safeClientId(result.winnerId||''),winnerName:String(result.winnerName||'').slice(0,24),reason:String(reason||'').slice(0,24),updatedAt:now});
     this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.killstreakEffects.length=0;
     for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;socket.serializeAttachment(this.freezeHumanState(p,now));}
-    for(const bot of this.bots||[]){if(bot.boss)Object.assign(bot,{bossPhase:'chase',bossPhaseEndsAt:0,weakpointUntil:0,telegraphUntil:0});bot.traversal=null;bot.reloadAt=0;bot.reloadWeapon='';bot.moveSpeed=0;bot.knockVelocityX=0;bot.knockVelocityZ=0;bot.abductedUntil=0;bot.abductedBy='';bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y,false);}
+    for(const bot of this.bots||[]){if(bot.boss)Object.assign(bot,{bossPhase:'chase',bossPhaseEndsAt:0,weakpointUntil:0,telegraphUntil:0});bot.traversal=null;bot.actorDetour=null;bot.botAirborne=false;bot.reloadAt=0;bot.reloadWeapon='';bot.moveSpeed=0;bot.knockVelocityX=0;bot.knockVelocityZ=0;bot.abductedUntil=0;bot.abductedBy='';bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y,false);}
     meta.match=match;this.matchDirty=true;this.broadcastMatch(meta,now);return true;
   }
 
@@ -1132,12 +1141,13 @@ export class GameRoom {
   prepareRound(meta,now=Date.now()){
     this.clearMoonSupply(meta);
     const old=meta.match,mode=matchMode(old);
-    meta.match={...defaultMatchState(now,old),round:1,status:mode==='infection'?MATCH_STATUS.ACTIVE:MATCH_STATUS.WARMUP,startedAt:mode==='infection'?now:0,warmupEndsAt:mode==='infection'?0:now+MATCH_WARMUP_MS,mode,scoreLimit:old.scoreLimit,timeLimitMs:old.timeLimitMs,infectionChaos:!!old.infectionChaos,minimapRevealAll:!!old.minimapRevealAll,minimapDirectional:!!old.minimapDirectional};
-    this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.killstreakEffects.length=0;this.recentDeaths=[];this.recentSpawns=[];this.recentGunfire=[];this.recentExplosions=[];const players=[],assigned=[];let index=0;
+    meta.match={...defaultMatchState(now,old),sessionId:crypto.randomUUID(),round:1,status:mode==='infection'?MATCH_STATUS.ACTIVE:MATCH_STATUS.WARMUP,startedAt:mode==='infection'?now:0,warmupEndsAt:mode==='infection'?0:now+MATCH_WARMUP_MS,mode,scoreLimit:old.scoreLimit,timeLimitMs:old.timeLimitMs,minimapRevealAll:!!old.minimapRevealAll,minimapDirectional:!!old.minimapDirectional};
+    meta.match.cheatsUsed=mode!=='infection'&&this.liveSockets().some(socket=>socket.deserializeAttachment()?.godMode);
+    this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.killstreakEffects.length=0;this.recentDeaths=[];this.recentSpawns=[];this.recentGunfire=[];this.recentExplosions=[];this.combatHistory.clear();const players=[],assigned=[];let index=0;
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;
       const team=gameModeSpec(mode).cooperative?'blue':matchUsesTeams(mode)&&p.pendingTeam?normalizeTeam(p.pendingTeam):normalizeTeam(p.team),spawn=this.selectSpawn(mode,team,assigned,index++,p.clientId,now);
-      const reset=spawnedPlayerState(p,spawn,team,now,{resetStats:true});Object.assign(reset,{infected:false,primaryOwned:true,medkits:0,infectionRound:0,cash:INFECTION.startCash,armor:0,maxHp:100});if(mode==='infection')reset.team='blue';socket.serializeAttachment(reset);players.push(publicPlayer(reset));assigned.push(reset);
+      const reset=spawnedPlayerState(p,spawn,team,now,{resetStats:true});Object.assign(reset,{matchSessionId:meta.match.sessionId,infected:false,primaryOwned:true,medkits:0,infectionRound:0,cash:INFECTION.startCash,armor:0,maxHp:100});if(mode==='infection')reset.team='blue';socket.serializeAttachment(reset);players.push(publicPlayer(reset));assigned.push(reset);
     }
     this.bots=[];let botSpawnIndex=index;
     for(const [team,count] of [['blue',meta.blueBots||0],['red',meta.redBots||0]])for(let i=0;i<count;i++){
@@ -1155,12 +1165,12 @@ export class GameRoom {
     this.infectionDirector?.field.clear();
     this.clearMoonSupply(meta);
     const old=meta.match,mode=matchMode(old),players=[];
-    meta.match={...defaultMatchState(now,old),round:1,status:MATCH_STATUS.WAITING,mode,scoreLimit:old.scoreLimit,timeLimitMs:old.timeLimitMs,infectionChaos:!!old.infectionChaos,minimapRevealAll:!!old.minimapRevealAll,minimapDirectional:!!old.minimapDirectional};
-    this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.killstreakEffects.length=0;this.recentDeaths=[];this.recentSpawns=[];this.recentGunfire=[];this.recentExplosions=[];
+    meta.match={...defaultMatchState(now,old),sessionId:crypto.randomUUID(),round:1,status:MATCH_STATUS.WAITING,mode,scoreLimit:old.scoreLimit,timeLimitMs:old.timeLimitMs,minimapRevealAll:!!old.minimapRevealAll,minimapDirectional:!!old.minimapDirectional};
+    this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.killstreakEffects.length=0;this.recentDeaths=[];this.recentSpawns=[];this.recentGunfire=[];this.recentExplosions=[];this.combatHistory.clear();
     for(const socket of this.ctx.getWebSockets()){
       const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;
       const team=gameModeSpec(mode).cooperative?'blue':matchUsesTeams(mode)&&p.pendingTeam?normalizeTeam(p.pendingTeam):normalizeTeam(p.team),support=this.world.geometry.worldSupportHeight(p.x,p.z,p.y,false);
-      const reset=spawnedPlayerState(p,{x:p.x,y:support,z:p.z},team,now,{resetStats:true});Object.assign(reset,{infected:false,primaryOwned:true,medkits:0,cash:INFECTION.startCash,maxHp:100,armor:0,infectionRound:0});if(mode==='infection')reset.team='blue';socket.serializeAttachment(reset);players.push(publicPlayer(reset));
+      const reset=spawnedPlayerState(p,{x:p.x,y:support,z:p.z},team,now,{resetStats:true});Object.assign(reset,{matchSessionId:meta.match.sessionId,infected:false,primaryOwned:true,medkits:0,cash:INFECTION.startCash,maxHp:100,armor:0,infectionRound:0});if(mode==='infection')reset.team='blue';socket.serializeAttachment(reset);players.push(publicPlayer(reset));
     }
     if(mode==='infection'){for(const bot of this.bots)Object.assign(bot,{infected:false,team:'blue',hp:100,maxHp:100,primaryOwned:true,medkits:0,armor:0,infectionRound:0});}
     if(gameModeSpec(mode).cooperative){this.bots=[];this.broadcast({t:'bots',bots:[],config:{blueBots:0,redBots:0,difficulty:safeBotDifficulty(meta.botDifficulty)}});}
@@ -1255,12 +1265,13 @@ export class GameRoom {
     this.broadcast({t:event,player:entry.socket?publicPlayer(entry.actor):publicBot(entry.actor)});
   }
 
+  get navigator(){if(this.botNavigationWorld!==this.world){this.botNavigationWorld=this.world;this.botNavigator=createBotNavigator(this.world);}return this.botNavigator;}
   get infection(){return this.infectionDirector ||= new InfectionDirector(this);}
   infectActor(entry,now,first=false){return this.infection.convert(entry,now,first);}
   beginInfectionRound(meta,now){return this.infection.begin(meta,now);}
   stepInfection(meta,now){return this.infection.step(meta,now);}
   infectionClaw(entry,now){return this.infection.claw(entry,now);}
-  refillInfectionAmmo(actor,weapon=''){const full=freshAmmo();actor.ammo=weapon?{...actor.ammo,[weapon]:full[weapon]}:full;}
+  refillInfectionAmmo(actor,weapon=''){const full=freshAmmo(actor);actor.ammo=weapon?{...actor.ammo,[weapon]:full[weapon]}:full;}
   makeInfectionBot(now){
     const bot=makeBot(this.world,'red',this.bots.length,'infection');
     bot.id=`infected-backfill-${now}`;bot.name='Infected reinforcement';bot.infectionBackfill=true;
@@ -1268,6 +1279,7 @@ export class GameRoom {
   }
 
   beginZombieWave(meta,now){
+    this.combatHistory.clear();
     const match=meta.match,sockets=this.liveSockets(),rules=zombieWaveSpec(match.wave+1,sockets.length);
     Object.assign(match,{wave:match.wave+1,waveTotal:rules.count,waveRemaining:rules.count,waveSpawned:0,nextWaveAt:0,updatedAt:now});
     this.bots=[];this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.killstreakEffects.length=0;
@@ -1516,8 +1528,11 @@ export class GameRoom {
       await this.putMeta(meta);
     }
 
-    const preservedLoadout=preserved?normalizeLoadout(preserved,requestedBase):requestedBase;
-    const mode=matchMode(meta.match),joinTeam=gameModeSpec(mode).cooperative?'blue':matchUsesTeams(mode)&&preserved?.pendingTeam?normalizeTeam(preserved.pendingTeam):normalizeTeam(preserved?.team||requestedTeam);
+    // Preferences survive new matches; combat snapshots never cross a session.
+    const savedPreferences=preserved;
+    if(preserved&&(!meta.match.sessionId||preserved.matchSessionId!==meta.match.sessionId))preserved=null;
+    const preservedLoadout=savedPreferences?normalizeLoadout(savedPreferences,requestedBase):requestedBase;
+    const mode=matchMode(meta.match),joinTeam=gameModeSpec(mode).cooperative?'blue':normalizeTeam(preserved?.team||requestedTeam);
     const requestedTeamCount = liveMembers.filter(({attachment:a}) => normalizeTeam(a.team) === joinTeam).length;
     const spawnActors=[...liveMembers.map(({attachment})=>attachment),...(this.bots||[])];
     const preservePosition=!!preserved&&matchPreservesReconnectPosition(meta.match);
@@ -1527,13 +1542,14 @@ export class GameRoom {
     const server = pair[1];
     const attachment = {
       clientId,
+      matchSessionId:meta.match.sessionId||'',
       name,
       team: joinTeam,
       connectedAt: Date.now(),
       replaced: false,
-      x: clamp(finiteNumber(spawn.x, 0), -ARENA_LIMIT, ARENA_LIMIT),
+      x: clamp(finiteNumber(spawn.x, 0), -this.world.geometry.ARENA_LIMIT, this.world.geometry.ARENA_LIMIT),
       y: finiteNumber(spawn.y, this.world.geometry.terrainHeight(spawn.x || 0, spawn.z || 0)),
-      z: clamp(finiteNumber(spawn.z, 0), -ARENA_LIMIT, ARENA_LIMIT),
+      z: clamp(finiteNumber(spawn.z, 0), -this.world.geometry.ARENA_LIMIT, this.world.geometry.ARENA_LIMIT),
       yaw: finiteNumber(spawn.yaw, 0),
       pitch: clamp(finiteNumber(spawn.pitch, 0), -1.4, 1.4),
       hp: clamp(Math.floor(finiteNumber(spawn.hp, 100)), 0, 100),
@@ -1541,9 +1557,12 @@ export class GameRoom {
       spawnProtectedUntil: Math.max(0,finiteNumber(spawn.spawnProtectedUntil,0)),
       velocityX:0,velocityZ:0,
       fireReadyAt: normalizeFireReady(spawn.fireReadyAt),
+      fireHeat:preserved?.fireHeat&&typeof preserved.fireHeat==='object'?{...preserved.fireHeat}:{},
+      fireHeatAt:preserved?.fireHeatAt&&typeof preserved.fireHeatAt==='object'?{...preserved.fireHeatAt}:{},
+      sprintFireReadyAt:Math.max(0,finiteNumber(preserved?.sprintFireReadyAt,0)),
       regenAt: finiteNumber(spawn.regenAt, 0),
-      loadoutClasses: normalizeLoadoutClasses(preserved?.loadoutClasses||requestedClasses,preservedLoadout),
-      activeClassId: normalizeLoadoutClassId(preserved?.activeClassId||requestedClassId),
+      loadoutClasses: normalizeLoadoutClasses(savedPreferences?.loadoutClasses||requestedClasses,preservedLoadout),
+      activeClassId: normalizeLoadoutClassId(savedPreferences?.activeClassId||requestedClassId),
       pendingClassId: preserved?.pendingClassId ? normalizeLoadoutClassId(preserved.pendingClassId) : '',
       primaryWeapon: preservedLoadout.primaryWeapon,
       secondaryWeapon: preservedLoadout.secondaryWeapon,
@@ -1594,7 +1613,7 @@ export class GameRoom {
     };
     attachment.ammo=normalizeAmmo(spawn.ammo,attachment);
     if(mode==='infection'){
-      Object.assign(attachment,infectionConnectionState(preserved,meta.match,Date.now()));
+      Object.assign(attachment,infectionConnectionState(preserved,meta.match,Date.now(),attachment));
       attachment.team=attachment.infected?'red':'blue';attachment.pendingTeam='';
     }
     if(gameModeSpec(mode).cooperative){attachment.pendingTeam='';if(!preserved&&meta.match.status===MATCH_STATUS.ACTIVE){attachment.hp=0;attachment.wastedUntil=0;}}
@@ -1651,6 +1670,7 @@ export class GameRoom {
     if (!this.allowSocketMessage(socket, messageType, receivedAt)) return;
     const meta = await this.getMeta();
     if (!meta) return;
+    if(Number(meta.protocol)!==PROTOCOL_VERSION){sendJson(socket,{t:'notice',tone:'error',text:'MATCH UPDATED · REOPEN BREACH AND CREATE A NEW MATCH'});socket.close(4009,'MATCH UPDATED · CREATE A NEW MATCH');return;}
     await this.ensureSimulation(meta);
 
     let me = socket.deserializeAttachment() || {};
@@ -1666,19 +1686,22 @@ export class GameRoom {
     socket.serializeAttachment(me);
 
     if(matchMode(meta.match)==='infection'){
+      if(INFECTION_ROUND_INTENTS.includes(payload.t)&&payload.round!==meta.match.infectionRound){if(['fire','weapon','reload'].includes(payload.t))sendLoadout(socket,me,{action:payload.t,accepted:false,reason:'stale_round'});return;}
       if(payload.t==='infectionBuy'){
-        const result=this.infection.purchase({actor:me,socket},String(payload.item||''),now);
+        const result=this.infection.purchase({actor:me,socket},String(payload.item||''),now,true,{round:payload.round,sequence:payload.sequence});
         sendJson(socket,{t:'infectionBuy',item:String(payload.item||''),...result,player:publicPlayer(me)});return;
       }
       if(payload.t==='infectionAction'){
+        if(payload.round!==meta.match.infectionRound){sendJson(socket,{t:'infectionAction',round:payload.round,action:payload.action,accepted:false,reason:'stale_round',player:publicPlayer(me)});return;}
         const accepted=this.infection.action({actor:me,socket},String(payload.action||''),now);
-        sendJson(socket,{t:'infectionAction',action:payload.action,accepted,player:publicPlayer(socket.deserializeAttachment())});return;
+        sendJson(socket,{t:'infectionAction',round:payload.round,action:payload.action,accepted,player:publicPlayer(socket.deserializeAttachment())});return;
       }
-      if(payload.t==='infectionClaw'||(payload.t==='fire'&&me.infected)){this.infection.action({actor:me,socket},'fire',now);return;}
+      if(payload.t==='infectionClaw'){if(payload.round!==meta.match.infectionRound)return;this.infection.action({actor:me,socket},'fire',now);return;}
       if(payload.t==='replaySkip')return;
-      if(['team','loadout','killstreak','killstreakLoadout'].includes(payload.t))return;
-      if(['fire','throw','equipmentAction','reload','weapon'].includes(payload.t)&&(me.infected||meta.match.infectionPhase!=='active'||now<(me.frozenUntil||0)))return;
-      if(['weapon','fire'].includes(payload.t)&&!me.infected&&payload.weapon!=='pistol'&&(!me.primaryOwned||payload.weapon!==me.primaryWeapon))return;
+      if(payload.t==='throw'||payload.t==='equipmentAction')return;
+      if(['team','killstreak','killstreakLoadout'].includes(payload.t)||(payload.t==='loadout'&&!matchAllowsLobbyEdits(meta.match)))return;
+      if(['fire','throw','equipmentAction','reload','weapon'].includes(payload.t)&&(me.infected||meta.match.infectionPhase!=='active'||now<(me.infectionReadyAt||0)||now<(me.frozenUntil||0)))return;
+      if(['weapon','fire'].includes(payload.t)&&!me.infected&&(!playerCanEquip(me,payload.weapon)||(payload.weapon===me.primaryWeapon&&!me.primaryOwned)))return;
     }
     if(payload.t==='killstreakLoadout'){
       const rev=Math.max(0,Math.floor(finiteNumber(payload.rev,0))),supplied=Array.isArray(payload.selection)?payload.selection:[],raw=normalizeKillstreakSelection(supplied,{fill:false});
@@ -1704,9 +1727,9 @@ export class GameRoom {
 
     if (payload.t === "state") {
       if(now<finiteNumber(me.abductedUntil,0)){sendJson(socket,{t:'correction',seq:Math.max(0,Math.floor(finiteNumber(payload.seq,0))),x:me.x,y:me.y,z:me.z,vertical:false,verticalVelocity:0,grounded:true,crouched:false,reason:'abducted'});await this.stepSimulation(now,meta);return;}
-      if (me.hp > 0 || (matchMode(meta.match)!=='infection'&&now >= me.wastedUntil)) {
+      if (me.hp > 0) {
         if (!matchAllowsMovement(meta.match)) {
-          const requestedX=clamp(finiteNumber(payload.x,me.x),-ARENA_LIMIT,ARENA_LIMIT),requestedY=finiteNumber(payload.y,me.y),requestedZ=clamp(finiteNumber(payload.z,me.z),-ARENA_LIMIT,ARENA_LIMIT);
+          const requestedX=clamp(finiteNumber(payload.x,me.x),-this.world.geometry.ARENA_LIMIT,this.world.geometry.ARENA_LIMIT),requestedY=finiteNumber(payload.y,me.y),requestedZ=clamp(finiteNumber(payload.z,me.z),-this.world.geometry.ARENA_LIMIT,this.world.geometry.ARENA_LIMIT);
           const corrected=Math.hypot(requestedX-me.x,requestedZ-me.z)>.01||Math.abs(requestedY-me.y)>.05||!!payload.crouched||!!payload.ads;
           const support=this.world.geometry.worldSupportHeight(me.x,me.z,me.y,false),incomingJumpSeq=Math.max(0,Math.floor(finiteNumber(payload.jumpSeq,me.lastJumpSeq||0)));
           me={...me,y:support,yaw:finiteNumber(payload.yaw,me.yaw),pitch:clamp(finiteNumber(payload.pitch,me.pitch),-1.4,1.4),ads:false,adsAmount:0,crouched:false,sprinting:false,sliding:false,slideUntil:0,moveSpeed:0,verticalVelocity:0,serverGrounded:true,lastGroundedAt:now,lastVerticalAt:now,lastStateAt:now,movementClockAt:now,lastMovementClientAt:now,moveBudgetSec:MOVE_BUDGET_INITIAL_SEC,lastJumpSeq:incomingJumpSeq,traversal:null,ladder:null,knockVelocityX:0,knockVelocityZ:0};
@@ -1838,6 +1861,7 @@ export class GameRoom {
         const a=shotgunPattern?shotgunPelletAngles(shotYaw,basePitch,spreadRadius,i,pellets,patternRotation):spreadShotAngles(shotYaw,basePitch,spreadRadius),launch=shotLaunchPose(shooterPose,a.yaw,a.pitch,!!shooterPose.crouched,weapon,this.world.serverCollision.segmentFirstWorldHitT,resolvedSpec.projectileRadius),centerScale=i===0?Math.max(1,finiteNumber(resolvedSpec.centerPelletDamageScale,1)):1;
         this.spawnBullet({mod:settings.mod,ownerId:me.clientId,hand,ownerTeam:normalizeTeam(me.team),damage:spec.damage*centerScale,weapon,attachments,lifetimeMs:resolvedSpec.lifetimeMs,x:launch.x,y:launch.y,z:launch.z,vx:launch.dx*spec.speed,vy:launch.dy*spec.speed,vz:launch.dz*spec.speed,now,shotAt,targetRewindMs,consumeAmmo:i===0&&!unlimited,primaryShot:i===0});
       }
+      if(matchMode(meta.match)==='infection'){this.infection.recordActivity({actor:me,socket},now);socket.serializeAttachment(me);}
       sendLoadout(socket,me,{action:'fire',accepted:true,unlimited});if(autoReloadStarted)this.broadcast({t:'reload',id:me.clientId,weapon,reloadAt:me.reloadAt},socket);await this.stepSimulation(now,meta);return;
     }
 
@@ -1895,16 +1919,23 @@ export class GameRoom {
       if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',tone:'error',text:'MATCH ALREADY STARTED'});return;}
       const setup=payload.setup&&typeof payload.setup==='object'?payload.setup:null;
       if(!setup||!setup.rules||!setup.bots||!setup.minimap||!setup.settings){sendJson(socket,{t:'notice',tone:'error',text:'MATCH SETUP INCOMPLETE'});return;}
-      const mode=normalizeGameMode(setup.mode),rules=normalizeMatchRules({mode,infectionChaos:!!setup.rules.infectionChaos,scoreLimit:setup.rules.scoreLimit,timeLimitMs:setup.rules.timeLimitMs,minimapRevealAll:!!setup.minimap.revealAll,minimapDirectional:!!setup.minimap.directional});
+      const mode=normalizeGameMode(setup.mode),rules=normalizeMatchRules({mode,scoreLimit:setup.rules.scoreLimit,timeLimitMs:setup.rules.timeLimitMs,minimapRevealAll:!!setup.minimap.revealAll,minimapDirectional:!!setup.minimap.directional});
       const blueBots=clamp(Math.floor(finiteNumber(setup.bots.blueBots,0)),0,MAX_BOTS_PER_TEAM),redBots=clamp(Math.floor(finiteNumber(setup.bots.redBots,0)),0,MAX_BOTS_PER_TEAM);
       if(blueBots+redBots>MAX_MATCH_BOTS){sendJson(socket,{t:'notice',tone:'error',text:`Maximum ${MAX_MATCH_BOTS} bots per match.`});return;}
-      meta.mapId=mode==='moon'?'moon':normalizeMapId(setup.mapId);
-      if(meta.mapId==='custom-map'){
-        try{const incoming=setup.customMapDefinition||this.customMapDefinition||await this.loadStoredCustomMap(meta)||FALLBACK_CUSTOM_MAP_DEFINITION;await this.storeCustomMap(incoming,meta);this.world=worldBundle(meta.mapId,this.customMapDefinition);}catch(error){sendJson(socket,{t:'notice',tone:'error',text:`CUSTOM MAP REJECTED · ${String(error?.message||'invalid map').slice(0,120)}`});return;}
-      }else this.world=worldBundle(meta.mapId);
+      if(mode==='infection'&&this.liveSockets().length+blueBots+redBots<2){sendJson(socket,{t:'notice',tone:'error',text:'INFECTION NEEDS TWO PARTICIPANTS · Add a bot or invite another player.'});return;}
+      const nextMapId=mode==='moon'?'moon':normalizeMapId(setup.mapId);
+      if(nextMapId==='custom-map'){
+        try{const incoming=setup.customMapDefinition||this.customMapDefinition||await this.loadStoredCustomMap(meta)||FALLBACK_CUSTOM_MAP_DEFINITION;const validated=sanitizeUploadedMapDefinition(incoming);const nextWorld=worldBundle(nextMapId,validated);await this.storeCustomMap(validated,meta);this.world=nextWorld;}catch(error){sendJson(socket,{t:'notice',tone:'error',text:`CUSTOM MAP REJECTED · ${String(error?.message||'invalid map').slice(0,120)}`});return;}
+      }else this.world=worldBundle(nextMapId);
+      meta.mapId=nextMapId;
       meta.settings=normalizeWorldSettings({...setup.settings,mod:mode==='moon'?'moon':'normal'});meta.blueBots=gameModeSpec(mode).cooperative?0:blueBots;meta.redBots=gameModeSpec(mode).cooperative?0:redBots;meta.botDifficulty=safeBotDifficulty(setup.bots.difficulty);meta.match=defaultMatchState(now,rules);
       if(setup.loadout&&typeof setup.loadout==='object'){const base=normalizeLoadout(me),classes=normalizeLoadoutClasses(setup.loadoutClasses??me.loadoutClasses,base),classId=normalizeLoadoutClassId(setup.classId??me.activeClassId),next=normalizeLoadout(setup.loadout,loadoutClassById(classes,classId,base)),idx=classes.findIndex(item=>item.id===classId);if(idx>=0)classes[idx]={...classes[idx],...next};me.loadoutClasses=classes;me.pendingClassId=classId;me.pendingLoadout=next;}me.killstreakSelection=normalizeKillstreakSelection(setup.killstreakSelection??me.killstreakSelection);socket.serializeAttachment(me);
-      this.prepareRound(meta,now);await this.putMeta(meta);await this.ctx.storage.put('bots',this.bots);await this.updateDirectory(this.liveSockets().length,meta);return;
+      this.prepareRound(meta,now);
+      if(mode==='infection'&&meta.match.infectionWaitReason==='safe_spawns'){
+        this.returnMatchToLobby(meta,now);
+        this.broadcast({t:'infectionStartBlocked',message:'This map cannot safely fit this Infection roster. Choose another map or reduce participants.'});
+      }
+      await this.putMeta(meta);if(matchMode(meta.match)!=='infection')await this.ctx.storage.put('bots',this.bots);await this.updateDirectory(this.liveSockets().length,meta);return;
     }
 
     if(payload.t==='returnLobby'){
@@ -1913,7 +1944,7 @@ export class GameRoom {
       // the client instead of being able to interrupt the room for all players.
       if(!isRoomAdmin(meta,me.clientId)){sendJson(socket,{t:'notice',tone:'error',text:'ADMIN REQUIRED'});return;}
       if(matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'notice',text:'ALREADY IN LOBBY'});return;}
-      this.returnMatchToLobby(meta,now);await this.putMeta(meta);await this.ctx.storage.put('bots',this.bots);return;
+      this.returnMatchToLobby(meta,now);await this.putMeta(meta);if(matchMode(meta.match)!=='infection')await this.ctx.storage.put('bots',this.bots);return;
     }
 
     if (payload.t === "god") {
@@ -1922,9 +1953,10 @@ export class GameRoom {
         sendJson(socket,{t:"god",id:me.clientId,enabled:!!me.godMode});
         return;
       }
+      if(me.godMode||payload.enabled)meta.match.cheatsUsed=true;
       me.godMode = !!payload.enabled;
       if(me.godMode)refreshUnlimitedResources(me);
-      socket.serializeAttachment(me);
+      socket.serializeAttachment(me);await this.putMeta(meta);
       await this.updateDirectory(this.liveSockets().length,meta);
       this.broadcast({ t: "god", id: me.clientId, enabled: me.godMode, custom:this.isCustomMatch(meta) });
       if(me.godMode)sendJson(socket,{t:'equipment',equipment:me.equipment,unlimited:true});
@@ -1969,9 +2001,10 @@ export class GameRoom {
       let target = targetSocket.deserializeAttachment() || {};
       const action = String(payload.action || "");
       if (action === "god") {
+        if(target.godMode||payload.enabled)meta.match.cheatsUsed=true;
         target.godMode = !!payload.enabled;
         if (target.godMode) refreshUnlimitedResources(target);
-        targetSocket.serializeAttachment(target);
+        targetSocket.serializeAttachment(target);await this.putMeta(meta);
         await this.updateDirectory(this.liveSockets().length, meta);
         this.broadcast({ t: "god", id: target.clientId, enabled: target.godMode, custom:this.isCustomMatch(meta) });
         if (target.godMode) {
@@ -1998,7 +2031,7 @@ export class GameRoom {
         target.admin = isRoomAdmin(meta, targetId);
         const godDisabled=!target.admin&&target.godMode;
         if (godDisabled) target.godMode = false;
-        targetSocket.serializeAttachment(target);
+        targetSocket.serializeAttachment(target);await this.putMeta(meta);
         await this.updateDirectory(this.liveSockets().length, meta);
         if(godDisabled){this.broadcast({ t: "god", id: targetId, enabled: false, custom:this.isCustomMatch(meta) });sendLoadout(targetSocket, target, { action: "god", accepted: true, unlimited: false });}
         this.broadcast({ t: "adminRole", id: targetId, enabled: target.admin, owner: targetId === meta.ownerClientId });
@@ -2019,6 +2052,7 @@ export class GameRoom {
         ? { ...current, weapons:Object.fromEntries(WEAPON_ORDER.map(name=>[name,{...current.weapons[name],...(patch.weapons?.[name]||{})}])) }
         : { ...current, movement:{...current.movement,...(patch.movement||{})}, combat:{...current.combat,...(patch.combat||{})} };
       const nextSettings = normalizeWorldSettings({...merged,mod:matchMode(meta.match)==='moon'?'moon':'normal'});
+      if(!matchAllowsLobbyEdits(meta.match)&&JSON.stringify(current)!==JSON.stringify(nextSettings))meta.match.cheatsUsed=true;
       meta.settings = nextSettings;
       await this.putMeta(meta);
       this.broadcast({ t: "settings", settings: nextSettings, accepted:true, rev:payload.rev||0, section, by: me.clientId, custom:this.isCustomMatch(meta) });
@@ -2106,8 +2140,8 @@ export class GameRoom {
 
   validateHumanState(me, payload, now, settings) {
     settings={...settings,movement:roleMovement(settings.movement,matchMode(this.metaCache?.match),me,now)};
-    const desiredX = clamp(finiteNumber(payload.x, me.x), -ARENA_LIMIT, ARENA_LIMIT);
-    const desiredZ = clamp(finiteNumber(payload.z, me.z), -ARENA_LIMIT, ARENA_LIMIT);
+    const desiredX = clamp(finiteNumber(payload.x, me.x), -this.world.geometry.ARENA_LIMIT, this.world.geometry.ARENA_LIMIT);
+    const desiredZ = clamp(finiteNumber(payload.z, me.z), -this.world.geometry.ARENA_LIMIT, this.world.geometry.ARENA_LIMIT);
     // Preserve server-time authority, but also honor the monotonic sample clock
     // of already-sequenced movement snapshots. WebSocket can queue several
     // legitimate 33 ms samples during a network stall and deliver them in a
@@ -2222,7 +2256,7 @@ export class GameRoom {
     let lastGroundedAt=Math.max(0,finiteNumber(me.lastGroundedAt,serverGrounded?now:0));if(serverGrounded)lastGroundedAt=now;
     const solidActors = this.solidActors(me.clientId, now);
     const horizontal = sweepHorizontalMovement({
-      x:me.x,y:me.y,z:me.z,dx,dz,grounded:serverGrounded,arenaLimit:ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,
+      x:me.x,y:me.y,z:me.z,dx,dz,grounded:serverGrounded,arenaLimit:this.world.geometry.ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,
       supportHeight:(x,z,y)=>this.world.geometry.worldSupportHeight(x,z,y,crouched),
       stepUpHeight:(x,z,y,maxStep)=>this.world.geometry.worldStepUpHeight(x,z,y,maxStep,PLAYER_RADIUS),maxStepHeight:MAX_STEP_HEIGHT,
       blockedAt:(x,z,y,fromX,fromZ,fromY)=>this.world.worldCollision.worldMoveBlockedAt(x,z,y,fromX,fromZ,playerHeight,PLAYER_RADIUS,fromY)||this.actorBlocksAt(x,z,y,fromX,fromZ,solidActors,playerHeight),
@@ -2369,7 +2403,7 @@ export class GameRoom {
     this.stepMoonSupply(meta,now);
     const match = meta.match;
     if (matchAllowsRespawn(match)) this.respawnExpiredHumans(now);
-    if (this.matchDirty) { await this.putMeta(meta); if(gameModeSpec(matchMode(meta.match)).cooperative||matchMode(meta.match)==='infection')await this.ctx.storage.put("bots",this.bots); this.matchDirty = false; }
+    if (this.matchDirty) { await this.putMeta(meta); if(gameModeSpec(matchMode(meta.match)).cooperative)await this.ctx.storage.put("bots",this.bots); this.matchDirty = false; }
 
     if (!this.lastSimAt) { this.lastSimAt = now; this.simAccumulatorMs = 0; return; }
     const simDeltaMs = Math.max(0, now - this.lastSimAt);
@@ -2396,7 +2430,7 @@ export class GameRoom {
       this.stepRegeneration(now, settings);
     }
     if (this.matchDirty) {
-      await this.putMeta(meta); if(gameModeSpec(matchMode(meta.match)).cooperative||matchMode(meta.match)==='infection')await this.ctx.storage.put("bots",this.bots); this.matchDirty = false;
+      await this.putMeta(meta); if(gameModeSpec(matchMode(meta.match)).cooperative)await this.ctx.storage.put("bots",this.bots); this.matchDirty = false;
       void this.updateDirectory(this.liveSockets().length, meta).catch(()=>{});
     }
 
@@ -2461,6 +2495,15 @@ export class GameRoom {
     }
   }
 
+  advanceBotVertical(bot,dt,settings){
+    if(!bot.infectionAirborne&&!bot.botAirborne)return;
+    const g=this.world.geometry,height=g.PLAYER_HEIGHT*actorScale(bot),radius=g.PLAYER_RADIUS*actorScale(bot);
+    let remaining=Math.min(.15,Math.max(0,dt));
+    while(remaining>1e-7){const step=Math.min(1/60,remaining),next=advanceVerticalMotion(bot.y,bot.verticalVelocity||0,settings.movement.gravity,step),ceiling=g.resolveCeilingCollision(bot.y,next.y,bot.x,bot.z,height),floor=g.worldSupportHeight(bot.x,bot.z,bot.y,false,radius);bot.y=ceiling.y;bot.verticalVelocity=ceiling.hit?0:next.velocity;remaining-=step;
+      if(bot.y<=floor&&bot.verticalVelocity<=0){bot.y=floor;bot.verticalVelocity=0;bot.infectionAirborne=false;bot.botAirborne=false;bot.serverGrounded=true;break;}
+    }
+  }
+
   stepBots(now, dt, settings, meta) {
     const humans = this.ctx.getWebSockets()
       .map((socket) => ({ kind: "human", socket, target: socket.deserializeAttachment() || {} }))
@@ -2477,7 +2520,7 @@ export class GameRoom {
         if(bot.zombie||mode==='infection')continue;
         if (now >= bot.wastedUntil) {
           const actors=[...humans.map(({target})=>target),...this.bots],spawn=this.selectSpawn(mode,bot.team,actors,i+Math.floor(Math.random()*this.world.spawns.spawnPointCount(mode,bot.team)),bot.id,now),primary=safeBotWeapon(bot.primaryWeapon||bot.weapon),tactical=safeTactical(bot.tactical),lethal=safeLethal(bot.lethal);
-          Object.assign(bot,spawn,{hp:100,wastedUntil:0,regenAt:0,velocityX:0,velocityZ:0,moveSpeed:0,sprinting:false,ads:false,weapon:primary,primaryWeapon:primary,ammo:freshAmmo(),equipment:freshEquipment(tactical,lethal),tactical,lethal,reloadAt:0,reloadWeapon:'',flashUntil:0,flashSpin:0,traversal:null,ladder:null,targetId:'',targetLockUntil:0,reactionReadyAt:0,aimYaw:finiteNumber(spawn.yaw,0),aimPitch:0,aimNoiseYaw:0,aimNoisePitch:0,aimNoiseUntil:0,burstShotsLeft:0,burstPauseUntil:0,fireHeat:0,fireHeatAt:0,combatRecoverUntil:0,nextEquipmentAt:now+botEquipmentDelay(profile),navX:spawn.x,navZ:spawn.z,navUntil:0,navNodeIndex:-1,lastMovedAt:now,lastSeenTargetId:'',lastSeenAt:0,lastKnownX:spawn.x,lastKnownZ:spawn.z,patrolX:spawn.x,patrolZ:spawn.z,patrolUntil:0,patrolNodeIndex:-1});
+          Object.assign(bot,spawn,{actorDetour:null,botAirborne:false,hp:100,wastedUntil:0,regenAt:0,velocityX:0,velocityZ:0,moveSpeed:0,sprinting:false,ads:false,weapon:primary,primaryWeapon:primary,ammo:freshAmmo(),equipment:freshEquipment(tactical,lethal),tactical,lethal,reloadAt:0,reloadWeapon:'',flashUntil:0,flashSpin:0,traversal:null,ladder:null,targetId:'',targetLockUntil:0,reactionReadyAt:0,aimYaw:finiteNumber(spawn.yaw,0),aimPitch:0,aimNoiseYaw:0,aimNoisePitch:0,aimNoiseUntil:0,burstShotsLeft:0,burstPauseUntil:0,fireHeat:0,fireHeatAt:0,combatRecoverUntil:0,nextEquipmentAt:now+botEquipmentDelay(profile),navX:spawn.x,navZ:spawn.z,navUntil:0,navNodeIndex:-1,lastMovedAt:now,lastSeenTargetId:'',lastSeenAt:0,lastKnownX:spawn.x,lastKnownZ:spawn.z,patrolX:spawn.x,patrolZ:spawn.z,patrolUntil:0,patrolNodeIndex:-1});
           this.broadcast({t:'respawn',player:publicBot(bot)});
         }
         continue;
@@ -2486,7 +2529,9 @@ export class GameRoom {
       if(!Number.isFinite(Number(bot.aimYaw)))bot.aimYaw=finiteNumber(bot.yaw,0);
       if(!Number.isFinite(Number(bot.aimPitch)))bot.aimPitch=0;
 
+      if(mode==='infection'&&now<(bot.frozenUntil||0))continue;
       if(mode==='infection')this.infection.botAir(bot,now,dt,settings);
+      this.advanceBotVertical(bot,dt,settings);
       if(bot.traversal){
         bot.ads=false;bot.sprinting=false;
         const pose=traversalPose(bot.traversal,now);
@@ -2517,7 +2562,7 @@ export class GameRoom {
         continue;
       }
 
-      const solidActors=this.solidActors(bot.id,now);
+      const solidActors=this.solidActors(bot.id,now);let navigationDrop=false;
       const tryTraverse=(ax,az)=>{
         if(bot.boss)return false;
         const len=Math.hypot(ax,az);if(len<.2||bot.traversal||bot.ladder)return false;
@@ -2532,9 +2577,9 @@ export class GameRoom {
       };
       const tryMove=(ax,az,step)=>{
         const fromX=bot.x,fromZ=bot.z,bodyScale=actorScale(bot),bodyRadius=bot.boss?PLAYER_RADIUS*bodyScale:.34,strictCharge=bot.boss&&bot.bossKind==='ravager'&&bot.bossPhase==='attack';let chargeBlocked=false;
-        const out=sweepHorizontalMovement({x:bot.x,y:bot.y,z:bot.z,dx:ax*step,dz:az*step,grounded:!bot.infectionAirborne,arenaLimit:ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,supportHeight:(x,z,y)=>this.world.geometry.worldSupportHeight(x,z,y,false,bodyRadius),stepUpHeight:(x,z,y,maxStep)=>this.world.geometry.worldStepUpHeight(x,z,y,maxStep,bodyRadius),maxStepHeight:MAX_STEP_HEIGHT,blockedAt:(x,z,y,fx,fz,fromY)=>{if(strictCharge&&chargeBlocked)return true;const blocked=this.world.worldCollision.worldMoveBlockedAt(x,z,y,fx,fz,PLAYER_HEIGHT*bodyScale,bodyRadius,fromY)||this.actorBlocksAt(x,z,y,fx,fz,solidActors,PLAYER_HEIGHT*bodyScale,PLAYER_RADIUS*bodyScale);if(strictCharge&&blocked)chargeBlocked=true;return blocked;}});
+        const out=sweepHorizontalMovement({x:bot.x,y:bot.y,z:bot.z,dx:ax*step,dz:az*step,grounded:!bot.infectionAirborne&&!bot.botAirborne,arenaLimit:this.world.geometry.ARENA_LIMIT,followDrop:GROUND_FOLLOW_DROP,supportHeight:(x,z,y)=>this.world.geometry.worldSupportHeight(x,z,y,false,bodyRadius),stepUpHeight:(x,z,y,maxStep)=>this.world.geometry.worldStepUpHeight(x,z,y,maxStep,bodyRadius),maxStepHeight:MAX_STEP_HEIGHT,blockedAt:(x,z,y,fx,fz,fromY)=>{if(strictCharge&&chargeBlocked)return true;const blocked=this.world.worldCollision.worldMoveBlockedAt(x,z,y,fx,fz,PLAYER_HEIGHT*bodyScale,bodyRadius,fromY)||this.actorBlocksAt(x,z,y,fx,fz,solidActors,PLAYER_HEIGHT*bodyScale,PLAYER_RADIUS*bodyScale);if(strictCharge&&blocked)chargeBlocked=true;return blocked;}});
         if(strictCharge)bot.bossChargeBlocked=chargeBlocked;
-        if(!out.grounded&&!bot.infectionAirborne){bot.velocityX=0;bot.velocityZ=0;bot.moveSpeed=0;return false;}
+        if(!out.grounded&&!bot.infectionAirborne&&!bot.botAirborne){if(!navigationDrop){bot.velocityX=0;bot.velocityZ=0;bot.moveSpeed=0;return false;}bot.botAirborne=true;bot.verticalVelocity=0;bot.serverGrounded=false;}
         const moved=Math.hypot(out.x-fromX,out.z-fromZ)>.005;bot.x=out.x;bot.y=out.y;bot.z=out.z;
         if(dt>1e-6){bot.velocityX=(out.x-fromX)/dt;bot.velocityZ=(out.z-fromZ)/dt;bot.moveSpeed=Math.hypot(bot.velocityX,bot.velocityZ);}else{bot.velocityX=0;bot.velocityZ=0;bot.moveSpeed=0;}
         if(moved)bot.lastMovedAt=now;return moved;
@@ -2552,13 +2597,16 @@ export class GameRoom {
         return best;
       };
       const moveToward=(goalX,goalZ,speed,stopDistance=.65,goalY=null)=>{
-        if(this.botNavigationWorld!==this.world){this.botNavigationWorld=this.world;this.botNavigator=createBotNavigator(this.world);}
-        const goal=this.botNavigator.approach(bot,{x:goalX,z:goalZ,y:goalY??this.world.geometry.worldSupportHeight(goalX,goalZ,bot.y)});goalX=goal.x;goalZ=goal.z;goalY=goal.y;if(goal.ladderDirX!=null){stopDistance=.1;if(Math.hypot(goalX-bot.x,goalZ-bot.z)<1.4&&tryTraverse(goal.ladderDirX,goal.ladderDirZ))return true;}
+        const navigator=this.navigator;
+        const goal=navigator.approach(bot,{x:goalX,z:goalZ,y:goalY??this.world.geometry.worldSupportHeight(goalX,goalZ,bot.y)});navigationDrop=!!goal.drop;if(navigationDrop){stopDistance=.05;bot.routePath=[];}goalX=goal.x;goalZ=goal.z;goalY=goal.y;if(goal.ladderDirX!=null){stopDistance=.1;if(Math.hypot(goalX-bot.x,goalZ-bot.z)<1.4&&tryTraverse(goal.ladderDirX,goal.ladderDirZ))return true;}
+        if(Math.hypot(goalX-bot.x,goalZ-bot.z)<=stopDistance)return true;
+        if(mode==='infection'&&infectionAbilityActive(bot,now)){const dx=goalX-bot.x,dz=goalZ-bot.z,d=Math.hypot(dx,dz);return d>.01&&tryMove(dx/d,dz/d,Math.min(d,speed*dt));}
+        if(!navigationDrop){const detour=actorDetour(bot,{x:goalX,y:goalY,z:goalZ,stopDistance},solidActors,this.world);if(detour){bot.routePath=[];const dx=detour.x-bot.x,dz=detour.z-bot.z,d=Math.hypot(dx,dz);bot.moveFacingYaw=Math.atan2(-dx,-dz);if(d>.05)return tryMove(dx/d,dz/d,Math.min(d,speed*dt));}}
         if(bot.routePath?.length&&Math.hypot(goalX-(bot.routeGoalX||0),goalZ-(bot.routeGoalZ||0))>7)bot.routePath=[];
         if(bot.routePath?.length){while(bot.routePath.length&&Math.hypot(bot.routePath[0].x-bot.x,bot.routePath[0].z-bot.z)<.65)bot.routePath.shift();if(bot.routePath.length){const p=bot.routePath[0],dx=p.x-bot.x,dz=p.z-bot.z,d=Math.hypot(dx,dz)||1;if(tryMove(dx/d,dz/d,Math.min(d,speed*dt)))return true;}}
         if(now>=(bot.routeCheckAt||0)){
           bot.routeCheckAt=now+800;const target={x:goalX,y:goalY,z:goalZ};
-          if(!this.botNavigator.clear(bot,target)){bot.routePath=this.botNavigator.route(bot,target);bot.routeGoalX=goalX;bot.routeGoalZ=goalZ;if(bot.routePath.length){const p=bot.routePath.find(p=>Math.hypot(p.x-bot.x,p.z-bot.z)>.65);if(p){const dx=p.x-bot.x,dz=p.z-bot.z,d=Math.hypot(dx,dz)||1;if(tryMove(dx/d,dz/d,Math.min(d,speed*dt))||tryTraverse(dx/d,dz/d))return true;}}}
+          if(!this.botNavigator.clear(bot,target)){bot.routePath=this.botNavigator.route(bot,target,solidActors);bot.routeGoalX=goalX;bot.routeGoalZ=goalZ;if(bot.routePath.length){const p=bot.routePath.find(p=>Math.hypot(p.x-bot.x,p.z-bot.z)>.65);if(p){const dx=p.x-bot.x,dz=p.z-bot.z,d=Math.hypot(dx,dz)||1;if(tryMove(dx/d,dz/d,Math.min(d,speed*dt))||tryTraverse(dx/d,dz/d))return true;}}}
         }
         let targetX=goalX,targetZ=goalZ,usingNav=false;
         if(now<finiteNumber(bot.navUntil,0)&&Math.hypot(bot.navX-bot.x,bot.navZ-bot.z)>.9){targetX=bot.navX;targetZ=bot.navZ;usingNav=true;}else if(bot.navUntil){bot.navUntil=0;bot.navNodeIndex=-1;}
@@ -2605,8 +2653,7 @@ export class GameRoom {
       const nearest=chooseVisibleBotTarget(targetCandidates,bot.targetId,bot.targetLockUntil,now);
       if(mode==='infection'&&!bot.infected){
         const entry={actor:bot,socket:null};
-        if(bot.armor<=50&&bot.cash>=6&&(!nearest||nearest.d2>100))this.infection.purchase(entry,'armor',now);
-        if(nearest&&nearest.d2<18*18&&nearest.d2>3*3){bot.aimYaw=Math.atan2(-nearest.dx,-nearest.dz);bot.aimPitch=.05;this.infection.action(entry,nearest.d2<10*10?'frost':'napalm',now);}
+        if(nearest&&nearest.d2<18*18&&nearest.d2>3*3){bot.aimYaw=Math.atan2(-nearest.dx,-nearest.dz);bot.aimPitch=.05;this.infection.action(entry,'frost',now);}
       }
       if(mode==='infection'&&!nearest){
         if(bot.infected){const goal=this.infection.botSearch(bot,now),movement=roleMovement(settings.movement,mode,bot,now);moveToward(goal.x,goal.z,movement.runSpeed*profile.moveRun,1.4,goal.y);bot.yaw=botApproachAngle(bot.yaw,bot.moveFacingYaw??Math.atan2(-(goal.x-bot.x),-(goal.z-bot.z)),2.5*dt);this.infection.claw({actor:bot,socket:null},now);}
@@ -2630,7 +2677,7 @@ export class GameRoom {
           }
           if(bestNode){bot.patrolX=bestNode.px;bot.patrolZ=bestNode.pz;bot.patrolNodeIndex=bestNode.nodeIndex;picked=true;}
           for(let attempt=0;attempt<8&&!picked;attempt++){
-            const angle=Math.random()*Math.PI*2,distance=12+Math.random()*26,px=clamp(bot.x+Math.cos(angle)*distance,-ARENA_LIMIT+2,ARENA_LIMIT-2),pz=clamp(bot.z+Math.sin(angle)*distance,-ARENA_LIMIT+2,ARENA_LIMIT-2),py=this.world.geometry.worldSupportHeight(px,pz,bot.y);
+            const angle=Math.random()*Math.PI*2,distance=12+Math.random()*26,px=clamp(bot.x+Math.cos(angle)*distance,-this.world.geometry.ARENA_LIMIT+2,this.world.geometry.ARENA_LIMIT-2),pz=clamp(bot.z+Math.sin(angle)*distance,-this.world.geometry.ARENA_LIMIT+2,this.world.geometry.ARENA_LIMIT-2),py=this.world.geometry.worldSupportHeight(px,pz,bot.y);
             if(!this.world.worldCollision.worldBlockedAt(px,pz,py,PLAYER_HEIGHT*actorScale(bot),bot.boss?PLAYER_RADIUS*actorScale(bot):.34)){bot.patrolX=px;bot.patrolZ=pz;bot.patrolNodeIndex=-1;picked=true;}
           }
           bot.patrolUntil=now+BOT_PATROL_MIN_MS+Math.random()*(BOT_PATROL_MAX_MS-BOT_PATROL_MIN_MS);
@@ -2670,7 +2717,7 @@ export class GameRoom {
 
       const tolerance=botAimToleranceRadians(profile,bot.ads),automatic=!!resolvedWeapon.automatic;
       const reloadAllowsFire=!bot.reloadAt||(botWeapon==='shotgun'&&(bot.ammo.shotgun||0)>0);
-      if(!bot.traversal&&!bot.ladder&&d<=role.engage&&reloadAllowsFire&&now>=finiteNumber(bot.reactionReadyAt,0)&&now>=finiteNumber(bot.combatRecoverUntil,0)&&aimError<=tolerance&&(!['sniper','battleRifle'].includes(botWeapon)||bot.ads)&&now>=finiteNumber(bot.nextShotAt,0)&&now>=finiteNumber(bot.burstPauseUntil,0)){
+      if((mode!=='infection'||now>=(bot.infectionReadyAt||0))&&!bot.traversal&&!bot.ladder&&d<=role.engage&&reloadAllowsFire&&now>=finiteNumber(bot.reactionReadyAt,0)&&now>=finiteNumber(bot.combatRecoverUntil,0)&&aimError<=tolerance&&(!['sniper','battleRifle'].includes(botWeapon)||bot.ads)&&now>=finiteNumber(bot.nextShotAt,0)&&now>=finiteNumber(bot.burstPauseUntil,0)){
         if((bot.ammo[botWeapon]||0)<=0){startReload(bot,botWeapon,weaponSettings);continue;}if(botWeapon==='shotgun'&&bot.reloadAt){bot.reloadAt=0;bot.reloadWeapon='';}
         if(automatic&&finiteNumber(bot.burstShotsLeft,0)<=0)bot.burstShotsLeft=botBurstSize(profile,d,botWeapon);
         bot.spawnProtectedUntil=0;bot.nextShotAt=now+Math.max(70,weaponSettings.cooldownMs*Math.max(1,profile.fireScale)+(automatic?0:Math.random()*55));bot.ammo[botWeapon]-=1;if(bot.ammo[botWeapon]===0)startReload(bot,botWeapon,weaponSettings);
@@ -2885,7 +2932,7 @@ export class GameRoom {
           const segmentDistance = Math.hypot(segmentEndX-previousX,segmentEndY-previousY,segmentEndZ-previousZ);
           if (segmentDistance <= 1e-7) { segmentDone = true; break; }
 
-          if (Math.abs(previousX) > ARENA_LIMIT + 2 || Math.abs(previousZ) > ARENA_LIMIT + 2) {
+          if (Math.abs(previousX) > this.world.geometry.ARENA_LIMIT + 2 || Math.abs(previousZ) > this.world.geometry.ARENA_LIMIT + 2) {
             this.endBullet(id, "world"); ended = true; break;
           }
 
@@ -2989,7 +3036,7 @@ export class GameRoom {
     const id=normalizeKillstreak(kind),spec=KILLSTREAK_SPECS[id];if(!spec)return false;
     if((id==='earthquake'||id==='solarnuke')&&this.killstreakEffects.some(effect=>effect.kind===id&&now<effect.endsAt))return false;
     const available=normalizeKillstreakList(player.killstreakAvailable),index=available.indexOf(id);if(index<0)return false;
-    const mapLimit=Math.max(8,finiteNumber(this.world.geometry.MINIMAP_LIMIT,this.world.geometry.ARENA_LIMIT||ARENA_LIMIT));
+    const mapLimit=Math.max(8,finiteNumber(this.world.geometry.MINIMAP_LIMIT,this.world.geometry.ARENA_LIMIT||this.world.geometry.ARENA_LIMIT));
     let x=0,z=0;
     if(spec.targeted){x=clamp(finiteNumber(target.x,NaN),-mapLimit,mapLimit);z=clamp(finiteNumber(target.z,NaN),-mapLimit,mapLimit);if(!Number.isFinite(x)||!Number.isFinite(z))return false;}
     available.splice(index,1);player.killstreakAvailable=available;socket.serializeAttachment(player);this.sendKillstreakState(socket,player,{used:id});
@@ -3096,7 +3143,6 @@ export class GameRoom {
     for (const socket of this.ctx.getWebSockets()) {
       const p = socket.deserializeAttachment() || {};
       if (p.clientId !== attackerId || p.replaced) continue;
-      if(matchMode(this.metaCache?.match)==='infection')p.cash=infectionCash(p.cash,300);
       p.kills = Math.max(0, Math.floor(finiteNumber(p.kills, 0))) + 1;
       const infection=matchMode(this.metaCache?.match)==='infection';
       let newlyEarned=[];

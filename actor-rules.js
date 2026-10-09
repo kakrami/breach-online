@@ -11,7 +11,7 @@ export function actorDimensions(actor,{height,radius,crouchHeight}){
 }
 export function roleMovement(base,mode,actor,now=Date.now()){
   if(mode!=='infection')return base;
-  const cls=infectionClass(actor?.infectionClass),active=infectionAbilityActive(actor,now),frozen=Number(actor?.frozenUntil||0)>now,burning=Number(actor?.burningUntil||0)>now;
-  const speed=frozen?0:(actor?.infected?cls.speed:1)*(burning?.82:1)*(active?cls.boost:1);
+  const cls=infectionClass(actor?.infectionClass),active=infectionAbilityActive(actor,now),frozen=Number(actor?.frozenUntil||0)>now,burning=Number(actor?.burningUntil||0)>now,slowed=Number(actor?.frostSlowUntil||0)>now,recovering=actor?.infected&&now>=Number(actor?.abilityUntil||0)&&now<Number(actor?.abilityRecoveryUntil||0);
+  const speed=frozen?0:(actor?.infected?cls.speed:1)*(slowed?.65:burning?.82:1)*(active?cls.boost:recovering?.65:1);
   return {...base,walkSpeed:base.walkSpeed*speed,runSpeed:base.runSpeed*speed,jumpHeight:frozen?0:base.jumpHeight*(actor?.infected?(active&&cls.abilityJump?cls.abilityJump:cls.jump):1)};
 }

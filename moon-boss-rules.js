@@ -1,4 +1,4 @@
-import { zombieBossSpec } from './infection-rules.js';
+function zombieBossSpec(wave,players=1){const tier=Math.min(6,Math.max(1,Math.floor(wave/5)));return {tier,health:Math.round((450+tier*110)*(1+Math.min(3,Math.max(0,players-1))*.3)),speed:Math.min(4.6,2.5+tier*.28),damage:Math.min(45,20+tier*4),reach:2.4+Math.min(3,tier)*.2,windupMs:1100,attackMs:2400-Math.min(5,tier)*100};}
 export const BOSS_WEAKPOINT=Object.freeze({y:1.06,z:-.35,radius:.18,damageScale:2});
 export const MOON_SUPPLY=Object.freeze({firstMs:30000,intervalMs:60000,approachMs:5000,beamMs:2500,departureMs:3000,expiryMs:45000,maxPickups:2,claimRadius:1.6,heal:45});
 export function bossSpec(archetype,wave,players=1){

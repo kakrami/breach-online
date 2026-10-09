@@ -8,7 +8,7 @@ export function normalizeMatchRules(value){
   const v=value&&typeof value==='object'?value:{};
   const mode=normalizeGameMode(v.mode??DEFAULT_MATCH_RULES.mode),spec=gameModeSpec(mode);
   const minimapDirectional=!!v.minimapDirectional,minimapRevealAll=minimapDirectional||!!v.minimapRevealAll;
-  if(spec.scoreType==='survival')return{mode,infectionChaos:!!v.infectionChaos,scoreLimit:0,timeLimitMs:[240000,360000,480000].includes(Number(v.timeLimitMs))?Number(v.timeLimitMs):spec.timeLimitMs,minimapRevealAll:false,minimapDirectional:false};
+  if(spec.scoreType==='survival')return{mode,scoreLimit:0,timeLimitMs:spec.timeLimitMs,minimapRevealAll:false,minimapDirectional:false};
   if(spec.scoreType==='none'||spec.scoreType==='waves')return{mode,scoreLimit:0,timeLimitMs:0,minimapRevealAll,minimapDirectional};
   return{
     mode,
@@ -21,8 +21,8 @@ export function normalizeMatchRules(value){
 export function defaultMatchState(now=Date.now(),rules=DEFAULT_MATCH_RULES){
   const normalized=normalizeMatchRules(rules);
   return{
-    status:'waiting',round:1,mode:normalized.mode,blueScore:0,redScore:0,
-    infectionChaos:!!normalized.infectionChaos,infectionPhase:'',infectionPhaseEndsAt:0,infectionRound:0,infectionWinner:'',
+    status:'waiting',sessionId:'',cheatsUsed:false,round:1,mode:normalized.mode,blueScore:0,redScore:0,
+    infectionPhase:'',infectionPhaseEndsAt:0,infectionRound:0,infectionWinner:'',infectionActiveStartedAt:0,infectionRoundResult:null,infectionWaitReason:'',
     wave:0,waveTotal:0,waveRemaining:0,waveSpawned:0,wavesCleared:0,nextWaveAt:0,
     scoreLimit:normalized.scoreLimit,timeLimitMs:normalized.timeLimitMs,minimapRevealAll:normalized.minimapRevealAll,minimapDirectional:normalized.minimapDirectional,
     warmupEndsAt:0,startedAt:0,endsAt:0,endedAt:0,restartAt:0,
@@ -36,13 +36,13 @@ export function normalizeMatchState(value,now=Date.now(),rules=DEFAULT_MATCH_RUL
   const status=normalizeMatchStatus(v.status??def.status);
   const winner=['blue','red','draw'].includes(String(v.winner))?String(v.winner):'';
   return{
-    status,round:Math.max(1,Math.floor(finiteNumber(v.round,def.round))),mode,
-    infectionChaos:!!normalizedRules.infectionChaos,infectionPhase:['buy','active','roundEnd'].includes(v.infectionPhase)?v.infectionPhase:'',infectionPhaseEndsAt:Math.max(0,finiteNumber(v.infectionPhaseEndsAt,0)),infectionRound:Math.max(0,Math.floor(finiteNumber(v.infectionRound,0))),infectionWinner:['blue','red','draw'].includes(v.infectionWinner)?v.infectionWinner:'',
+    status,sessionId:String(v.sessionId||'').slice(0,64),cheatsUsed:!!v.cheatsUsed,round:Math.max(1,Math.floor(finiteNumber(v.round,def.round))),mode,
+    infectionPhase:['waiting','buy','active','roundEnd'].includes(v.infectionPhase)?v.infectionPhase:'',infectionPhaseEndsAt:Math.max(0,finiteNumber(v.infectionPhaseEndsAt,0)),infectionRound:Math.max(0,Math.floor(finiteNumber(v.infectionRound,0))),infectionWinner:['blue','red','draw'].includes(v.infectionWinner)?v.infectionWinner:'',infectionActiveStartedAt:Math.max(0,finiteNumber(v.infectionActiveStartedAt,0)),infectionRoundResult:v.infectionRoundResult&&typeof v.infectionRoundResult==='object'?{round:clamp(Math.floor(finiteNumber(v.infectionRoundResult.round,0)),0,5),winner:['blue','red','draw'].includes(v.infectionRoundResult.winner)?v.infectionRoundResult.winner:'',reason:String(v.infectionRoundResult.reason||'').slice(0,24),endedAt:Math.max(0,finiteNumber(v.infectionRoundResult.endedAt,0))}:null,infectionWaitReason:['players','safe_spawns'].includes(v.infectionWaitReason)?v.infectionWaitReason:'',
     wave:Math.max(0,Math.floor(finiteNumber(v.wave,0))),waveTotal:clamp(Math.floor(finiteNumber(v.waveTotal,0)),0,80),waveRemaining:clamp(Math.floor(finiteNumber(v.waveRemaining,0)),0,80),waveSpawned:clamp(Math.floor(finiteNumber(v.waveSpawned,0)),0,80),wavesCleared:Math.max(0,Math.floor(finiteNumber(v.wavesCleared,0))),nextWaveAt:Math.max(0,finiteNumber(v.nextWaveAt,0)),
     blueScore:Math.max(0,Math.floor(finiteNumber(v.blueScore,0))),redScore:Math.max(0,Math.floor(finiteNumber(v.redScore,0))),
     scoreLimit:normalizedRules.scoreLimit,timeLimitMs:normalizedRules.timeLimitMs,minimapRevealAll:normalizedRules.minimapRevealAll,minimapDirectional:normalizedRules.minimapDirectional,
     warmupEndsAt:Math.max(0,finiteNumber(v.warmupEndsAt,0)),startedAt:Math.max(0,finiteNumber(v.startedAt,0)),endsAt:Math.max(0,finiteNumber(v.endsAt,0)),endedAt:Math.max(0,finiteNumber(v.endedAt,0)),restartAt:Math.max(0,finiteNumber(v.restartAt,0)),
-    winner,winnerId:String(v.winnerId||'').slice(0,64),winnerName:String(v.winnerName||'').slice(0,24),reason:String(v.reason||'').slice(0,24),updatedAt:Math.max(0,finiteNumber(v.updatedAt,now)),
+    winner,winnerId:String(v.winnerId||'').slice(0,80),winnerName:String(v.winnerName||'').slice(0,24),reason:String(v.reason||'').slice(0,24),updatedAt:Math.max(0,finiteNumber(v.updatedAt,now)),
   };
 }
 
