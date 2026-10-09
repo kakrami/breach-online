@@ -1,6 +1,6 @@
-export const APP_VERSION = '2.22.0';
-export const BUILD_ID = '20261009T005120Z';
-export const PROTOCOL_VERSION = 114;
+export const APP_VERSION = '2.22.1';
+export const BUILD_ID = '20261009T023743Z';
+export const PROTOCOL_VERSION = 115;
 export const ROOM_CODE_LENGTH = 4;
 export const MAX_PLAYERS = 8;
 export const MAX_BOTS_PER_TEAM = 8;

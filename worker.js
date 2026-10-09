@@ -1,4 +1,6 @@
 import {actorDetour} from './bot-steering.js';
+import {normalizePlayerName as safeName} from './player-name.js';
+import {createLastResult,restoreLastResult} from './last-result.js';
 import {createBotNavigator} from './bot-navigation.js';
 import {resolveWeaponRules} from './game-config.js';
 import {damageSource} from './combat-feedback.js';
@@ -68,10 +70,29 @@ const MAX_MESSAGE_BYTES = 24 * 1024;
 const MAX_CUSTOM_MAP_MESSAGE_BYTES = 1024 * 1024;
 const CUSTOM_MAP_STORAGE_CHUNK_CHARS = 48000;
 const ROOM_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
+const LAST_RESULT_RETRY_MS = 5 * 1000;
 const EMPTY_ROOM_GRACE_MS = 10 * 60 * 1000;
 const ALARM_MIN_FUTURE_MS = 5 * 1000;
 const DIRECTORY_LEASE_MS = 30 * 1000;
 const DIRECTORY_HEARTBEAT_MS = 10 * 1000;
+const DIRECTORY_RETRY_MS = 5 * 1000;
+const DIRECTORY_LOOKUP_TIMEOUT_MS = 1000;
+const DIRECTORY_BATCH_TIMEOUT_MS = 2000;
+const DIRECTORY_LOOKUP_CONCURRENCY = 4;
+const DIRECTORY_LOOKUP_MAX = 30;
+const DIRECTORY_PAGE_SIZE = 30;
+
+async function fetchDirectoryDeadline(stub, url, init = {}, parentSignal = null, readResponse = response => response) {
+  const controller = new AbortController();
+  let rejectAbort;
+  const aborted = new Promise((_, reject) => { rejectAbort = reject; });
+  const abort = () => { controller.abort(); rejectAbort(new Error('Directory request timed out')); };
+  const timer = setTimeout(abort, DIRECTORY_LOOKUP_TIMEOUT_MS);
+  if (parentSignal?.aborted) abort();
+  else parentSignal?.addEventListener('abort', abort, {once:true});
+  try { return await Promise.race([Promise.resolve().then(() => stub.fetch(url, {...init, signal:controller.signal})).then(readResponse), aborted]); }
+  finally { clearTimeout(timer); parentSignal?.removeEventListener('abort', abort); }
+}
 const SIM_MIN_STEP_MS = 16;
 const SIM_FIXED_STEP_MS = 1000 / 30;
 const SIM_MAX_CATCHUP_MS = 400;
@@ -221,15 +242,6 @@ function normalizeClientAuthHashes(meta) {
     if (safeId && safeHash.length === 64) out[safeId] = safeHash;
   }
   return out;
-}
-
-function safeName(value) {
-  const cleaned = String(value || "Player")
-    .replace(/[<>\u0000-\u001f]/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 18);
-  return cleaned || "Player";
 }
 
 function safeChatText(value) {
@@ -633,7 +645,9 @@ export default {
     }
 
     if (url.pathname === "/rooms" && request.method === "GET") {
-      const response = await (await directoryStub(env)).fetch("https://directory.internal/list");
+      const cursor = url.searchParams.get('cursor') || '';
+      if(cursor && (cursor.length!==ROOM_CODE_LENGTH || normalizeRoomCode(cursor)!==cursor))return json(request,env,{error:'Invalid match cursor.'},400);
+      const response = await (await directoryStub(env)).fetch(`https://directory.internal/list${cursor?`?cursor=${encodeURIComponent(cursor)}`:''}`);
       const body = await response.json();
       return json(request, env, body, response.status);
     }
@@ -704,17 +718,132 @@ export default {
   },
 };
 
+function directoryRoomRecord(body, now = Date.now()) {
+  const code = normalizeRoomCode(body.code);
+  const mode=normalizeGameMode(body.mode),modeSpec=gameModeSpec(mode);
+  return {
+        code,
+        protocol: PROTOCOL_VERSION,
+        players: clamp(Math.floor(finiteNumber(body.players, 0)), 0, MAX_PLAYERS),
+        blueBots: clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS_PER_TEAM),
+        redBots: clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS_PER_TEAM),
+        botDifficulty: safeBotDifficulty(body.botDifficulty),
+        mapId: normalizeMapId(body.mapId),
+        mapName: String(body.mapName||'').replace(/[\u0000-\u001f\u007f]/g,'').slice(0,64),
+        mode,
+        blue: clamp(Math.floor(finiteNumber(body.blue, 0)), 0, MAX_PLAYERS + MAX_BOTS_PER_TEAM),
+        red: clamp(Math.floor(finiteNumber(body.red, 0)), 0, MAX_PLAYERS + MAX_BOTS_PER_TEAM),
+        maxPlayers: MAX_PLAYERS,
+        createdAt: finiteNumber(body.createdAt, now),
+        updatedAt: now,
+        generation: makeJoinTicket(),
+        expiresAt: finiteNumber(body.expiresAt, now + ROOM_MAX_LIFETIME_MS),
+        custom: !!body.custom,
+        matchStatus: String(body.matchStatus || 'waiting'),
+        blueScore: Math.max(0, Math.floor(finiteNumber(body.blueScore, 0))),
+        redScore: Math.max(0, Math.floor(finiteNumber(body.redScore, 0))),
+        scoreLimit: modeSpec.scoreType==='none'?0:clamp(Math.floor(finiteNumber(body.scoreLimit, modeSpec.scoreLimit||DEFAULT_MATCH_RULES.scoreLimit)), 5, 100),
+      };
+}
+
+function sameDirectoryGeneration(current, previous) {
+  if(!current || !previous)return false;
+  if(current.generation || previous.generation)return current.generation===previous.generation;
+  return current.updatedAt===previous.updatedAt && current.createdAt===previous.createdAt;
+}
+
+function compareRoomCodes(a,b){return a<b?-1:a>b?1:0;}
+
 export class WorldDirectory {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
+    this.roomsMutation = Promise.resolve();
+    this.validationPromise = null;
+    this.nextValidationAt = 0;
+  }
+
+  mutateRooms(change) {
+    const operation = this.roomsMutation.then(async () => {
+      const rooms = (await this.ctx.storage.get('rooms')) || {};
+      const changed = change(rooms);
+      if(changed)await this.ctx.storage.put('rooms', rooms);
+      return rooms;
+    });
+    this.roomsMutation = operation.catch(() => {});
+    return operation;
+  }
+
+  async revalidateStaleRooms() {
+    if(this.validationPromise)return this.validationPromise;
+    if(Date.now()<this.nextValidationAt)return;
+    const operation=(async()=>{
+      const snapshot=(await this.ctx.storage.get('rooms'))||{}, now=Date.now();
+      const candidates=Object.entries(snapshot)
+        .filter(([,room])=>room && room.players>0 && Number(room.protocol)===PROTOCOL_VERSION && room.expiresAt>now && now-finiteNumber(room.updatedAt,0)>DIRECTORY_LEASE_MS && finiteNumber(room.discoveryRetryAt,0)<=now)
+        .sort(([aCode,a],[bCode,b])=>finiteNumber(a.discoveryCheckedAt,0)-finiteNumber(b.discoveryCheckedAt,0)||compareRoomCodes(aCode,bCode))
+        .slice(0,DIRECTORY_LOOKUP_MAX);
+      if(!candidates.length)return;
+      this.nextValidationAt=Date.now()+DIRECTORY_RETRY_MS;
+      const controller=new AbortController(), timer=setTimeout(()=>controller.abort(),DIRECTORY_BATCH_TIMEOUT_MS);
+      const outcomes=[];let next=0;
+      const work=async()=>{
+        while(!controller.signal.aborted && next<candidates.length){
+          const [code,previous]=candidates[next++];
+          let result={code,previous,kind:'unknown',checkedAt:Date.now()};
+          try{
+            const stub=this.env.ROOMS.get(this.env.ROOMS.idFromName(code));
+            const response=await fetchDirectoryDeadline(stub,'https://room.internal/discovery',{},controller.signal,async response=>({status:response.status,ok:response.ok,data:response.ok?await response.json():null}));
+            if([404,409,410].includes(response.status))result.kind='dead';
+            else if(response.ok){
+              const room=response.data?.room;
+              if(room && normalizeRoomCode(room.code)===code && Number(room.protocol)===PROTOCOL_VERSION && room.players>0 && finiteNumber(room.expiresAt,0)>Date.now()){
+                result.kind='live';result.room=directoryRoomRecord(room,Date.now());
+              }
+            }
+          }catch{}
+          outcomes.push(result);
+        }
+      };
+      try{await Promise.all(Array.from({length:Math.min(DIRECTORY_LOOKUP_CONCURRENCY,candidates.length)},work));}
+      finally{clearTimeout(timer);controller.abort();}
+      await this.mutateRooms(rooms=>{
+        let changed=false;
+        for(const outcome of outcomes){
+          const current=rooms[outcome.code];
+          if(!sameDirectoryGeneration(current,outcome.previous))continue;
+          if(outcome.kind==='dead')delete rooms[outcome.code];
+          else if(outcome.kind==='live')rooms[outcome.code]=outcome.room;
+          else rooms[outcome.code]={...current,discoveryCheckedAt:outcome.checkedAt,discoveryRetryAt:Date.now()+DIRECTORY_RETRY_MS};
+          changed=true;
+        }
+        return changed;
+      });
+    })();
+    this.validationPromise=operation;
+    try{return await operation;}finally{if(this.validationPromise===operation)this.validationPromise=null;}
+  }
+
+  async listRooms(cursor) {
+    await this.mutateRooms(rooms=>{
+      let changed=false;const now=Date.now();
+      for(const [code,room]of Object.entries(rooms)){
+        if(!room || room.players<=0 || Number(room.protocol)!==PROTOCOL_VERSION || finiteNumber(room.expiresAt,0)<=now){delete rooms[code];changed=true;}
+      }
+      return changed;
+    });
+    await this.revalidateStaleRooms();
+    await this.roomsMutation;
+    const rooms=(await this.ctx.storage.get('rooms'))||{}, now=Date.now();
+    const eligible=Object.values(rooms).filter(room=>room && room.players>0 && Number(room.protocol)===PROTOCOL_VERSION && finiteNumber(room.expiresAt,0)>now);
+    const incomplete=eligible.some(room=>now-finiteNumber(room.updatedAt,0)>DIRECTORY_LEASE_MS);
+    const visible=eligible.filter(room=>now-finiteNumber(room.updatedAt,0)<=DIRECTORY_LEASE_MS && (!cursor || compareRoomCodes(room.code,cursor)>0)).sort((a,b)=>compareRoomCodes(a.code,b.code));
+    const list=visible.slice(0,DIRECTORY_PAGE_SIZE), hasMore=visible.length>list.length;
+    return {rooms:list,incomplete,hasMore,nextCursor:hasMore?list.at(-1).code:null};
   }
 
   async fetch(request) {
-    const url = new URL(request.url);
-    const rooms = (await this.ctx.storage.get("rooms")) || {};
-    const now = Date.now();
-
+    const url = new URL(request.url), now = Date.now();
     if (url.pathname === "/allow-create" && request.method === "POST") {
       let body = {};
       try { body = await request.json(); } catch {}
@@ -742,72 +871,27 @@ export class WorldDirectory {
       return new Response('ok');
     }
 
-    if (url.pathname === "/list") {
-      let changed = false;
-      for (const [code, room] of Object.entries(rooms)) {
-        const leaseExpired = !room || room.players <= 0 || now - finiteNumber(room.updatedAt, 0) > DIRECTORY_LEASE_MS;
-        const incompatible = !room || Math.floor(finiteNumber(room.protocol,0)) !== PROTOCOL_VERSION;
-        const worldExpired = !room || finiteNumber(room.expiresAt, 0) <= now;
-        if (leaseExpired || incompatible || worldExpired) {
-          delete rooms[code];
-          changed = true;
-        }
-      }
-      if (changed) await this.ctx.storage.put("rooms", rooms);
-      const list = Object.values(rooms)
-        .filter((room) => room.players > 0)
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-        .slice(0, 30);
-      return new Response(JSON.stringify({ rooms: list }), {
-        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
-      });
-    }
 
-    if (url.pathname === "/upsert" && request.method === "POST") {
-      const body = await request.json();
-      const code = normalizeRoomCode(body.code);
-      if (!code) return new Response("bad code", { status: 400 });
-      const mode=normalizeGameMode(body.mode),modeSpec=gameModeSpec(mode);
-      rooms[code] = {
-        code,
-        protocol: PROTOCOL_VERSION,
-        players: clamp(Math.floor(finiteNumber(body.players, 0)), 0, MAX_PLAYERS),
-        blueBots: clamp(Math.floor(finiteNumber(body.blueBots, 0)), 0, MAX_BOTS_PER_TEAM),
-        redBots: clamp(Math.floor(finiteNumber(body.redBots, 0)), 0, MAX_BOTS_PER_TEAM),
-        botDifficulty: safeBotDifficulty(body.botDifficulty),
-        mapId: normalizeMapId(body.mapId),
-        mapName: String(body.mapName||'').replace(/[\u0000-\u001f\u007f]/g,'').slice(0,64),
-        mode,
-        blue: clamp(Math.floor(finiteNumber(body.blue, 0)), 0, MAX_PLAYERS + MAX_BOTS_PER_TEAM),
-        red: clamp(Math.floor(finiteNumber(body.red, 0)), 0, MAX_PLAYERS + MAX_BOTS_PER_TEAM),
-        maxPlayers: MAX_PLAYERS,
-        createdAt: finiteNumber(body.createdAt, now),
-        updatedAt: now,
-        expiresAt: finiteNumber(body.expiresAt, now + ROOM_MAX_LIFETIME_MS),
-        custom: !!body.custom,
-        matchStatus: String(body.matchStatus || 'waiting'),
-        blueScore: Math.max(0, Math.floor(finiteNumber(body.blueScore, 0))),
-        redScore: Math.max(0, Math.floor(finiteNumber(body.redScore, 0))),
-        scoreLimit: modeSpec.scoreType==='none'?0:clamp(Math.floor(finiteNumber(body.scoreLimit, modeSpec.scoreLimit||DEFAULT_MATCH_RULES.scoreLimit)), 5, 100),
-      };
-      await this.ctx.storage.put("rooms", rooms);
-      return new Response("ok");
+    if (url.pathname === '/list') {
+      const cursor=url.searchParams.get('cursor')||'';
+      if(cursor && (cursor.length!==ROOM_CODE_LENGTH || normalizeRoomCode(cursor)!==cursor))return new Response('bad cursor',{status:400});
+      return new Response(JSON.stringify(await this.listRooms(cursor)),{headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
     }
-
-    if (url.pathname === "/remove" && request.method === "POST") {
-      const body = await request.json();
-      const code = normalizeRoomCode(body.code);
-      if (code && rooms[code]) {
-        delete rooms[code];
-        await this.ctx.storage.put("rooms", rooms);
-      }
-      return new Response("ok");
+    if(url.pathname==='/upsert' && request.method==='POST'){
+      const body=await request.json(), code=normalizeRoomCode(body.code);
+      if(!code)return new Response('bad code',{status:400});
+      if(Number(body.protocol)!==PROTOCOL_VERSION)return new Response('incompatible protocol',{status:409});
+      await this.mutateRooms(rooms=>{rooms[code]=directoryRoomRecord(body,Date.now());return true;});
+      return new Response('ok');
     }
-
-    return new Response("not found", { status: 404 });
+    if(url.pathname==='/remove' && request.method==='POST'){
+      const body=await request.json(), code=normalizeRoomCode(body.code);
+      await this.mutateRooms(rooms=>{if(!code || !rooms[code])return false;delete rooms[code];return true;});
+      return new Response('ok');
+    }
+    return new Response('not found',{status:404});
   }
 }
-
 
 export class MapLibrary {
   constructor(ctx, env){this.ctx=ctx;this.env=env;}
@@ -879,7 +963,16 @@ export class GameRoom {
     this.lastBotBroadcastAt = 0;
     this.lastPersistAt = 0;
     this.lastDirectoryHeartbeatAt = 0;
+    this.lastDirectoryAttemptAt = 0;
+    this.directoryLastSucceeded = false;
+    this.directoryUpdatePromise = null;
+    this.pendingDirectoryUpdate = null;
     this.metaCache = null;
+    this.lastResultCache = undefined;
+    this.lastResultLoadPromise = null;
+    this.lastResultWritePromise = null;
+    this.pendingLastResult = null;
+    this.lastResultRetryAt = 0;
     this.customMapDefinition = null;
     this.socketRate = new WeakMap();
     this.joinTicketRate = { windowAt:0, total:0, clients:new Map() };
@@ -941,10 +1034,65 @@ export class GameRoom {
 
   roomCustomMapPayload(meta){return normalizeMapId(meta?.mapId)==='custom-map'&&this.customMapDefinition?this.customMapDefinition:undefined;}
 
+  async loadLastResult(meta=this.metaCache) {
+    if(this.lastResultCache!==undefined)return this.lastResultCache;
+    if(this.lastResultLoadPromise)return this.lastResultLoadPromise;
+    const operation=(async()=>{
+      const saved=await this.ctx.storage.get('lastResult');
+      if(this.lastResultCache===undefined){
+        const restored=restoreLastResult(saved),expected=meta?.lastResultRef;
+        const olderThanExpected=expected&&(!restored||restored.endedAt<expected.endedAt||restored.endedAt===expected.endedAt&&restored.sessionId!==expected.sessionId);
+        this.lastResultCache=olderThanExpected?null:restored;
+      }
+      return this.lastResultCache;
+    })();
+    this.lastResultLoadPromise=operation;
+    try{return await operation;}finally{if(this.lastResultLoadPromise===operation)this.lastResultLoadPromise=null;}
+  }
+
+  queueLastResultWrite(snapshot=null) {
+    if(snapshot)this.pendingLastResult=snapshot;
+    if(this.lastResultWritePromise)return this.lastResultWritePromise;
+    const operation=(async()=>{
+      while(this.pendingLastResult){
+        const next=this.pendingLastResult;this.pendingLastResult=null;
+        try{await this.ctx.storage.put('lastResult',next);this.lastResultRetryAt=0;}
+        catch(error){if(!this.pendingLastResult)this.pendingLastResult=next;this.lastResultRetryAt=Date.now()+LAST_RESULT_RETRY_MS;throw error;}
+      }
+    })();
+    const tracked=operation.finally(()=>{if(this.lastResultWritePromise===tracked)this.lastResultWritePromise=null;});
+    this.lastResultWritePromise=tracked;
+    // The live cache is immediate; persistence is also awaited by putMeta.
+    // Keep only the current write and one newest pending summary.
+    this.ctx.waitUntil?.(tracked);void tracked.catch(()=>{});
+    return tracked;
+  }
+
+  retryLastResultPersistence(now=Date.now()) {
+    if(this.lastResultWritePromise)return this.lastResultWritePromise;
+    if(this.pendingLastResult&&now>=this.lastResultRetryAt)return this.queueLastResultWrite();
+    return null;
+  }
+
+  captureLastResult(meta,now=Date.now(),{practice=false}={}) {
+    const sessionId=String(meta?.match?.sessionId||'');
+    if(!sessionId || !this.metaCache || this.metaCache.match?.sessionId!==sessionId)return null;
+    const previous=this.lastResultCache;
+    if(previous&&(previous.sessionId===sessionId||previous.endedAt>now))return previous;
+    const players=[];
+    for(const socket of this.liveSockets().slice(0,MAX_PLAYERS))players.push({...socket.deserializeAttachment(),bot:false});
+    for(const bot of (this.bots||[]).slice(0,MAX_MATCH_BOTS))players.push({...bot,bot:true});
+    const summary=createLastResult({...meta,custom:this.isCustomMatch(meta)},players,now,{practice});
+    if(!summary)return null;
+    this.lastResultCache=summary;meta.lastResultRef={sessionId:summary.sessionId,endedAt:summary.endedAt};
+    void this.queueLastResultWrite(summary);return summary;
+  }
+
   async getMeta() {
-    if (this.metaCache) return this.metaCache;
+    if (this.metaCache){await this.loadLastResult(this.metaCache);return this.metaCache;}
     const meta = await this.ctx.storage.get("meta");
     if (meta) {
+      await this.loadLastResult(meta);
       meta.adminClientIds = normalizeAdminIds(meta);
       meta.clientAuthHashes = normalizeClientAuthHashes(meta);
       meta.settings = normalizeWorldSettings(meta.settings);
@@ -960,6 +1108,7 @@ export class GameRoom {
   }
 
   async putMeta(meta) {
+    try{await this.retryLastResultPersistence();}catch{}
     meta.adminClientIds = normalizeAdminIds(meta);
     meta.clientAuthHashes=normalizeClientAuthHashes(meta);meta.mapId=normalizeMapId(meta.mapId);if(this.world?.id!==meta.mapId)this.world=worldBundle(meta.mapId,this.customMapDefinition);delete meta.mode;delete meta.custom;
     this.metaCache=meta;
@@ -988,7 +1137,7 @@ export class GameRoom {
       : type === 'state' ? { rate: 55, burst: 220 }
       : type === 'simTick' ? { rate: 40, burst: 180 }
       : type === 'fire' ? { rate: 24, burst: 72 }
-      : ['equipmentAction','throw','reload','weapon','loadout','killstreakLoadout','killstreak','replaySkip','team','god','startMatch','returnLobby','adminPlayer','adminSettings','adminBots'].includes(type) ? { rate: 14, burst: 22 }
+      : ['equipmentAction','throw','reload','weapon','loadout','killstreakLoadout','killstreak','replaySkip','team','name','god','startMatch','returnLobby','adminPlayer','adminSettings','adminBots'].includes(type) ? { rate: 14, burst: 22 }
       : type === 'ping' ? { rate: 8, burst: 12 }
       : type === 'chat' ? { rate: 1.5, burst: 4 }
       : { rate: 30, burst: 45 };
@@ -1041,6 +1190,9 @@ export class GameRoom {
 
   async cleanupRoom(meta) {
     this.metaCache = null;
+    this.lastResultCache=null;this.pendingLastResult=null;
+    try{await this.lastResultWritePromise;}catch{}
+    this.pendingLastResult=null;this.lastResultRetryAt=0;
     if (meta?.code) await this.removeDirectory(meta.code);
     // Clear the scheduled wake-up before deleting the room state.
     try { await this.ctx.storage.deleteAlarm(); } catch {}
@@ -1125,10 +1277,11 @@ export class GameRoom {
     this.clearMoonSupply(meta);
     const result=winner&&typeof winner==='object'?winner:{winner:winner||'draw'};
     Object.assign(match,{status:MATCH_STATUS.ENDED,endedAt:now,restartAt:now+MATCH_END_MS,winner:['blue','red','draw'].includes(result.winner)?result.winner:'',winnerId:safeClientId(result.winnerId||''),winnerName:String(result.winnerName||'').slice(0,24),reason:String(reason||'').slice(0,24),updatedAt:now});
+    this.captureLastResult(meta,now);
     this.bullets.clear();this.throwables.clear();this.smokeClouds.clear();this.killstreakEffects.length=0;
     for(const socket of this.ctx.getWebSockets()){const p=socket.deserializeAttachment()||{};if(!p.clientId||p.replaced)continue;socket.serializeAttachment(this.freezeHumanState(p,now));}
     for(const bot of this.bots||[]){if(bot.boss)Object.assign(bot,{bossPhase:'chase',bossPhaseEndsAt:0,weakpointUntil:0,telegraphUntil:0});bot.traversal=null;bot.actorDetour=null;bot.botAirborne=false;bot.reloadAt=0;bot.reloadWeapon='';bot.moveSpeed=0;bot.knockVelocityX=0;bot.knockVelocityZ=0;bot.abductedUntil=0;bot.abductedBy='';bot.y=this.world.geometry.worldSupportHeight(bot.x,bot.z,bot.y,false);}
-    meta.match=match;this.matchDirty=true;this.broadcastMatch(meta,now);return true;
+    meta.match=match;this.matchDirty=true;this.broadcastMatch(meta,now,{lastResult:this.lastResultCache||null});return true;
   }
 
   individualLeaders(){
@@ -1156,12 +1309,13 @@ export class GameRoom {
     }
     if(mode==='infection'){if(!this.infection.begin(meta,now,{publish:false}))return false;players.splice(0,players.length,...this.liveSockets().map(s=>publicPlayer(s.deserializeAttachment())));}
     this.matchDirty=true;
-    this.broadcast({t:'matchReset',match:publicMatchState(meta.match,now),players,bots:this.bots.map(publicBot),mapId:meta.mapId,customMapDefinition:this.roomCustomMapPayload(meta),customMapName:meta.customMap?.name||undefined,settings:normalizeWorldSettings(meta.settings),botConfig:{blueBots:meta.blueBots||0,redBots:meta.redBots||0,difficulty:safeBotDifficulty(meta.botDifficulty)},custom:this.isCustomMatch(meta)});
+    this.broadcast({t:'matchReset',match:publicMatchState(meta.match,now),lastResult:this.lastResultCache||null,players,bots:this.bots.map(publicBot),mapId:meta.mapId,customMapDefinition:this.roomCustomMapPayload(meta),customMapName:meta.customMap?.name||undefined,settings:normalizeWorldSettings(meta.settings),botConfig:{blueBots:meta.blueBots||0,redBots:meta.redBots||0,difficulty:safeBotDifficulty(meta.botDifficulty)},custom:this.isCustomMatch(meta)});
     if(mode==='infection')this.infection.field.sync();
     return true;
   }
 
   returnMatchToLobby(meta,now=Date.now()){
+    if(matchMode(meta.match)==='sandbox'&&meta.match.status===MATCH_STATUS.ACTIVE)this.captureLastResult(meta,now,{practice:true});
     this.infectionDirector?.field.clear();
     this.clearMoonSupply(meta);
     const old=meta.match,mode=matchMode(old),players=[];
@@ -1175,7 +1329,7 @@ export class GameRoom {
     if(mode==='infection'){for(const bot of this.bots)Object.assign(bot,{infected:false,team:'blue',hp:100,maxHp:100,primaryOwned:true,medkits:0,armor:0,infectionRound:0});}
     if(gameModeSpec(mode).cooperative){this.bots=[];this.broadcast({t:'bots',bots:[],config:{blueBots:0,redBots:0,difficulty:safeBotDifficulty(meta.botDifficulty)}});}
     this.matchDirty=true;
-    this.broadcast({t:'matchLobby',match:publicMatchState(meta.match,now),players,bots:(this.bots||[]).map(publicBot),mapId:meta.mapId,customMapDefinition:this.roomCustomMapPayload(meta),customMapName:meta.customMap?.name||undefined,custom:this.isCustomMatch(meta)});
+    this.broadcast({t:'matchLobby',match:publicMatchState(meta.match,now),lastResult:this.lastResultCache||null,players,bots:(this.bots||[]).map(publicBot),mapId:meta.mapId,customMapDefinition:this.roomCustomMapPayload(meta),customMapName:meta.customMap?.name||undefined,custom:this.isCustomMatch(meta)});
     void this.updateDirectory(this.liveSockets().length,meta).catch(()=>{});
     return true;
   }
@@ -1422,6 +1576,23 @@ export class GameRoom {
 
   async fetch(request) {
     const url = new URL(request.url);
+    if(url.pathname==='/discovery' && request.method==='GET'){
+      const meta=this.metaCache || await this.ctx.storage.get('meta');
+      if(!meta)return new Response('missing room',{status:404});
+      if(Number(meta.protocol)!==PROTOCOL_VERSION)return new Response('incompatible protocol',{status:409});
+      if(finiteNumber(meta.expiresAt,0)<=Date.now())return new Response('expired room',{status:410});
+      const actors=[], seen=new Set();
+      for(const socket of this.ctx.getWebSockets()){
+        if(socket.readyState!==1)continue;
+        const actor=socket.deserializeAttachment()||{}, id=actor.clientId;
+        if(!id || actor.replaced || seen.has(id) || !/^[a-f0-9]{64}$/.test(String(meta.clientAuthHashes?.[id]||'')))continue;
+        seen.add(id);actors.push(actor);
+      }
+      if(!actors.length)return new Response('empty room',{status:404});
+      const room=this.directorySnapshot(meta,actors.length,'',actors);
+      return new Response(JSON.stringify({room}),{headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
+    }
+
 
     if (url.pathname === "/create" && request.method === "POST") {
       const existing = await this.getMeta();
@@ -1543,7 +1714,8 @@ export class GameRoom {
     const attachment = {
       clientId,
       matchSessionId:meta.match.sessionId||'',
-      name,
+      name: safeName(savedPreferences?.name ?? name),
+      nameRevision: 0,
       team: joinTeam,
       connectedAt: Date.now(),
       replaced: false,
@@ -1627,6 +1799,7 @@ export class GameRoom {
     const currentPlayers = liveMembers.map(({ attachment: a }) => publicPlayer(a));
     sendJson(server,{
       t: "welcome",
+      lastResult:await this.loadLastResult(),
       self: {...publicPlayer(attachment),loadoutClasses:normalizeLoadoutClasses(attachment.loadoutClasses,attachment),activeClassId:normalizeLoadoutClassId(attachment.activeClassId),pendingClassId:attachment.pendingClassId?normalizeLoadoutClassId(attachment.pendingClassId):'',killstreak:killstreakState(attachment)},
       players: currentPlayers,
       bots: this.bots.map(publicBot),
@@ -1667,7 +1840,17 @@ export class GameRoom {
     if (!payload) return;
     if(messageBytes>MAX_MESSAGE_BYTES&&String(payload.t||'')!=='startMatch'){socket.close(1009,"Message too large");return;}
     const messageType = String(payload.t || '');
-    if (!this.allowSocketMessage(socket, messageType, receivedAt)) return;
+    if (!this.allowSocketMessage(socket, messageType, receivedAt)) {
+      if(messageType==='name'){
+        const player=socket.deserializeAttachment()||{};
+        if(player.clientId&&!player.replaced){
+          const rev=Math.min(Number.MAX_SAFE_INTEGER,Math.max(0,Math.floor(finiteNumber(payload.rev,0))));
+          if(rev>finiteNumber(player.nameRevision,0)){player.nameRevision=rev;socket.serializeAttachment(player);}
+          sendJson(socket,{t:'name',accepted:false,name:player.name,rev,reason:'rate_limit'});
+        }
+      }
+      return;
+    }
     const meta = await this.getMeta();
     if (!meta) return;
     if(Number(meta.protocol)!==PROTOCOL_VERSION){sendJson(socket,{t:'notice',tone:'error',text:'MATCH UPDATED · REOPEN BREACH AND CREATE A NEW MATCH'});socket.close(4009,'MATCH UPDATED · CREATE A NEW MATCH');return;}
@@ -1675,6 +1858,7 @@ export class GameRoom {
 
     let me = socket.deserializeAttachment() || {};
     if (!me.clientId || me.replaced) return;
+    const resultWrite=this.retryLastResultPersistence(receivedAt);if(resultWrite)void resultWrite.catch(()=>{});
     const now = receivedAt;
     if(!['ready','equipmentAim','recover'].includes(me.combatAction))me={...me,combatAction:'ready',combatActionKind:'',combatReadyAt:0};
     const settings = {...meta.settings,movement:modMovement(meta.settings)};
@@ -1684,6 +1868,19 @@ export class GameRoom {
     if(matchAllowsMovement(meta.match)){me=this.advanceTraversalState(me,now);me=this.advanceLadderState(me,now);}
     else if(me.traversal||me.ladder)me={...me,traversal:null,ladder:null,verticalVelocity:0,moveSpeed:0};
     socket.serializeAttachment(me);
+
+    if(payload.t==='name'){
+      const rev=Math.min(Number.MAX_SAFE_INTEGER,Math.max(0,Math.floor(finiteNumber(payload.rev,0))));
+      if(me.nameRevision>0&&rev<=me.nameRevision){sendJson(socket,{t:'name',accepted:false,name:me.name,rev,reason:'stale'});return;}
+      if(rev>0){me.nameRevision=rev;socket.serializeAttachment(me);}
+      if(!matchAllowsLobbyEdits(meta.match)){sendJson(socket,{t:'name',accepted:false,name:me.name,rev,reason:'locked'});return;}
+      if(typeof payload.name!=='string'){sendJson(socket,{t:'name',accepted:false,name:me.name,rev,reason:'invalid'});return;}
+      // Identity is bound to this authenticated socket; payload target fields
+      // are never consulted, and reconnects retain this authoritative value.
+      me.name=safeName(payload.name);socket.serializeAttachment(me);
+      sendJson(socket,{t:'name',accepted:true,name:me.name,rev});
+      this.broadcast({t:'lobbyPlayer',player:publicPlayer(me)});return;
+    }
 
     if(matchMode(meta.match)==='infection'){
       if(INFECTION_ROUND_INTENTS.includes(payload.t)&&payload.round!==meta.match.infectionRound){if(['fire','weapon','reload'].includes(payload.t))sendLoadout(socket,me,{action:payload.t,accepted:false,reason:'stale_round'});return;}
@@ -2095,6 +2292,7 @@ export class GameRoom {
       const diag=payload.diag===1?{stateAgeMs:Math.max(0,now-finiteNumber(me.lastStateAt,now)),lastStateGapMs:Math.max(0,finiteNumber(me.diagLastStateGapMs,0)),maxStateGapMs:Math.max(0,finiteNumber(me.diagMaxStateGapMs,0)),moveBudgetMs:Math.round(Math.max(0,finiteNumber(me.moveBudgetSec,0))*1000)}:undefined;
       sendJson(socket,{t:"pong",at:now,clientAt:finiteNumber(payload.clientAt,0),net:diag});
       if(diag){me={...me,diagMaxStateGapMs:finiteNumber(me.diagLastStateGapMs,0)};socket.serializeAttachment(me);}
+      await this.refreshDirectoryHeartbeat(meta,now);
       await this.stepSimulation(now, meta);
     }
   }
@@ -2441,10 +2639,6 @@ export class GameRoom {
     if (now - this.lastPersistAt >= BOT_PERSIST_INTERVAL_MS) {
       this.lastPersistAt = now;
       try { await this.ctx.storage.put("bots", this.bots); } catch {}
-    }
-    if (now - this.lastDirectoryHeartbeatAt >= DIRECTORY_HEARTBEAT_MS) {
-      this.lastDirectoryHeartbeatAt = now;
-      void this.updateDirectory(this.liveSockets().length, meta).catch(()=>{});
     }
     if (now >= meta.expiresAt - 60_000) {
       meta.expiresAt = now + ROOM_MAX_LIFETIME_MS;
@@ -3407,58 +3601,60 @@ export class GameRoom {
     }
   }
 
-  async updateDirectory(players, meta, excludeClientId = "") {
-    if (players <= 0) {
-      await this.removeDirectory(meta.code);
-      return;
-    }
-    let blue = 0, red = 0;
-    for (const socket of this.ctx.getWebSockets()) {
-      const p = socket.deserializeAttachment() || {};
-      if (!p.clientId || p.replaced || p.clientId === excludeClientId) continue;
-      if (normalizeTeam(p.team) === "red") red += 1; else blue += 1;
-    }
-    for (const bot of this.bots || []) {
-      if (normalizeTeam(bot.team) === "red") red += 1; else blue += 1;
-    }
-    const match = meta.match;
-    try {
-      const directory = await directoryStub(this.env);
-      await directory.fetch("https://directory.internal/upsert", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          code: meta.code,
-          protocol: PROTOCOL_VERSION,
-          players,
-          blueBots: (this.bots || []).filter((bot) => normalizeTeam(bot.team) === "blue").length,
-          redBots: (this.bots || []).filter((bot) => normalizeTeam(bot.team) === "red").length,
-          botDifficulty: safeBotDifficulty(meta.botDifficulty),
-          mapId: normalizeMapId(meta.mapId),
-          mapName: normalizeMapId(meta.mapId)==='custom-map'?(meta.customMap?.name||'CUSTOM MAP'):'',
-          mode: matchMode(match),
-          blue,
-          red,
-          custom: this.isCustomMatch(meta),
-          matchStatus: match.status,
-          blueScore: match.blueScore,
-          redScore: match.redScore,
-          scoreLimit: match.scoreLimit,
-          createdAt: meta.createdAt,
-          expiresAt: meta.expiresAt,
-        }),
-      });
-    } catch {}
+  directorySnapshot(meta, players, excludeClientId='', suppliedActors=null) {
+    const actors=suppliedActors||this.ctx.getWebSockets().map(socket=>socket.deserializeAttachment()||{}).filter(actor=>actor.clientId && !actor.replaced && actor.clientId!==excludeClientId);
+    const blueBots=Array.isArray(this.bots)?this.bots.filter(bot=>normalizeTeam(bot.team)==='blue').length:Math.max(0,Math.floor(finiteNumber(meta.blueBots,0)));
+    const redBots=Array.isArray(this.bots)?this.bots.filter(bot=>normalizeTeam(bot.team)==='red').length:Math.max(0,Math.floor(finiteNumber(meta.redBots,0)));
+    const match=meta.match||{};
+    return {
+      code:meta.code,protocol:meta.protocol,players,blueBots,redBots,botDifficulty:safeBotDifficulty(meta.botDifficulty),
+      mapId:normalizeMapId(meta.mapId),mapName:normalizeMapId(meta.mapId)==='custom-map'?(meta.customMap?.name||'CUSTOM MAP'):'',
+      mode:matchMode(match),blue:actors.filter(actor=>normalizeTeam(actor.team)==='blue').length+blueBots,red:actors.filter(actor=>normalizeTeam(actor.team)==='red').length+redBots,
+      custom:!!match.cheatsUsed || !worldSettingsAreDefault(meta.settings) || !matchRulesAreDefault(match) || actors.some(actor=>actor.godMode),
+      matchStatus:match.status||'waiting',blueScore:match.blueScore,redScore:match.redScore,scoreLimit:match.scoreLimit,createdAt:meta.createdAt,expiresAt:meta.expiresAt,
+    };
+  }
+
+  async refreshDirectoryHeartbeat(meta, now=Date.now()) {
+    if(this.directoryUpdatePromise)return this.directoryUpdatePromise;
+    if(this.directoryLastSucceeded && now-this.lastDirectoryHeartbeatAt<DIRECTORY_HEARTBEAT_MS)return true;
+    if(!this.directoryLastSucceeded && this.lastDirectoryAttemptAt && now-this.lastDirectoryAttemptAt<DIRECTORY_RETRY_MS)return false;
+    return this.updateDirectory(this.liveSockets().length,meta);
+  }
+
+  queueDirectoryUpdate(job) {
+    const key=JSON.stringify(job);
+    if(this.directoryUpdatePromise && this.activeDirectoryJobKey===key && !this.pendingDirectoryUpdate)return this.directoryUpdatePromise;
+    this.pendingDirectoryUpdate=job;
+    if(this.directoryUpdatePromise)return this.directoryUpdatePromise;
+    const operation=(async()=>{
+      let succeeded=false;
+      while(this.pendingDirectoryUpdate){
+        const next=this.pendingDirectoryUpdate;this.pendingDirectoryUpdate=null;
+        this.activeDirectoryJobKey=JSON.stringify(next);
+        this.lastDirectoryAttemptAt=Date.now();
+        try{
+          const directory=await directoryStub(this.env);
+          const response=await fetchDirectoryDeadline(directory,`https://directory.internal/${next.remove?'remove':'upsert'}`,{
+            method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(next.remove?{code:next.code}:next.room),
+          });
+          succeeded=response.ok;
+        }catch{succeeded=false;}
+        this.directoryLastSucceeded=succeeded;
+        if(succeeded)this.lastDirectoryHeartbeatAt=Date.now();
+      }
+      return succeeded;
+    })();
+    this.directoryUpdatePromise=operation;
+    return operation.finally(()=>{if(this.directoryUpdatePromise===operation)this.directoryUpdatePromise=null;});
+  }
+
+  async updateDirectory(players, meta, excludeClientId = '') {
+    if(players<=0)return this.removeDirectory(meta.code);
+    return this.queueDirectoryUpdate({room:this.directorySnapshot(meta,players,excludeClientId)});
   }
 
   async removeDirectory(code) {
-    try {
-      const directory = await directoryStub(this.env);
-      await directory.fetch("https://directory.internal/remove", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ code }),
-      });
-    } catch {}
+    return this.queueDirectoryUpdate({remove:true,code});
   }
 }
